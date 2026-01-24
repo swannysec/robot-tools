@@ -8,10 +8,7 @@
     "url": "https://github.com/swannysec"
   },
   "license": "MIT License with Commercial Restriction",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/swannysec/robot-tools"
-  },
+  "repository": "https://github.com/swannysec/robot-tools",
   "keywords": [
     "security",
     "secrets",

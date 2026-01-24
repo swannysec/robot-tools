@@ -1,0 +1,22 @@
+{
+  "name": "research-toolkit",
+  "version": "0.1.0",
+  "description": "AI/ML research and verification tools for software development",
+  "author": {
+    "name": "swannysec",
+    "email": "",
+    "url": "https://github.com/swannysec"
+  },
+  "license": "MIT License with Commercial Restriction",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/swannysec/robot-tools"
+  },
+  "keywords": [
+    "ai",
+    "ml",
+    "research",
+    "verification",
+    "development"
+  ]
+}

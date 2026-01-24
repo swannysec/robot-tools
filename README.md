@@ -8,7 +8,7 @@ A comprehensive collection of Claude Code plugins for research, security, code a
 AI/ML research and verification tools for software development.
 
 **Skills:**
-- `ai-dev-research` - World-expert technical research on AI topics
+- `ai-dev-research` - Expert technical research on AI topics
 - `research-verification` - Pre-flight verification checklist for research tasks
 
 [View Documentation](./research-toolkit/README.md)

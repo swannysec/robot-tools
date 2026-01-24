@@ -1,34 +1,41 @@
 {
   "name": "robot-tools",
-  "description": "A collection of Claude Code plugins for research, security, code analysis, and workflow automation",
-  "author": {
+  "owner": {
     "name": "swannysec",
-    "url": "https://github.com/swannysec"
+    "email": ""
+  },
+  "metadata": {
+    "description": "A collection of Claude Code plugins for research, security, code analysis, and workflow automation",
+    "version": "0.1.0"
   },
   "plugins": [
     {
       "name": "research-toolkit",
+      "source": "./research-toolkit",
       "description": "AI/ML research and verification tools for software development",
       "version": "0.1.0",
-      "path": "./research-toolkit"
+      "license": "MIT License with Commercial Restriction"
     },
     {
       "name": "security-toolkit",
+      "source": "./security-toolkit",
       "description": "Security investigation and analysis tools",
       "version": "0.1.0",
-      "path": "./security-toolkit"
+      "license": "MIT License with Commercial Restriction"
     },
     {
       "name": "code-analysis-toolkit",
+      "source": "./code-analysis-toolkit",
       "description": "Codebase flow analysis, dependency visualization, and health scoring",
       "version": "0.1.0",
-      "path": "./code-analysis-toolkit"
+      "license": "MIT License with Commercial Restriction"
     },
     {
       "name": "workflow-toolkit",
+      "source": "./workflow-toolkit",
       "description": "Development workflow automation, review orchestration, and productivity tools",
       "version": "0.1.0",
-      "path": "./workflow-toolkit"
+      "license": "MIT License with Commercial Restriction"
     }
   ]
 }

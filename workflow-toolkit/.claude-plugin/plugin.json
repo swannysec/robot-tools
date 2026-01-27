@@ -1,6 +1,6 @@
 {
   "name": "workflow-toolkit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Development workflow automation, review orchestration, and productivity tools",
   "author": {
     "name": "swannysec",
@@ -15,6 +15,9 @@
     "review",
     "testing",
     "documentation",
-    "automation"
+    "automation",
+    "commands",
+    "git",
+    "verification"
   ]
 }

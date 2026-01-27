@@ -8,7 +8,7 @@ Development workflow automation, review orchestration, and productivity tools fo
 
 | Skill | Description |
 |-------|-------------|
-| `open-sourceror` | Prepare Claude Code skills, agents, or collections for open-source sharing on GitHub. Creates private repo, uploads files, generates README, and adds MIT License with Commercial Restrictions. |
+| `open-sourceror` | Prepare Claude Code skills, agents, or collections for open-source sharing. Supports standalone repo creation or marketplace integration into existing plugin repos (e.g., robot-tools). |
 | `session-retrospective` | Iterative reflection skill for extracting actionable learnings from Claude Code sessions. Produces agent-ready context documents for future implementation. |
 
 ### Agents
@@ -46,6 +46,7 @@ Skills activate automatically via trigger phrases:
 **open-sourceror**:
 - `"prepare for open source"`, `"open source this skill"`
 - `"upload skill to github"`, `"share this agent"`
+- `"add to marketplace"`, `"add to robot-tools"`
 - `"create repo for skill"`, `"package for sharing"`
 
 **session-retrospective**:
@@ -65,6 +66,7 @@ Agents are invoked by Claude Code when their specialized capabilities match the 
 
 ```
 "Prepare this skill for open source sharing"
+"Add this skill to robot-tools research-toolkit"
 "Run a session retrospective on what we learned"
 "Review this Rust code for security issues"
 "Test if this sync operation is idempotent"

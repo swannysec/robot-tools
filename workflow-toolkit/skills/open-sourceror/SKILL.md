@@ -1,13 +1,13 @@
 ---
 name: open-sourceror
 description: |
-  Prepare Claude Code skills, agents, or mixed collections for open-source sharing on GitHub.
-  Creates private repo, uploads files, generates README with install instructions, and adds MIT License with Commercial Restrictions.
-  Does NOT change repo visibility—user handles that when ready.
+  Prepare Claude Code skills, agents, or collections for open-source sharing on GitHub.
+  Supports two modes: (1) Standalone repo creation, or (2) Marketplace integration into existing plugin repos.
 
   Use when:
   - "prepare for open source", "open source this skill"
   - "upload skill to github", "share this agent"
+  - "add to marketplace", "add to robot-tools"
   - "create repo for skill", "package for sharing"
   - User has a skill directory, agent file, or collection to share
 ---
@@ -16,7 +16,22 @@ description: |
 
 Prepare AI-related components (skills, agents, collections) for open-source sharing.
 
-## Workflow
+## Mode Selection
+
+Ask user which mode to use:
+
+| Mode | Use Case |
+|------|----------|
+| **Standalone** | Create new private repo for the component |
+| **Marketplace** | Add to existing multi-plugin repo (e.g., robot-tools) |
+
+Default to **Marketplace** if user mentions an existing repo name or "add to".
+
+---
+
+## Mode 1: Standalone Repository
+
+Create a new private repository for the component.
 
 ### 1. Gather Information
 
@@ -49,14 +64,9 @@ gh repo create {{REPO_NAME}} --private --description "{{DESCRIPTION}}"
 ### 4. Upload Files
 
 ```bash
-# Create temp directory
 cd /tmp && rm -rf {{REPO_NAME}}-upload
 mkdir {{REPO_NAME}}-upload && cd {{REPO_NAME}}-upload
-
-# Copy source files
 cp -r {{SOURCE_PATH}}/* .
-
-# Initialize and push
 git init -b main
 git remote add origin https://github.com/{{OWNER}}/{{REPO_NAME}}.git
 git add -A
@@ -68,12 +78,6 @@ git push -u origin main
 
 Select template from `references/readme-templates.md` based on component type.
 
-Extract from source files:
-- **Name/description**: From SKILL.md or agent frontmatter
-- **Features**: From skill modes, agent capabilities
-- **Triggers**: From frontmatter description or skill body
-- **Directory structure**: Generate with `find` command
-
 ### 6. Add LICENSE
 
 Copy `assets/LICENSE` template, replacing:
@@ -83,7 +87,6 @@ Copy `assets/LICENSE` template, replacing:
 ### 7. Push Documentation
 
 ```bash
-# Clone, add docs, push
 cd /tmp && rm -rf {{REPO_NAME}}-docs
 git clone https://github.com/{{OWNER}}/{{REPO_NAME}}.git {{REPO_NAME}}-docs
 cd {{REPO_NAME}}-docs
@@ -93,31 +96,174 @@ git commit -m "docs: Add README and LICENSE"
 git push
 ```
 
-### 8. Clean Up and Report
+### 8. Report
 
-```bash
-rm -rf /tmp/{{REPO_NAME}}-upload /tmp/{{REPO_NAME}}-docs
-```
-
-Report to user:
 ```
 ✅ Repository created: https://github.com/{{OWNER}}/{{REPO_NAME}}
 
 | Property | Value |
 |----------|-------|
 | Visibility | Private |
-| Default branch | main |
 | Files | {{FILE_COUNT}} |
 | README | ✓ |
 | LICENSE | MIT with Commercial Restriction |
 
-**Next step**: Change visibility to public when ready via GitHub settings or:
+**Next step**: Make public when ready:
 gh repo edit {{OWNER}}/{{REPO_NAME}} --visibility public
 ```
 
+---
+
+## Mode 2: Marketplace Integration
+
+Add component to an existing multi-plugin repository.
+
+### 1. Gather Information
+
+Ask user for:
+- **Source path**: Local path to skill directory or agent file
+- **Plugin repo**: GitHub repo URL or name (e.g., `swannysec/robot-tools`)
+- **Target toolkit**: Which toolkit to add to (e.g., `research-toolkit`, `workflow-toolkit`)
+
+If user has a default configured in `~/.config/open-sourceror/config.json`, use that:
+```json
+{
+  "default_plugin_repo": "swannysec/robot-tools",
+  "default_toolkit": null
+}
+```
+
+Detect automatically:
+- **Component type**: Skill or Agent
+- **Component name**: From directory name or frontmatter
+
+### 2. Validate Plugin Repo Structure
+
+```bash
+# Clone to temp
+cd /tmp && rm -rf {{REPO_NAME}}-marketplace
+gh repo clone {{PLUGIN_REPO}} {{REPO_NAME}}-marketplace
+cd {{REPO_NAME}}-marketplace
+```
+
+Verify structure:
+```bash
+# Must have marketplace.json
+test -f .claude-plugin/marketplace.json
+
+# Must have target toolkit
+test -d {{TARGET_TOOLKIT}}
+test -f {{TARGET_TOOLKIT}}/.claude-plugin/plugin.json
+```
+
+### 3. Determine Target Directory
+
+```
+If Skill (has SKILL.md) → {{TARGET_TOOLKIT}}/skills/{{COMPONENT_NAME}}/
+If Agent (.md file) → {{TARGET_TOOLKIT}}/agents/{{COMPONENT_NAME}}.md
+```
+
+### 4. Copy Component
+
+```bash
+# For skill
+cp -r {{SOURCE_PATH}} {{TARGET_TOOLKIT}}/skills/
+
+# For agent
+cp {{SOURCE_PATH}} {{TARGET_TOOLKIT}}/agents/
+```
+
+### 5. Update Toolkit README
+
+Read `{{TARGET_TOOLKIT}}/README.md` and add entry to appropriate table:
+
+**For Skills** - add to Skills table:
+```markdown
+| `{{SKILL_NAME}}` | {{DESCRIPTION}} |
+```
+
+**For Agents** - add to Agents table:
+```markdown
+| `{{AGENT_NAME}}` | {{DESCRIPTION}} |
+```
+
+Also add:
+- Trigger phrases to Usage section
+- Example command to Examples section
+- Any new requirements to Requirements section
+
+### 6. Create Branch and Commit
+
+```bash
+git checkout -b feat/{{COMPONENT_NAME}}
+git add {{TARGET_TOOLKIT}}/
+git commit -m "feat({{TARGET_TOOLKIT}}): add {{COMPONENT_NAME}} {{TYPE}}"
+git push -u origin feat/{{COMPONENT_NAME}}
+```
+
+### 7. Create Pull Request
+
+```bash
+gh pr create \
+  --title "feat({{TARGET_TOOLKIT}}): add {{COMPONENT_NAME}} {{TYPE}}" \
+  --body "## Summary
+
+Add \`{{COMPONENT_NAME}}\` {{TYPE}} to {{TARGET_TOOLKIT}}.
+
+{{DESCRIPTION}}
+
+## Files Added
+
+\`\`\`
+{{FILE_LIST}}
+\`\`\`
+
+## Test plan
+
+- [ ] Verify {{TYPE}} triggers on relevant phrases
+- [ ] Test {{TYPE}} functionality"
+```
+
+### 8. Clean Up and Report
+
+```bash
+rm -rf /tmp/{{REPO_NAME}}-marketplace
+```
+
+Report:
+```
+✅ Pull request created: {{PR_URL}}
+
+| Property | Value |
+|----------|-------|
+| Repository | {{PLUGIN_REPO}} |
+| Toolkit | {{TARGET_TOOLKIT}} |
+| Component | {{COMPONENT_NAME}} |
+| Type | {{TYPE}} |
+| Branch | feat/{{COMPONENT_NAME}} |
+
+**Next step**: Review and merge the PR.
+```
+
+---
+
+## Toolkit Selection Guide
+
+If user doesn't specify toolkit, suggest based on component purpose:
+
+| Component Purpose | Suggested Toolkit |
+|-------------------|-------------------|
+| Research, discovery, information gathering | `research-toolkit` |
+| Security analysis, vulnerability scanning | `security-toolkit` |
+| Code analysis, metrics, visualization | `code-analysis-toolkit` |
+| Workflow automation, productivity, sharing | `workflow-toolkit` |
+
+---
+
 ## Notes
 
-- Always create repos as **private**—user controls when to make public
-- Use HTTPS for git operations (works with gh auth)
-- Use `git init -b main` to avoid master→main rename
-- Verify push success before cleanup
+- Always create branches for marketplace mode—never push directly to main
+- Use conventional commit format: `feat(toolkit): add component-name type`
+- Standalone repos are created as **private**—user controls visibility
+- Verify target toolkit exists before proceeding
+- Extract description from frontmatter for README updates

@@ -9,6 +9,7 @@ AI/ML research and verification tools for software development.
 
 **Skills:**
 - `ai-dev-research` - Expert technical research on AI topics
+- `ai-twitter-radar` - Discover AI trends and news from Twitter/X using Bird CLI
 - `research-verification` - Pre-flight verification checklist for research tasks
 
 [View Documentation](./research-toolkit/README.md)
@@ -33,6 +34,7 @@ Codebase flow analysis, dependency visualization, and health scoring.
 Development workflow automation and productivity tools.
 
 **Skills:**
+- `open-sourceror` - Prepare skills/agents for open-source sharing or marketplace integration
 - `session-retrospective` - Extract learnings from Claude Code sessions
 
 **Agents:**

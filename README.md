@@ -33,6 +33,14 @@ Codebase flow analysis, dependency visualization, and health scoring.
 ### Workflow Toolkit
 Development workflow automation and productivity tools.
 
+**Commands:**
+- `/bootstrap-project` - Bootstrap new projects with Claude Code best practices
+- `/dep-check` - Check dependency health and security
+- `/git-branch-cleanup` - Clean up merged/stale branches
+- `/git-safe-commit` - Safe commit with validation
+- `/post-impl-review` - Post-implementation review
+- `/verify` - Full verification suite (typecheck, lint, test, audit)
+
 **Skills:**
 - `open-sourceror` - Prepare skills/agents for open-source sharing or marketplace integration
 - `session-retrospective` - Extract learnings from Claude Code sessions
@@ -93,6 +101,7 @@ robot-tools/
 │   └── skills/
 └── workflow-toolkit/              # Workflow automation tools
     ├── plugin.json
+    ├── commands/
     ├── skills/
     └── agents/
 ```

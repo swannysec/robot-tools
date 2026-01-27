@@ -4,6 +4,22 @@ Development workflow automation, review orchestration, and productivity tools fo
 
 ## Features
 
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/dep-check` | Check dependency health and security before adding to project |
+| `/git-branch-cleanup` | Clean up merged and stale git branches |
+| `/git-safe-commit` | Safe commit workflow with build/test validation |
+| `/post-impl-review` | Post-implementation review for completed features |
+| `/verify` | Run full verification suite (typecheck, lint, test, coverage, audit) before PR or release |
+
+### Deprecated (Reference Only)
+
+| Command | Description |
+|---------|-------------|
+| `/bootstrap-project` | ⚠️ Deprecated. Bootstrap a new project with Claude Code best practices. Retained for reference patterns only. |
+
 ### Skills
 
 | Skill | Description |
@@ -38,6 +54,18 @@ cc --plugin-dir ./workflow-toolkit
 ```
 
 ## Usage
+
+### Commands
+
+Commands are invoked with the `/` prefix:
+
+```
+/dep-check lodash                   # Check if lodash is safe to add
+/git-branch-cleanup                 # Clean up merged branches
+/git-safe-commit "feat: add login"  # Safe commit with validation
+/post-impl-review                   # Review completed implementation
+/verify                             # Run full verification suite
+```
 
 ### Skills
 

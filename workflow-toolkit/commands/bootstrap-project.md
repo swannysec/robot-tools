@@ -1,5 +1,6 @@
 ---
-description: Bootstrap a new project with Claude Code best practices - sets up context management, skills directory, and initial documentation
+description: "[DEPRECATED] Bootstrap a new project with Claude Code best practices - sets up context management, skills directory, and initial documentation"
+deprecated: true
 arguments:
   - name: name
     description: Project name
@@ -8,6 +9,10 @@ arguments:
     description: "Project type: 'web', 'api', 'library', or 'fullstack' (default: web)"
     required: false
 ---
+
+> **⚠️ DEPRECATED - FOR REFERENCE ONLY**
+>
+> This command is deprecated and retained for reference purposes only. Claude Code's built-in project initialization and the evolving plugin ecosystem have superseded this approach. Review this file for patterns and ideas, but do not rely on it for active use.
 
 # Bootstrap Project: $ARGUMENTS.name
 

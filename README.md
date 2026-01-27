@@ -34,7 +34,6 @@ Codebase flow analysis, dependency visualization, and health scoring.
 Development workflow automation and productivity tools.
 
 **Commands:**
-- `/bootstrap-project` - Bootstrap new projects with Claude Code best practices
 - `/dep-check` - Check dependency health and security
 - `/git-branch-cleanup` - Clean up merged/stale branches
 - `/git-safe-commit` - Safe commit with validation

@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "A collection of Claude Code plugins for research, security, code analysis, and workflow automation",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "plugins": [
     {
@@ -34,7 +34,7 @@
       "name": "workflow-toolkit",
       "source": "./workflow-toolkit",
       "description": "Development workflow automation, review orchestration, and productivity tools",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "license": "MIT License with Commercial Restriction"
     }
   ]

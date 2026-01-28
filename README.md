@@ -19,6 +19,7 @@ Security investigation and analysis tools.
 
 **Skills:**
 - `secret-scanning-investigator` - Investigate GitHub secret scanning alerts with evidence-based analysis
+- `security-vuln-analyzer` - Multi-agent vulnerability analysis with CVSS scoring and fix recommendations
 
 [View Documentation](./security-toolkit/README.md)
 

@@ -18,6 +18,9 @@
     "automation",
     "commands",
     "git",
-    "verification"
+    "verification",
+    "security",
+    "supply-chain",
+    "skill-scanning"
   ]
 }

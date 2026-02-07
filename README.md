@@ -43,6 +43,7 @@ Development workflow automation and productivity tools.
 
 **Skills:**
 - `open-sourceror` - Prepare skills/agents for open-source sharing or marketplace integration
+- `safe-skill-install` - Supply chain security scanning for skill installations via Cisco skill-scanner
 - `session-retrospective` - Extract learnings from Claude Code sessions
 
 **Agents:**

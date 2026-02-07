@@ -1,5 +1,7 @@
 # Claude Code local settings
 .claude/*.local.md
+.claude/memory/
+.claude/settings.local.json
 
 # Node modules (if any MCP servers use them)
 node_modules/
@@ -23,3 +25,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Test fixtures and artifacts
+test-fixtures/
+test-output/

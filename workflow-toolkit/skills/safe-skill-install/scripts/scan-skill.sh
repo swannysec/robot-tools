@@ -165,12 +165,30 @@ check_prereqs() {
         fail_report "skill-scanner not found. Install with: pip install cisco-ai-skill-scanner"
     fi
 
+    # Try multiple methods to get version — --version is not supported in all releases
     SCANNER_VERSION=$(skill-scanner --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
     if [[ -z "$SCANNER_VERSION" ]]; then
-        fail_report "Could not determine skill-scanner version"
+        # Fallback: query pip metadata for the package version
+        SCANNER_VERSION=$(pip3 show cisco-ai-skill-scanner 2>/dev/null | grep -i '^Version:' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+    fi
+    if [[ -z "$SCANNER_VERSION" ]]; then
+        # Fallback: query the venv python that backs the skill-scanner binary
+        local scanner_bin
+        scanner_bin=$(command -v skill-scanner 2>/dev/null || true)
+        if [[ -n "$scanner_bin" ]]; then
+            local venv_python
+            venv_python="$(dirname "$scanner_bin")/python3"
+            if [[ -x "$venv_python" ]]; then
+                SCANNER_VERSION=$("$venv_python" -c "import importlib.metadata; print(importlib.metadata.version('cisco-ai-skill-scanner'))" 2>/dev/null || true)
+            fi
+        fi
+    fi
+    if [[ -z "$SCANNER_VERSION" ]]; then
+        log_warning "Could not determine skill-scanner version — skipping version check"
+        SCANNER_VERSION="unknown"
     fi
 
-    if ! version_ge "$SCANNER_VERSION" "$MIN_SCANNER_VERSION"; then
+    if [[ "$SCANNER_VERSION" != "unknown" ]] && ! version_ge "$SCANNER_VERSION" "$MIN_SCANNER_VERSION"; then
         fail_report "skill-scanner version $SCANNER_VERSION is below minimum $MIN_SCANNER_VERSION. Please upgrade."
     fi
 

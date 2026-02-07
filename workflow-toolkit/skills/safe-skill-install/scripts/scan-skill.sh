@@ -18,13 +18,31 @@
 #   scan-skill.sh --check-prereqs
 #
 # Output: JSON report written to stdout (structured, machine-parseable)
+#
+# Runtime requirements:
+#   - bash 3.2+ (macOS default or newer)
+#   - git 2.45.1+ (CVE-2024-32002 mitigation)
+#   - python3 (for JSON parsing and scanner metadata)
+#   - skill-scanner (cisco-ai-skill-scanner) via pip/pipx
+#   - gh CLI (GitHub API calls; archive downloads fall back to curl)
+#   - curl (HTTPS archive downloads)
+#   - BSD or GNU tar with --strip-components support (macOS 10.6+)
+#   - BSD or GNU grep with -I (skip binary) and -r (recursive) flags
+#   - BSD or GNU find with -size (byte suffix 'c' used for portability)
 
 set -euo pipefail
+
+# --- Bash version gate ---
+if [[ "${BASH_VERSINFO[0]}" -lt 3 || ( "${BASH_VERSINFO[0]}" -eq 3 && "${BASH_VERSINFO[1]}" -lt 2 ) ]]; then
+    echo '{"assessment":"FAILED","errors":["bash 3.2+ required. Current: '"$BASH_VERSION"'"]}' >&2
+    exit 3
+fi
 
 # --- Constants ---
 readonly MIN_GIT_VERSION="2.45.1"
 readonly MIN_SCANNER_VERSION="0.1.0"
 readonly SCAN_TIMEOUT=120
+readonly API_TIMEOUT=15
 readonly MAX_FILE_SIZE=$((5 * 1024 * 1024))  # 5MB
 readonly SKILL_NAME_REGEX='^[a-zA-Z0-9_-]+(/[a-zA-Z0-9_-]+)*(@[a-zA-Z0-9._-]+)?$'
 readonly OWNER_REPO_REGEX='^[a-zA-Z0-9._-]+$'
@@ -53,7 +71,10 @@ ERRORS=()
 # --- Cleanup ---
 cleanup() {
     if [[ -n "$SCAN_DIR" && "$IS_LOCAL" == "false" && -d "$SCAN_DIR" ]]; then
-        rm -rf "$SCAN_DIR"
+        # Safety: only delete directories matching our temp naming pattern
+        case "$SCAN_DIR" in
+            */skill-scan-*) rm -rf -- "$SCAN_DIR" ;;
+        esac
     fi
 }
 trap cleanup EXIT
@@ -96,6 +117,35 @@ json_escape() {
     printf '%s' "$s"
 }
 
+run_with_timeout() {
+    # Portable bash timeout wrapper (macOS lacks GNU coreutils `timeout`).
+    # Usage: run_with_timeout <seconds> <command> [args...]
+    # Returns: command exit code, or 143 on timeout.
+    local timeout_secs="$1"; shift
+
+    "$@" &
+    local cmd_pid=$!
+
+    (
+        trap 'exit 0' TERM INT
+        sleep "$timeout_secs"
+        if kill -0 "$cmd_pid" 2>/dev/null; then
+            kill "$cmd_pid" 2>/dev/null
+        fi
+    ) &
+    local wd_pid=$!
+
+    local exit_code=0
+    wait "$cmd_pid" 2>/dev/null || exit_code=$?
+
+    if kill -0 "$wd_pid" 2>/dev/null; then
+        kill "$wd_pid" 2>/dev/null
+    fi
+    wait "$wd_pid" 2>/dev/null || true
+
+    return "$exit_code"
+}
+
 emit_report() {
     # Emit structured JSON report to stdout
     local scanner_stderr=""
@@ -104,9 +154,9 @@ emit_report() {
     fi
 
     local warnings_json="[]"
-    if (( ${#WARNINGS[@]} > 0 )); then
+    if [[ "${#WARNINGS[@]}" -gt 0 ]]; then
         warnings_json="["
-        local first=true
+        local first=true w
         for w in "${WARNINGS[@]}"; do
             if $first; then first=false; else warnings_json+=","; fi
             warnings_json+="\"$(json_escape "$w")\""
@@ -115,9 +165,9 @@ emit_report() {
     fi
 
     local errors_json="[]"
-    if (( ${#ERRORS[@]} > 0 )); then
+    if [[ "${#ERRORS[@]}" -gt 0 ]]; then
         errors_json="["
-        local first=true
+        local first=true e
         for e in "${ERRORS[@]}"; do
             if $first; then first=false; else errors_json+=","; fi
             errors_json+="\"$(json_escape "$e")\""
@@ -192,6 +242,11 @@ check_prereqs() {
         fail_report "skill-scanner version $SCANNER_VERSION is below minimum $MIN_SCANNER_VERSION. Please upgrade."
     fi
 
+    # Check python3
+    if ! command -v python3 &>/dev/null; then
+        fail_report "python3 not found. Python 3 is required for JSON parsing."
+    fi
+
     # Check git
     local git_version
     git_version=$(git --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
@@ -239,31 +294,50 @@ resolve_github_url() {
     validate_owner_repo "$owner"
     validate_owner_repo "$repo"
 
-    # Resolve default branch
-    local branch
-    branch=$(gh api "repos/${owner}/${repo}" --jq '.default_branch' 2>/dev/null) || {
+    # Resolve default branch (with API_TIMEOUT guard)
+    local branch api_out="$SCAN_DIR/.api-out.tmp"
+    if ! run_with_timeout "$API_TIMEOUT" gh api "repos/${owner}/${repo}" --jq '.default_branch' >"$api_out" 2>/dev/null; then
         # Check if it's a 404/403 (private repo)
         local http_status
-        http_status=$(gh api "repos/${owner}/${repo}" 2>&1 | grep -oE 'HTTP [0-9]+' | grep -oE '[0-9]+' || echo "unknown")
+        run_with_timeout "$API_TIMEOUT" gh api "repos/${owner}/${repo}" >"$api_out" 2>&1 || true
+        http_status=$(grep -oE 'HTTP [0-9]+' "$api_out" 2>/dev/null | grep -oE '[0-9]+' || echo "unknown")
+        rm -f "$api_out"
         if [[ "$http_status" == "404" || "$http_status" == "403" ]]; then
             fail_report "Repository not accessible (HTTP $http_status). This may be a private repo. Clone locally and use --local."
         fi
-        fail_report "Could not resolve repository: $url"
-    }
+        fail_report "Could not resolve repository (API timeout or error): $url"
+    fi
+    branch=$(cat "$api_out" 2>/dev/null)
+    rm -f "$api_out"
+    if [[ -z "$branch" ]]; then
+        fail_report "Could not resolve default branch for: $url"
+    fi
 
     validate_branch "$branch"
 
-    echo "${owner}|${repo}|${branch}"
+    # Write to fd 3 (not stdout) so fail_report's stdout isn't captured
+    printf '%s' "${owner}|${repo}|${branch}" >&3
 }
 
 # --- Download methods ---
 download_github_archive() {
     local owner="$1" repo="$2" branch="$3"
 
-    # Capture commit SHA first (TOCTOU protection)
-    COMMIT_SHA=$(gh api "repos/${owner}/${repo}/commits/${branch}" --jq '.sha' 2>/dev/null) || {
-        fail_report "Could not resolve commit SHA for ${owner}/${repo}@${branch}"
-    }
+    # Capture commit SHA first (TOCTOU protection, with API_TIMEOUT guard)
+    local sha_out="$SCAN_DIR/.api-out.tmp"
+    if ! run_with_timeout "$API_TIMEOUT" gh api "repos/${owner}/${repo}/commits/${branch}" --jq '.sha' >"$sha_out" 2>/dev/null; then
+        rm -f "$sha_out"
+        fail_report "Could not resolve commit SHA for ${owner}/${repo}@${branch} (API timeout or error)"
+    fi
+    COMMIT_SHA=$(cat "$sha_out" 2>/dev/null)
+    rm -f "$sha_out"
+    if [[ -z "$COMMIT_SHA" ]]; then
+        fail_report "Empty commit SHA returned for ${owner}/${repo}@${branch}"
+    fi
+    # Validate SHA format (40-char hex for SHA-1, or 64-char for SHA-256)
+    if [[ ! "$COMMIT_SHA" =~ ^[0-9a-f]{40,64}$ ]]; then
+        fail_report "Invalid commit SHA format: $(printf '%s' "$COMMIT_SHA" | head -c 80)"
+    fi
 
     # Download archive to file (curl -f fails on HTTP errors)
     local archive_file="$SCAN_DIR/archive.tar.gz"
@@ -274,8 +348,14 @@ download_github_archive() {
         return
     fi
 
-    # Extract safely
-    if ! tar xzf "$archive_file" -C "$SCAN_DIR" --strip-components=1 --no-same-owner --no-absolute-names 2>/dev/null; then
+    # Extract safely. BSD tar strips absolute paths and ignores ownership by
+    # default when non-root. GNU tar (e.g. in Docker) needs explicit flags.
+    local tar_extra_flags=""
+    if tar --version 2>/dev/null | grep -q 'GNU tar'; then
+        tar_extra_flags="--no-same-owner --no-absolute-names"
+    fi
+    # shellcheck disable=SC2086 — intentional word-splitting of tar_extra_flags
+    if ! tar xzf "$archive_file" -C "$SCAN_DIR" --strip-components=1 $tar_extra_flags 2>/dev/null; then
         rm -f "$archive_file"
         fail_report "Archive extraction failed — tar returned non-zero"
     fi
@@ -309,10 +389,11 @@ download_hardened_clone() {
 
     COMMIT_SHA=$(git -C "$SCAN_DIR/repo" rev-parse HEAD 2>/dev/null || echo "unknown")
 
-    # Move contents out of repo/ subdirectory
-    shopt -s dotglob
-    mv "$SCAN_DIR/repo"/* "$SCAN_DIR/" 2>/dev/null || true
-    shopt -u dotglob
+    # Move contents out of repo/ subdirectory (subshell isolates dotglob)
+    (
+        shopt -s dotglob
+        mv "$SCAN_DIR/repo"/* "$SCAN_DIR/" 2>/dev/null || true
+    )
     rm -rf "$SCAN_DIR/repo"
 }
 
@@ -335,7 +416,7 @@ harden_download() {
 
     # Flag large files
     local large_files
-    large_files=$(find "$SCAN_DIR" -type f -size +5M 2>/dev/null || true)
+    large_files=$(find "$SCAN_DIR" -type f -size +5242880c 2>/dev/null || true)
     if [[ -n "$large_files" ]]; then
         LARGE_FILES_FLAGGED=$(echo "$large_files" | wc -l | tr -d ' ')
         log_warning "Found $LARGE_FILES_FLAGGED file(s) over 5MB — unusual for skill content"
@@ -348,14 +429,36 @@ run_scanner() {
     local scanner_output
     local scanner_exit_code
 
-    # Run scanner with timeout, separating stdout from stderr
+    # Run scanner with timeout, separating stdout from stderr.
+    # Pure bash timeout (macOS lacks GNU coreutils `timeout`).
     scanner_exit_code=0
-    timeout "$SCAN_TIMEOUT" skill-scanner scan "$scan_path" --format json --use-behavioral \
+    skill-scanner scan "$scan_path" --format json --use-behavioral \
         >"$SCAN_DIR/.scan-output.json" \
-        2>"$SCAN_DIR/.scan-stderr.log" || scanner_exit_code=$?
+        2>"$SCAN_DIR/.scan-stderr.log" &
+    local scanner_pid=$!
 
-    # Check for timeout (exit code 124)
-    if [[ "$scanner_exit_code" -eq 124 ]]; then
+    # Background watchdog: kill scanner if it exceeds SCAN_TIMEOUT
+    (
+        trap 'exit 0' TERM INT
+        sleep "$SCAN_TIMEOUT"
+        # Guard against PID reuse: only kill if process still exists
+        if kill -0 "$scanner_pid" 2>/dev/null; then
+            kill "$scanner_pid" 2>/dev/null
+        fi
+    ) &
+    local watchdog_pid=$!
+
+    # Wait for scanner to finish (returns its exit code)
+    wait "$scanner_pid" 2>/dev/null || scanner_exit_code=$?
+
+    # Clean up watchdog if scanner finished before timeout
+    if kill -0 "$watchdog_pid" 2>/dev/null; then
+        kill "$watchdog_pid" 2>/dev/null
+    fi
+    wait "$watchdog_pid" 2>/dev/null || true
+
+    # Check for timeout (killed by signal = 128+signal; SIGTERM=15 -> 143)
+    if [[ "$scanner_exit_code" -eq 143 ]]; then
         fail_report "Scanner timed out after ${SCAN_TIMEOUT}s — BLOCKED"
     fi
 
@@ -506,7 +609,8 @@ run_supplementary_analysis() {
 
     # 2d. Decode/reverse patterns (rev, xxd -r, ROT13 via tr)
     local decode_files
-    decode_files=$(grep -rloIE '\brev\b.*\||\|\s*\brev\b|xxd\s+-r|\btr\b.*A-Za-z.*N-ZA-Mn-za-m' "$scan_path" \
+    # Note: Uses [[:space:]] (not \s) and explicit word boundaries (not \b) for BSD grep ERE compatibility
+    decode_files=$(grep -rloIE '(^|[^[:alnum:]_])rev([^[:alnum:]_]|$).*\||\|[[:space:]]*(^|[^[:alnum:]_])rev([^[:alnum:]_]|$)|xxd[[:space:]]+-r|(^|[^[:alnum:]_])tr([^[:alnum:]_]).*A-Za-z.*N-ZA-Mn-za-m' "$scan_path" \
         --include='*.sh' --include='*.py' 2>/dev/null || true)
     if [[ -n "$decode_files" ]]; then
         local count
@@ -528,7 +632,8 @@ run_supplementary_analysis() {
 
     # 3b. Shell execution from non-shell files (sh -c, bash -c, /bin/sh, source <())
     local shell_exec_files
-    shell_exec_files=$(grep -rloIE 'bash\s+-c|sh\s+-c|/bin/sh|source\s+<\(' "$scan_path" \
+    # Note: Uses [[:space:]] (not \s) for BSD grep ERE compatibility
+    shell_exec_files=$(grep -rloIE 'bash[[:space:]]+-c|sh[[:space:]]+-c|/bin/sh|source[[:space:]]+<\(' "$scan_path" \
         --include='*.py' --include='*.js' --include='*.ts' \
         --include='*.yaml' --include='*.yml' --include='*.md' --include='*.json' 2>/dev/null || true)
     if [[ -n "$shell_exec_files" ]]; then
@@ -715,7 +820,8 @@ main() {
         COMMIT_SHA="local"
     else
         # Create secure temp directory
-        SCAN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/skill-scan-XXXXXXXX")
+        SCAN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/skill-scan-XXXXXXXX") || fail_report "Failed to create temporary directory"
+        [[ -n "$SCAN_DIR" ]] || fail_report "mktemp returned empty path"
         chmod 700 "$SCAN_DIR"
 
         SOURCE_URL="$source"
@@ -725,11 +831,15 @@ main() {
             fail_report "Only HTTPS source URLs are supported. Got: $(echo "$source" | head -c 60)"
         fi
 
-        # Resolve and download based on source type
+        # Resolve and download based on source type.
+        # resolve_github_url writes its result to fd 3 (not stdout) so that
+        # fail_report's JSON output reaches the terminal instead of being captured.
         if [[ "$source" =~ github\.com ]]; then
-            local resolved
-            resolved=$(resolve_github_url "$source")
-            local owner repo branch
+            local resolve_out="$SCAN_DIR/.resolve-out.tmp"
+            resolve_github_url "$source" 3>"$resolve_out"
+            local resolved owner repo branch
+            resolved=$(cat "$resolve_out")
+            rm -f "$resolve_out"
             IFS='|' read -r owner repo branch <<< "$resolved"
             download_github_archive "$owner" "$repo" "$branch"
         else

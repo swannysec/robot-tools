@@ -35,12 +35,12 @@ ARCHIVE_FILE="$SCAN_DIR/archive.tar.gz"
 curl -fsSL "https://github.com/{owner}/{repo}/archive/${COMMIT_SHA}.tar.gz" \
   -o "$ARCHIVE_FILE"
 
-# 4. Extract safely (--no-absolute-names prevents path traversal via absolute paths in tar)
-tar xzf "$ARCHIVE_FILE" -C "$SCAN_DIR" --strip-components=1 --no-same-owner --no-absolute-names
+# 4. Extract safely (BSD tar strips absolute paths by default; --strip-components is POSIX)
+tar xzf "$ARCHIVE_FILE" -C "$SCAN_DIR" --strip-components=1
 rm -f "$ARCHIVE_FILE"
 ```
 
-The branch name is validated first (API-returned `default_branch` could be attacker-controlled for a crafted repo). The SHA is captured, then the archive is downloaded at that exact SHA. `curl -f` ensures HTTP errors are not silently swallowed. `--no-absolute-names` prevents tar entries with absolute paths from writing outside the target directory.
+The branch name is validated first (API-returned `default_branch` could be attacker-controlled for a crafted repo). The SHA is captured, then the archive is downloaded at that exact SHA. `curl -f` ensures HTTP errors are not silently swallowed. BSD tar (macOS default) strips absolute paths by default; GNU tar requires `--no-absolute-names` but we avoid GNU-specific flags for portability.
 
 ### When It's Available
 

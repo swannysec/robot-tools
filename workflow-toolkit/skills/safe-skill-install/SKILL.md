@@ -283,8 +283,8 @@ ARCHIVE_FILE="$SCAN_DIR/archive.tar.gz"
 curl -fsSL "https://github.com/{owner}/{repo}/archive/${COMMIT_SHA}.tar.gz" \
   -o "$ARCHIVE_FILE"
 
-# Validate archive and extract safely (--no-absolute-names prevents path traversal)
-tar xzf "$ARCHIVE_FILE" -C "$SCAN_DIR" --strip-components=1 --no-same-owner --no-absolute-names
+# Extract safely (BSD tar strips absolute paths and ignores ownership by default)
+tar xzf "$ARCHIVE_FILE" -C "$SCAN_DIR" --strip-components=1
 rm -f "$ARCHIVE_FILE"
 ```
 

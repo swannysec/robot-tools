@@ -193,6 +193,7 @@ emit_report() {
   "files_scanned": $FILES_SCANNED,
   "symlinks_removed": $SYMLINKS_REMOVED,
   "large_files_flagged": $LARGE_FILES_FLAGGED,
+  "scanner_raw_output_path": "$(json_escape "$SCAN_DIR/.scan-output.json")",
   "scanner_stderr": "$(json_escape "$scanner_stderr")",
   "warnings": $warnings_json,
   "errors": $errors_json,

@@ -11,11 +11,10 @@ allowed-tools:
   - Bash(npx skills find *)
   - Bash(npx skills add *)
   - Bash(npx skills remove *)
-  - Bash(cp -r /tmp/skill-scan-* ~/.claude/skills/*)
-  - Bash(cp -r ${TMPDIR}*/skill-scan-* ~/.claude/skills/*)
+  - Bash(cp -r */skill-scan-* ~/.claude/skills/*)
   - Bash(mkdir -p ~/.claude/skills/*)
   - Bash(mkdir -p ~/.claude/skill-scan-history)
-  - Bash(rm -rf /tmp/skill-scan-*)
+  - Bash(rm -rf */skill-scan-*)
   - Bash(jq * ~/.claude/skill-scan-history/scan-log.jsonl)
 triggers:
   - "install skill safely"
@@ -77,10 +76,8 @@ The agent's role is strictly to:
 
 Run the wrapper script's prerequisite check:
 ```bash
-~/.claude/skills/safe-skill-install/scripts/scan-skill.sh --check-prereqs
+${CLAUDE_PLUGIN_ROOT}/skills/safe-skill-install/scripts/scan-skill.sh --check-prereqs
 ```
-
-If the wrapper is not found at the expected path, locate it relative to this SKILL.md file's directory (in `scripts/scan-skill.sh`).
 
 If the wrapper returns a FAILED report, present the error to the user and stop. The detailed prerequisite requirements are documented below for reference.
 
@@ -236,12 +233,12 @@ Do not attempt to use GitHub tokens for private repo access (security boundary).
 
 ```bash
 # For remote sources (GitHub URL, git URL):
-~/.claude/skills/safe-skill-install/scripts/scan-skill.sh \
+${CLAUDE_PLUGIN_ROOT}/skills/safe-skill-install/scripts/scan-skill.sh \
   --source "https://github.com/{owner}/{repo}" \
   --mode "{manual|auto-install|secure}"
 
 # For local paths:
-~/.claude/skills/safe-skill-install/scripts/scan-skill.sh \
+${CLAUDE_PLUGIN_ROOT}/skills/safe-skill-install/scripts/scan-skill.sh \
   --local "/path/to/skill" \
   --mode "{manual|auto-install|secure}"
 ```

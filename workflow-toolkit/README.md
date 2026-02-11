@@ -25,6 +25,7 @@ Development workflow automation, review orchestration, and productivity tools fo
 | Skill | Description |
 |-------|-------------|
 | `open-sourceror` | Prepare Claude Code skills, agents, or collections for open-source sharing. Supports standalone repo creation or marketplace integration into existing plugin repos (e.g., robot-tools). |
+| `phased-review` | Multi-stage implementation review with parallel sub-agents, severity-based autonomous fixes, and gated test verification. Runs code quality, architecture, simplicity, documentation, and security reviews in sequence. Supports scope modes: full, code-only, security, simplicity, docs. |
 | `safe-skill-install` | Supply chain security scanning for skill installations. Wraps Cisco skill-scanner to vet skills before installation with static + behavioral analysis. Supports MANUAL (default), AUTO-INSTALL, and SECURE modes. **Note:** AUTO-INSTALL mode is off by default — scanner evasion is possible for non-Python files where only static YARA patterns apply. Use SECURE mode for high-security environments. |
 | `session-retrospective` | Iterative reflection skill for extracting actionable learnings from Claude Code sessions. Produces agent-ready context documents for future implementation. |
 
@@ -78,6 +79,11 @@ Skills activate automatically via trigger phrases:
 - `"add to marketplace"`, `"add to robot-tools"`
 - `"create repo for skill"`, `"package for sharing"`
 
+**phased-review**:
+- `"phased review"`, `"run review"`
+- `"validate implementation"`, `"pre-release review"`
+- `"full review"`, `"security review"`, `"simplicity review"`, `"docs review"`
+
 **safe-skill-install**:
 - `"install skill safely"`, `"safe install"`
 - `"scan skill"`, `"vet this skill"`
@@ -99,6 +105,8 @@ Agents are invoked by Claude Code when their specialized capabilities match the 
 ### Example Commands
 
 ```
+"Run a phased review in full mode"
+"Run a code-only review before I open the PR"
 "Prepare this skill for open source sharing"
 "Add this skill to robot-tools research-toolkit"
 "Safely install skill from https://github.com/org/skill-repo"

@@ -22,6 +22,7 @@
     "security",
     "supply-chain",
     "skill-scanning",
-    "phased-review"
+    "phased-review",
+    "plugin-qa"
   ]
 }

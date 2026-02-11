@@ -1,16 +1,18 @@
+---
+name: secret-scanning-investigator
+description: |
+  Investigate GitHub secret scanning alerts to trace provenance, gather context,
+  assess risk, and produce a structured report for security professionals.
+  Handles one or more alerts in a single investigation using only open-source tools.
+triggers:
+  - "investigate secret scanning alert"
+  - "analyze leaked secret"
+  - "trace secret provenance"
+  - "secret scanning report"
+  - "investigate secret scanning alerts"
+---
+
 # Secret Scanning Alert Investigator
-
-## Purpose
-
-Investigate GitHub secret scanning alerts to trace provenance, gather context, assess risk, and produce a structured report for security professionals. This skill handles one or more alerts in a single investigation using only open-source tools.
-
-## Trigger Phrases
-
-- "investigate secret scanning alert"
-- "analyze leaked secret"
-- "trace secret provenance"
-- "secret scanning report"
-- "investigate secret scanning alerts" (batch)
 
 ---
 

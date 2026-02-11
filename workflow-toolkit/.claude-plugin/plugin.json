@@ -1,6 +1,6 @@
 {
   "name": "workflow-toolkit",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Development workflow automation, review orchestration, and productivity tools",
   "author": {
     "name": "swannysec",
@@ -21,6 +21,7 @@
     "verification",
     "security",
     "supply-chain",
-    "skill-scanning"
+    "skill-scanning",
+    "phased-review"
   ]
 }

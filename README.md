@@ -46,6 +46,7 @@ Development workflow automation and productivity tools.
 - `phased-review` - Multi-stage implementation review with parallel sub-agents, test gates, and scope modes
 - `safe-skill-install` - Supply chain security scanning for skill installations via Cisco skill-scanner
 - `session-retrospective` - Extract learnings from Claude Code sessions
+- `plugin-qa` - Validate plugin manifests, READMEs, versions, and cross-references; guided release prep with version bumping
 
 **Agents:**
 - `code-reviewer` - Staff-level Rust code review specialist

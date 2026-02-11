@@ -28,6 +28,7 @@ Development workflow automation, review orchestration, and productivity tools fo
 | `phased-review` | Multi-stage implementation review with parallel sub-agents, severity-based autonomous fixes, and gated test verification. Runs code quality, architecture, simplicity, documentation, and security reviews in sequence. Supports scope modes: full, code-only, security, simplicity, docs. |
 | `safe-skill-install` | Supply chain security scanning for skill installations. Wraps Cisco skill-scanner to vet skills before installation with static + behavioral analysis. Supports MANUAL (default), AUTO-INSTALL, and SECURE modes. **Note:** AUTO-INSTALL mode is off by default — scanner evasion is possible for non-Python files where only static YARA patterns apply. Use SECURE mode for high-security environments. |
 | `session-retrospective` | Iterative reflection skill for extracting actionable learnings from Claude Code sessions. Produces agent-ready context documents for future implementation. |
+| `plugin-qa` | Validates plugin manifests, README cross-references, SKILL.md frontmatter, version sync, and keyword coverage. Two modes: validate (check and report) and release-prep (validate + version bump workflow). |
 
 ### Agents
 
@@ -93,6 +94,10 @@ Skills activate automatically via trigger phrases:
 - `"session retrospective"`, `"retro"`
 - `"what did we learn"`, `"lessons learned"`
 
+**plugin-qa**:
+- `"plugin qa"`, `"validate plugins"`, `"lint plugins"`
+- `"prepare release"`, `"bump version"`, `"release prep"`
+
 ### Agents
 
 Agents are invoked by Claude Code when their specialized capabilities match the task:
@@ -116,6 +121,8 @@ Agents are invoked by Claude Code when their specialized capabilities match the 
 "Test if this sync operation is idempotent"
 "Generate ops documentation for the deployment process"
 "Orchestrate a comprehensive review of this PR"
+"Run plugin QA to check consistency"
+"Prepare a release for workflow-toolkit"
 ```
 
 ## Security: safe-skill-install Threat Model

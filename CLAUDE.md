@@ -20,7 +20,7 @@ robot-tools/
 ├── LICENSE
 ├── .gitignore
 ├── .claude-plugin/
-│   └── marketplace.json                       # Marketplace manifest (version mirror)
+│   └── marketplace.json                       # Marketplace manifest (plugin registry)
 ├── .claude/
 │   └── memory/                                # Session memory (gitignored)
 │       └── decisions/                         # ADRs (ADR-001 through ADR-004)
@@ -102,19 +102,22 @@ When adding a skill, agent, or command to any toolkit:
 
 ## Versioning Protocol
 
-Version numbers are spread across five JSON files (nine values total):
+Each toolkit's version lives in one place only:
 
 | File | JSON Path | Role |
 |------|-----------|------|
 | `<toolkit>/.claude-plugin/plugin.json` | `version` | **Source of truth** per toolkit |
-| `.claude-plugin/marketplace.json` | `plugins[i].version` | Must mirror the corresponding `plugin.json` |
-| `.claude-plugin/marketplace.json` | `metadata.version` | Must equal the **max** of all plugin versions |
+
+The marketplace manifest (`.claude-plugin/marketplace.json`) does **not** contain version
+fields. Per Claude Code docs, versions belong only in each plugin's `plugin.json`. The
+marketplace lists plugins by name and source path; Claude Code reads version info directly
+from each plugin's manifest.
 
 **Semver rules:**
 - `feat:` commit → bump **minor** (e.g., 0.4.0 → 0.5.0)
 - `fix:` commit → bump **patch** (e.g., 0.4.0 → 0.4.1)
 
-**Git tags:** `vX.Y.Z` matching `metadata.version` after merge to main.
+**Git tags:** `vX.Y.Z` — repo-level release tags, incremented on each release regardless of which plugin changed.
 
 Use the `plugin-qa` skill in release-prep mode to automate version bumping and validation.
 

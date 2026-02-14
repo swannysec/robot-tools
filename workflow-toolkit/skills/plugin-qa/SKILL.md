@@ -130,34 +130,19 @@ Same deprecation exception as Step 4 applies.
 
 ### Step 6 — Version Consistency
 
-Read all version files and check consistency:
+Each toolkit's version lives solely in its `plugin.json`. The marketplace manifest
+(`marketplace.json`) does not contain version fields — per Claude Code docs, versions
+belong only in each plugin's own manifest.
 
-```
-Version File Map (match by name, not by array index)
-─────────────────────────────────────────────────────────────────────────
-Source of truth                                   Mirror location
-<toolkit>/.claude-plugin/plugin.json → version    marketplace.json → plugins[] entry where name = <toolkit> → version
-                                                  marketplace.json → metadata.version = max of all plugin versions
-─────────────────────────────────────────────────────────────────────────
-
-Current layout (for reference — indices may change if plugins are reordered):
-  plugins[0] = research-toolkit      (0.1.0)
-  plugins[1] = security-toolkit      (0.1.0)
-  plugins[2] = code-analysis-toolkit (0.1.0)
-  plugins[3] = workflow-toolkit      (0.4.0)
-```
-
-**Matching rule:** For each toolkit, find the entry in `marketplace.json` `plugins[]` array where `name` matches the toolkit name. Compare its `version` to the corresponding `plugin.json` `version`. Do NOT rely on array position.
-
-Checks:
+Read each toolkit's `<toolkit>/.claude-plugin/plugin.json` and validate:
 
 | Check | Severity |
 |-------|----------|
-| Each `plugin.json` `version` matches its corresponding entry (by name) in `marketplace.json` `plugins[]` | FAIL |
-| `metadata.version` equals the **maximum** of all `plugins[].version` values | FAIL |
+| `version` field exists in each `plugin.json` | FAIL |
 | All versions match strict semver: `^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$` with no pre-release, no build metadata, max 999 per component | FAIL |
+| `marketplace.json` does NOT contain `version` fields in `metadata` or `plugins[]` entries | WARN |
 
-Display a version table showing each file, its current value, and pass/fail status.
+Display a version table showing each toolkit and its current version.
 
 ### Step 7 — Keyword Coverage
 
@@ -223,19 +208,14 @@ git branch --show-current
 
 ### Step 10 — Display Current Versions
 
-Display a table of all version files with their current values:
+Display a table of each toolkit's current version from its `plugin.json`:
 
 ```
-File                                              Current Version
-.claude-plugin/marketplace.json → metadata        0.4.0
-.claude-plugin/marketplace.json → research        0.1.0
-.claude-plugin/marketplace.json → security        0.1.0
-.claude-plugin/marketplace.json → code-analysis   0.1.0
-.claude-plugin/marketplace.json → workflow         0.4.0
-research-toolkit/plugin.json                      0.1.0
-security-toolkit/plugin.json                      0.1.0
-code-analysis-toolkit/plugin.json                 0.1.0
-workflow-toolkit/plugin.json                      0.4.0
+Toolkit                                           Current Version
+research-toolkit                                  0.2.0
+security-toolkit                                  0.1.1
+code-analysis-toolkit                             0.1.0
+workflow-toolkit                                  0.5.1
 ```
 
 ### Step 11 — Determine Version Bumps
@@ -262,7 +242,7 @@ Present the proposal and ask the user to confirm or adjust:
 
 > "Based on the commit history, I recommend bumping [toolkit] by [minor/patch]. Which toolkit(s) changed, and is this correct?"
 
-Compute the new version for each selected toolkit. Compute the new `metadata.version` as the max of all plugin versions after bumping.
+Compute the new version for each selected toolkit.
 
 Display the proposed changes and ask for confirmation:
 
@@ -270,7 +250,6 @@ Display the proposed changes and ask for confirmation:
 Proposed Version Changes
 ────────────────────────────
 workflow-toolkit:  0.4.0 → 0.5.0  (minor — feat)
-metadata.version:  0.4.0 → 0.5.0
 
 Confirm? (y/n)
 ```
@@ -281,14 +260,13 @@ For each selected toolkit, edit `<toolkit>/.claude-plugin/plugin.json` to update
 
 **Safe editing rules:** Read the JSON file, modify only the `version` field, preserve all other fields and formatting. After writing, re-read and verify the file is valid JSON. New version must be strictly greater than the old version (no downgrades) and exactly one minor or patch increment above.
 
-### Step 13 — Edit Marketplace JSON
+### Step 13 — Verify Marketplace JSON Clean
 
-Edit `.claude-plugin/marketplace.json`:
-- Find each modified toolkit's entry by `name` field (not by array index)
-- Update its `version` to mirror the corresponding `plugin.json`
-- Update `metadata.version` to the new max of all plugin versions
+Confirm that `.claude-plugin/marketplace.json` does not contain any `version` fields in
+`metadata` or `plugins[]` entries. If stale version fields are found, remove them and
+note the cleanup.
 
-**Safe editing rules:** Same as Step 12 — preserve structure, validate JSON after writing, verify version monotonicity.
+No version edits are needed — marketplace.json is version-free by convention.
 
 ### Step 14 — Re-Validate
 
@@ -304,7 +282,6 @@ List all modified files and suggest a conventional commit message:
 ```
 Modified files:
   workflow-toolkit/.claude-plugin/plugin.json
-  .claude-plugin/marketplace.json
 
 Suggested commit:
   chore: bump workflow-toolkit to 0.5.0
@@ -313,6 +290,10 @@ Suggested commit:
 If multiple toolkits were bumped:
 
 ```
+Modified files:
+  workflow-toolkit/.claude-plugin/plugin.json
+  security-toolkit/.claude-plugin/plugin.json
+
 Suggested commit:
   chore: bump versions — workflow-toolkit 0.5.0, security-toolkit 0.1.1
 ```
@@ -321,15 +302,15 @@ Do not commit automatically — let the user decide.
 
 ### Step 16 — Post-Merge Guidance
 
-After the commit, print post-merge instructions:
+After the commit, print post-merge instructions with the next repo-level tag.
+Determine the next tag by reading the latest git tag and applying a minor or patch bump
+matching the highest-severity change in this release:
 
 ```
 After merging to main:
 
   git checkout main && git pull
-  git tag v0.5.0
-  git push origin v0.5.0
-  gh release create v0.5.0 --title "v0.5.0" --generate-notes
+  git tag vX.Y.Z
+  git push origin vX.Y.Z
+  gh release create vX.Y.Z --title "vX.Y.Z" --generate-notes
 ```
-
-The tag version should match the new `metadata.version`.

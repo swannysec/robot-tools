@@ -62,12 +62,21 @@ skill uses a **dual-agent pattern**:
 1. **Main agent** (privileged) — validates URLs, extracts content via Bash, writes files
 2. **Synthesis sub-agent** (sandboxed Explore type) — analyzes content, returns structured JSON
 
-The synthesis agent has NO Write, Edit, Bash, or Task tools. It receives raw content
-in `<external_content>` delimiter tags and returns only structured JSON. The main agent
-validates the JSON schema and sanitizes all field content before writing to disk.
+The synthesis agent has NO Write, Edit, Bash, or Task tools. It receives the **file
+path** to extracted content and reads it via its own Read tool. The main agent never
+reads or embeds raw extracted content — it only handles validated structured JSON
+returned by the sub-agent. The main agent validates the JSON schema and sanitizes all
+field content before writing to disk.
 
-**Defense layers:** Tool restriction, context isolation, content tagging, structured
-output format, output validation + sanitization, allowed-tools scoping, SSRF blocking.
+**Critical rule:** The main agent MUST NOT use the Read tool on extracted content files
+(`content.txt`, `content_full.txt`). All pre-synthesis content validation (word count,
+size checks) MUST use Bash commands (`wc -w`, `head -c`) that do not load content into
+the agent's context. This prevents untrusted web content from entering the privileged
+agent's context where prompt injection could influence file writes or command execution.
+
+**Defense layers:** Tool restriction, context isolation, file-path indirection,
+structured output format, output validation + sanitization, allowed-tools scoping,
+SSRF blocking.
 
 **Accepted residual risks:**
 - The Explore sub-agent retains Read/Glob/Grep access. A successful injection could
@@ -180,10 +189,11 @@ kcap:
    - `subagent_type: "Explore"` (NO Write, Edit, Bash, or Task)
    - `model:` from config (`"sonnet"` or `"opus"`) — passed as Task tool parameter
 4. Sub-agent prompt includes:
-   - Content in `<external_content>` tags
-   - Metadata (YouTube JSON or URL/type info)
+   - **File path** to `$WORK_DIR/content.txt` (sub-agent reads it via Read tool)
+   - Metadata (YouTube JSON path for video, or URL/type info as plain strings)
    - User's focus question (if provided)
    - JSON schema for the appropriate mode
+   - **NOTE:** The main agent MUST NOT read `content.txt` — pass only the path
 5. Extract JSON from response (handle markdown fences, preamble text)
 6. If invalid JSON: retry once with corrective prompt
 7. Validate required fields: `title`, `tldr`, `summary`, `takeaways`, `tags`

@@ -11,6 +11,7 @@ AI/ML research and verification tools for software development.
 - `ai-dev-research` - Expert technical research on AI topics
 - `ai-twitter-radar` - Discover AI trends and news from Twitter/X using Bird CLI
 - `research-verification` - Pre-flight verification checklist for research tasks
+- `kcap` - Capture and distill knowledge from URLs into structured markdown notes
 
 [View Documentation](./research-toolkit/README.md)
 

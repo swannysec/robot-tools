@@ -12,6 +12,7 @@ AI/ML research and verification tools for software development.
 | `ai-twitter-radar` | Discover trending AI tools, news, and insights from influential developers and AI advocates on Twitter/X using Bird CLI. Read-only skill for research and discovery. |
 | `research-verification` | Pre-flight verification checklist for research tasks. Prevents assumptions from becoming errors when gathering information about external systems, APIs, or configurations. |
 | `kcap` | Capture and distill knowledge from URLs into structured markdown notes. Supports web articles, YouTube videos, and Twitter/X posts with dual-agent security architecture. |
+| `starduster` | Catalog GitHub starred repos into a structured Obsidian vault with AI-synthesized summaries, normalized topic taxonomy, graph-optimized wikilinks, and Obsidian Bases index files. |
 
 ## Installation
 
@@ -52,7 +53,14 @@ Skills activate automatically via trigger phrases:
 - `"knowledge capture"`, `"distill this"`, `"save to obsidian"`
 - `"capture this video"`, `"capture this tweet"`, `"save this for later"`
 
+**starduster**:
+- `"catalog my github stars"`, `"starduster"`, `"export github stars"`
+- `"github stars to obsidian"`, `"index my starred repos"`, `"organize my github stars"`
+- `"starred repos catalog"`, `"star catalog"`, `"summarize my stars"`, `"what have I starred"`
+- `"obsidian github stars"`, `"starred repo notes"`
+
 > **kcap vs ai-twitter-radar:** Use kcap to save/distill a specific URL to a structured note. Use ai-twitter-radar to browse, discover, or search AI tweets.
+> **starduster vs kcap:** Use starduster to bulk-catalog your GitHub stars into a vault. Use kcap to capture a single specific URL.
 
 ### Example Commands
 
@@ -67,11 +75,17 @@ Skills activate automatically via trigger phrases:
 "Capture this YouTube video: https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 "kcap https://x.com/user/status/123456789 focus on the tooling recommendations"
 "kcap --deep https://example.com/long-analysis"
+"starduster"
+"starduster 50"
+"Catalog my GitHub stars into Obsidian"
+"starduster --full"
 ```
 
 ## Requirements
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
+- [GitHub CLI (gh)](https://cli.github.com/) (for starduster — GitHub stars fetching)
+- [jq](https://jqlang.github.io/jq/) (for starduster — JSON data extraction)
 - [Bird CLI](https://github.com/steipete/bird) (for ai-twitter-radar and kcap Twitter capture)
 - [trafilatura](https://trafilatura.readthedocs.io/) (for kcap web article extraction)
 - [youtube-transcript-api](https://github.com/jdepoix/youtube-transcript-api) (for kcap YouTube capture)

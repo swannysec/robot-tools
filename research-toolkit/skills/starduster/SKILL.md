@@ -323,7 +323,11 @@ only, no `..`, max 100 chars). Validate final write path is within output direct
     is non-null. If `is_fork` is true but `parent_full_name` is null, show "Fork (parent unknown)"
     instead of a broken wikilink.
 - **Related repos** (main agent determines): find other starred repos sharing 2+ normalized
-  topics or same category. Link up to 5: `See also: [[owner-repo1]], [[owner-repo2]]`
+  topics or same category. Link up to 5 as wikilinks: `[[owner-repo1]]`, `[[owner-repo2]]`
+- **Similar projects** (from synthesis): `similar_to` contains `owner/repo` slugs. For each,
+  check if it exists in the catalog (match against `full_name`). If present, render as a
+  wikilink `[[filename]]`. If not, render as a direct GitHub link:
+  `[owner/repo](https://github.com/owner/repo)`
 - Same-author links if other starred repos share the owner
 - `<!-- USER-NOTES-START -->` empty section for user edits
 - `<!-- USER-NOTES-END -->` marker

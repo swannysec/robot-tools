@@ -273,25 +273,29 @@ set if missing). For any field NOT in the auto-managed or set-once list, preserv
 ```markdown
 # {full_name}
 
-> {summary}
+## Summary
 
-**Category:** [[Category - {category}]]
-**Language:** {language or "Not specified"}
-**License:** {license_spdx or "Not specified"}
-**Stars:** {stargazers_count} | **Forks:** {forks_count}
-**Maturity:** {maturity}
+{summary}
+
+## Overview
+
+| | |
+|---|---|
+| **Category** | [[Category - {category}]] |
+| **Language** | {language or "Not specified"} |
+| **License** | {license_spdx or "Not specified"} |
+| **Stars** | {stargazers_count} |
+| **Forks** | {forks_count} |
+| **Maturity** | {maturity} |
+| **Author** | [[Author - {owner_login}]] |
 
 {if use_case:}
 **Use case:** {use_case}
 {end if}
 
-{if similar_to:}
-**Similar to:** {for each similar: {similar}{comma if not last}}
-{end if}
-
 ## Topics
 
-{for each normalized_topic:}
+{for each normalized_topic, separated by " | ":}
 [[Topic - {topic}]]
 {end for}
 
@@ -301,20 +305,27 @@ set if missing). For any field NOT in the auto-managed or set-once list, preserv
 - {feature}
 {end for}
 
+{if similar_to:}
+## Similar Projects
+
+{for each similar:}
+- {similar}
+{end for}
+{end if}
+
 ## Links
 
 - [GitHub Repository]({html_url})
-- **Author:** [[Author - {owner_login}]]
 {if is_fork:}
 - Fork of [[{parent-owner-parent-repo}]]
 {end if}
 
+{if related_repos:}
 ## Related
 
-{if related_repos:}
-See also: {for each related: [[{related-repo-filename}]]{comma if not last}}
-{else:}
-No related starred repos found.
+{for each related:}
+- [[{related-repo-filename}]]
+{end for}
 {end if}
 
 ## Notes

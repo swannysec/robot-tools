@@ -187,6 +187,32 @@ jq '[.[] | .normalized_topics[] | select(test("^[a-z0-9]+(-[a-z0-9]+)*$") | not)
 # Expected: empty array
 ```
 
+### Step 2b: similar_to Validation
+
+After schema validation, verify each `similar_to` slug points to a real GitHub repository.
+Silently drop any slug that returns a non-200 status:
+
+```bash
+# For each repo in the synthesis output, validate its similar_to slugs
+jq -r '.[].similar_to[]' "$WORK_DIR/synthesis-output-{N}.json" | sort -u | while read -r slug; do
+  if ! gh api "repos/$slug" --silent 2>/dev/null; then
+    echo "$slug"
+  fi
+done > "$WORK_DIR/invalid-similar-slugs.txt"
+
+# Strip invalid slugs from synthesis output
+if [ -s "$WORK_DIR/invalid-similar-slugs.txt" ]; then
+  jq --slurpfile bad <(jq -R '.' "$WORK_DIR/invalid-similar-slugs.txt" | jq -s '.') \
+    '[.[] | .similar_to -= $bad[0]]' \
+    "$WORK_DIR/synthesis-output-{N}.json" > "$WORK_DIR/synthesis-output-{N}-clean.json"
+  mv "$WORK_DIR/synthesis-output-{N}-clean.json" "$WORK_DIR/synthesis-output-{N}.json"
+fi
+```
+
+**Rate limiting note:** Each slug requires one API call. For large batches, deduplicate
+slugs across all repos first (`sort -u`). The GitHub API allows 5,000 requests/hour with
+authentication, so this is safe for typical runs (<500 stars × 0-3 similar each).
+
 ### Step 3: Content Sanitization
 
 Apply before writing to .md files:
@@ -441,16 +467,18 @@ filters:
   and:
     - 'file.inFolder("{subfolder}/repos")'
 properties:
-  language:
-    displayName: Language
   category:
     displayName: Category
+  language:
+    displayName: Language
   stars:
     displayName: Stars
-  date_starred:
-    displayName: Starred
+  maturity:
+    displayName: Maturity
   status:
     displayName: Status
+  date_starred:
+    displayName: Starred
 views:
   - type: table
     name: All Repositories
@@ -473,6 +501,10 @@ properties:
     displayName: Category
   stars:
     displayName: Stars
+  license:
+    displayName: License
+  maturity:
+    displayName: Maturity
 views:
   - type: table
     name: By Language
@@ -496,6 +528,10 @@ properties:
     displayName: Language
   stars:
     displayName: Stars
+  use_case:
+    displayName: Use Case
+  maturity:
+    displayName: Maturity
 views:
   - type: table
     name: By Category
@@ -519,6 +555,10 @@ properties:
     displayName: Language
   stars:
     displayName: Stars
+  maturity:
+    displayName: Maturity
+  use_case:
+    displayName: Use Case
   date_starred:
     displayName: Starred
 views:
@@ -545,6 +585,10 @@ properties:
     displayName: Language
   stars:
     displayName: Stars
+  use_case:
+    displayName: Use Case
+  maturity:
+    displayName: Maturity
   date_starred:
     displayName: Starred
 views:
@@ -564,12 +608,16 @@ filters:
     - 'status == "active"'
     - 'last_pushed < now() - "365d"'
 properties:
-  language:
-    displayName: Language
   category:
     displayName: Category
+  language:
+    displayName: Language
   stars:
     displayName: Stars
+  forks:
+    displayName: Forks
+  archived:
+    displayName: Archived
   last_pushed:
     displayName: Last Pushed
 views:
@@ -588,12 +636,14 @@ filters:
     - 'file.inFolder("{subfolder}/repos")'
     - 'status == "unstarred"'
 properties:
-  language:
-    displayName: Language
   category:
     displayName: Category
+  language:
+    displayName: Language
   stars:
     displayName: Stars
+  owner:
+    displayName: Owner
   date_starred:
     displayName: Starred
   date_unstarred:

@@ -96,8 +96,8 @@ against a strict schema. All fields are sanitized before writing to disk:
   wikilink target strings
 - Strip Obsidian Templater syntax (`<% ... %>`) and Dataview inline fields
   (`[key:: value]`)
-- Field length limits: summary < 300 chars, key_features items < 100 chars,
-  author_display < 100 chars
+- Field length limits: summary < 500 chars, key_features items < 100 chars,
+  use_case < 150 chars, author_display < 100 chars
 
 **Layer 5 — Rate limit guard:** Check remaining API budget before starting. Warn at
 >10% consumption. At >25%, report the estimate and ask user to confirm or abort (do
@@ -269,10 +269,14 @@ For each batch:
      ```json
      {
        "full_name": "owner/repo",
+       "html_url": "https://github.com/owner/repo",
        "category": "AI & Machine Learning",
        "normalized_topics": ["machine-learning", "natural-language-processing"],
-       "summary": "1-2 sentence synthesis from description + README",
-       "key_features": ["feature1", "feature2", "feature3"],
+       "summary": "3-5 sentence synthesis from description + README.",
+       "key_features": ["feature1", "feature2", "...up to 8"],
+       "similar_to": ["well-known-project"],
+       "use_case": "One sentence describing primary use case.",
+       "maturity": "active",
        "author_display": "Owner Name or org"
      }
      ```

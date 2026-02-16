@@ -49,20 +49,36 @@ STEP 5: For each repository, classify and summarize:
 - Normalize each GitHub topic using the static mapping table first; for
   topics not in the table, apply the normalization rules and assign the
   most appropriate category
-- Write a 1-2 sentence summary synthesizing the description (from metadata)
-  and README content
-- Extract 3-5 key features or capabilities
+- Write a 3-5 sentence summary synthesizing the description and README
+  content. Explain what the repo does, why it matters, and what makes it
+  distinctive. Be specific — mention key technologies, approaches, or
+  design decisions rather than generic platitudes.
+- Extract 3-8 key features or capabilities. Be descriptive enough to be
+  useful — a feature like "Plugin architecture for extensibility" is
+  better than just "plugins".
 - Determine a display name for the author/org
+- Identify 1-3 similar/related well-known projects (e.g., "Similar to
+  Express.js" or "Alternative to Terraform"). Use well-known projects
+  the user would recognize. If nothing fits well, use an empty array.
+- Suggest a primary use case in one sentence (what would someone use
+  this for?)
+- Assess project maturity: one of "experimental", "active", "mature",
+  or "unmaintained" based on star count, last push date, and README
+  completeness
 
 STEP 6: Return ONLY valid JSON — an array with one object per repo, in the
 same order as the input array. Each object must match this schema:
 
 {
   "full_name": "owner/repo",
+  "html_url": "https://github.com/owner/repo",
   "category": "Category Name",
   "normalized_topics": ["topic-one", "topic-two"],
-  "summary": "1-2 sentence synthesis of what this repo does and why it matters.",
-  "key_features": ["feature1", "feature2", "feature3"],
+  "summary": "3-5 sentence synthesis of what this repo does and why it matters.",
+  "key_features": ["Detailed feature description 1", "Detailed feature description 2"],
+  "similar_to": ["well-known-project-1", "well-known-project-2"],
+  "use_case": "One sentence describing the primary use case.",
+  "maturity": "active",
   "author_display": "Author or Organization Name"
 }
 
@@ -70,10 +86,14 @@ RULES:
 - Return the JSON array and nothing else — no markdown fences, no commentary
 - The output array MUST have exactly the same length as the input metadata array
 - Each output object's full_name MUST match the corresponding input object
+- html_url: copy from the batch metadata
 - category MUST be one of the categories from the normalization reference
 - normalized_topics: lowercase, hyphen-separated, matching ^[a-z0-9]+(-[a-z0-9]+)*$
-- summary: max 300 characters
-- key_features: 3-5 items, each max 100 characters
+- summary: max 500 characters, 3-5 sentences
+- key_features: 3-8 items, each max 100 characters
+- similar_to: 0-3 items, well-known project names only (no obscure repos)
+- use_case: max 150 characters, one sentence
+- maturity: one of "experimental", "active", "mature", "unmaintained"
 - author_display: max 100 characters
 - If a repo has no README (null path), synthesize from metadata fields only
 - Do NOT fabricate features not mentioned in the README or metadata
@@ -99,10 +119,14 @@ exactly {batch_size} objects matching the schema from the original prompt.
 ```json
 {
   "full_name": "string — owner/repo (identity key, must match input)",
+  "html_url": "string — https://github.com/owner/repo",
   "category": "string — one of the fixed ~15 categories",
   "normalized_topics": ["string array — lowercase hyphenated topics"],
-  "summary": "string — 1-2 sentences, max 300 chars",
-  "key_features": ["string array — 3-5 items, each max 100 chars"],
+  "summary": "string — 3-5 sentences, max 500 chars",
+  "key_features": ["string array — 3-8 items, each max 100 chars"],
+  "similar_to": ["string array — 0-3 well-known project names"],
+  "use_case": "string — one sentence, max 150 chars",
+  "maturity": "string — one of: experimental, active, mature, unmaintained",
   "author_display": "string — display name for author/org, max 100 chars"
 }
 ```
@@ -112,6 +136,9 @@ exactly {batch_size} objects matching the schema from the original prompt.
 - `normalized_topics`: Use repo's GitHub topics (normalized) or empty array
 - `summary`: Use repo description from metadata
 - `key_features`: Use empty array `[]`
+- `similar_to`: Use empty array `[]`
+- `use_case`: Use "General-purpose tool"
+- `maturity`: Infer from `pushed_at` and `stargazers_count` — unmaintained if not pushed in 2+ years
 - `author_display`: Use `owner_login` from metadata
 
 ---
@@ -138,10 +165,14 @@ jq 'length' "$WORK_DIR/synthesis-output-{N}.json"
 # Check all required fields present
 jq '[.[] | select(
   .full_name == null or
+  .html_url == null or
   .category == null or
   .normalized_topics == null or
   .summary == null or
   .key_features == null or
+  .similar_to == null or
+  .use_case == null or
+  .maturity == null or
   .author_display == null
 )] | length' "$WORK_DIR/synthesis-output-{N}.json"
 # Expected: 0
@@ -166,6 +197,9 @@ Apply before writing to .md files:
 | `summary`, `key_features[]` | Strip all Templater variants (`<%[\*\-_~]?.*?%>` — catches `<%`, `<%*`, `<%-`, etc.), Dataview inline fields (`[key:: value]`), Dataview/DataviewJS code blocks (` ```dataview `, ` ```dataviewjs `), all dangerous HTML tags (`<script>`, `<iframe>`, `<object>`, `<embed>`, `<form>`, `<input>`, `<img` with event handlers, `<a href="javascript:"`), and any `on[a-z]+=` event handler attributes |
 | `category` | Verify against fixed list; reject unknowns with "Uncategorized" fallback |
 | `normalized_topics[]` | Must match `^[a-z0-9]+(-[a-z0-9]+)*$`; strip non-matching entries |
+| `similar_to[]` | Strip `[`, `]`, `|`, `#` characters; verify items are plausible project names |
+| `use_case` | Same sanitization as `summary` (Templater/Dataview/HTML stripping) |
+| `maturity` | Must be one of: `experimental`, `active`, `mature`, `unmaintained`; reject others with `active` fallback |
 | `author_display` | Strip `[`, `]`, `|`, `#` characters (wikilink safety) |
 | All frontmatter strings | YAML-escape: wrap in double quotes, escape internal `"` with `\"`, replace newlines with spaces, strip `---` sequences |
 | Wikilink targets | Strip `[`, `]`, `|`, `#` characters; verify result matches `^[a-zA-Z0-9 &_-]+$` |
@@ -199,6 +233,11 @@ date_created: {created_at as YYYY-MM-DD}
 last_pushed: {pushed_at as YYYY-MM-DD}
 date_updated: {YYYY-MM-DD of last update}
 category: "{category from synthesis}"
+maturity: "{maturity from synthesis}"
+use_case: "{use_case from synthesis}"
+similar_to:
+  - "{similar_to[0]}"
+  - "{similar_to[1]}"
 topics:
   - {normalized_topic_1}
   - {normalized_topic_2}
@@ -220,7 +259,7 @@ These fields are set when a note is first created, then NEVER overwritten:
 These fields are never written by starduster — they are user-added and always preserved:
 
 - `personal_rating` — User-added rating
-- `use_case` — User-added notes on how they use this tool
+- `personal_notes` — User-added notes on how they use this tool
 - Any other fields the user adds manually
 
 **Update logic:** On update runs, read existing frontmatter. For each auto-managed
@@ -240,6 +279,15 @@ set if missing). For any field NOT in the auto-managed or set-once list, preserv
 **Language:** {language or "Not specified"}
 **License:** {license_spdx or "Not specified"}
 **Stars:** {stargazers_count} | **Forks:** {forks_count}
+**Maturity:** {maturity}
+
+{if use_case:}
+**Use case:** {use_case}
+{end if}
+
+{if similar_to:}
+**Similar to:** {for each similar: {similar}{comma if not last}}
+{end if}
 
 ## Topics
 

@@ -3,6 +3,16 @@
 Reference document for starduster GitHub API queries, `jq` extraction commands,
 rate limit handling, and README fallback patterns.
 
+## macOS/zsh Portability Notes
+
+All commands in this file target **macOS with zsh** (BSD userland):
+- **Do NOT use `!=` in jq expressions** — zsh history expansion escapes `!` to `\!`.
+  Use truthiness tests (`if .field then`) or `== null | not` instead.
+- **Do NOT use `date -d`** (GNU-only) — use `jq` string splitting for ISO timestamp
+  conversion: `.timestamp | split("T")[0]`
+- **Do NOT use `sort -V`** (GNU-only) — use `jq` `sort_by()` instead.
+- All `jq` filters use single quotes to prevent shell expansion.
+
 ## Authentication Check
 
 ```bash
@@ -140,6 +150,21 @@ by default. For fork detection, use the `.repo.fork` boolean. If parent info is 
 for fork linking, check if `parent` is present; if null, skip the fork link (this is
 a non-critical field).
 
+### Convert ISO Timestamps to YYYY-MM-DD
+
+GitHub returns ISO 8601 timestamps (e.g., `2024-01-15T10:30:45Z`). Convert to
+`YYYY-MM-DD` for frontmatter using `jq` string splitting — do NOT use `date -d`
+(GNU-only, not available on macOS BSD):
+
+```bash
+jq '[.[] | {
+  full_name,
+  starred_date: (.starred_at | split("T")[0]),
+  pushed_date: (.pushed_at | split("T")[0]),
+  created_date: (.created_at | split("T")[0])
+}]' "$WORK_DIR/stars-extracted.json"
+```
+
 ### Count Results
 
 ```bash
@@ -237,14 +262,18 @@ For each repo in the response, select the first non-null README in this order:
 3. `readme_rst` (README.rst)
 4. `readme_plain` (README)
 
-Use `jq` to check for null and extract byte size — do NOT read the text content:
+Use `jq` to check for null and extract byte size — do NOT read the text content.
+
+**IMPORTANT (zsh portability):** Do NOT use `!=` in jq expressions — zsh interprets
+`!` as history expansion and escapes it to `\!`, breaking the jq filter. Use
+`(.x == null | not)` or `.x` truthiness tests instead.
 
 ```bash
 jq '.data.repo_0 |
-  if .readme_md != null then {variant: "README.md", size: .readme_md.byteSize}
-  elif .readme_lower != null then {variant: "readme.md", size: .readme_lower.byteSize}
-  elif .readme_rst != null then {variant: "README.rst", size: .readme_rst.byteSize}
-  elif .readme_plain != null then {variant: "README", size: .readme_plain.byteSize}
+  if .readme_md then {variant: "README.md", size: .readme_md.byteSize}
+  elif .readme_lower then {variant: "readme.md", size: .readme_lower.byteSize}
+  elif .readme_rst then {variant: "README.rst", size: .readme_rst.byteSize}
+  elif .readme_plain then {variant: "README", size: .readme_plain.byteSize}
   else {variant: null, size: 0}
   end' "$WORK_DIR/readmes-batch-0.json"
 ```

@@ -427,8 +427,10 @@ Bases syntax reference: https://help.obsidian.md/bases/syntax
 - `.base` files are valid YAML with top-level keys: `filters`, `formulas`, `properties`, `summaries`, `views`
 - **Filter expressions MUST be YAML-quoted strings.** Use single quotes to wrap expressions
   that contain double quotes: `- 'status == "active"'`. Unquoted expressions cause parse errors.
-- Filter functions use `inFolder(file.file, "path")` syntax (NOT `file.inFolder("path")`)
-- Views support `type` (table/list/cards/map), `name`, `filters`, `groupBy`, `order`, `limit`, `summaries`
+- Folder filtering uses method syntax on the file object: `file.inFolder("path")`
+- Sorting uses `sort` (NOT `order`) with `column`/`direction` keys; direction is uppercase `ASC`/`DESC`
+- Grouping uses `group_by: "property_name"` (snake_case, string value — NOT `groupBy` with nested object)
+- Views support `type` (table/list/cards/map), `name`, `filters`, `group_by`, `sort`, `limit`, `summaries`
 - Date functions: `now()`, `today()`, duration arithmetic (`now() - "365d"`)
 - Replace `{subfolder}` with the configured subfolder path (e.g., `tools/github`)
 
@@ -437,7 +439,7 @@ Bases syntax reference: https://help.obsidian.md/bases/syntax
 ```yaml
 filters:
   and:
-    - 'inFolder(file.file, "{subfolder}/repos")'
+    - 'file.inFolder("{subfolder}/repos")'
 properties:
   language:
     displayName: Language
@@ -452,9 +454,9 @@ properties:
 views:
   - type: table
     name: All Repositories
-    order:
-      - property: stars
-        direction: desc
+    sort:
+      - column: stars
+        direction: DESC
 ```
 
 ### by-language.base
@@ -462,7 +464,7 @@ views:
 ```yaml
 filters:
   and:
-    - 'inFolder(file.file, "{subfolder}/repos")'
+    - 'file.inFolder("{subfolder}/repos")'
     - 'status == "active"'
 properties:
   language:
@@ -474,11 +476,10 @@ properties:
 views:
   - type: table
     name: By Language
-    groupBy:
-      property: language
-    order:
-      - property: stars
-        direction: desc
+    group_by: language
+    sort:
+      - column: stars
+        direction: DESC
 ```
 
 ### by-category.base
@@ -486,7 +487,7 @@ views:
 ```yaml
 filters:
   and:
-    - 'inFolder(file.file, "{subfolder}/repos")'
+    - 'file.inFolder("{subfolder}/repos")'
     - 'status == "active"'
 properties:
   category:
@@ -498,11 +499,10 @@ properties:
 views:
   - type: table
     name: By Category
-    groupBy:
-      property: category
-    order:
-      - property: stars
-        direction: desc
+    group_by: category
+    sort:
+      - column: stars
+        direction: DESC
 ```
 
 ### recently-starred.base
@@ -510,7 +510,7 @@ views:
 ```yaml
 filters:
   and:
-    - 'inFolder(file.file, "{subfolder}/repos")'
+    - 'file.inFolder("{subfolder}/repos")'
     - 'status == "active"'
 properties:
   category:
@@ -525,9 +525,9 @@ views:
   - type: table
     name: Recently Starred
     limit: 50
-    order:
-      - property: date_starred
-        direction: desc
+    sort:
+      - column: date_starred
+        direction: DESC
 ```
 
 ### review-queue.base
@@ -537,7 +537,7 @@ filters:
   and:
     - 'reviewed == false'
     - 'status == "active"'
-    - 'inFolder(file.file, "{subfolder}/repos")'
+    - 'file.inFolder("{subfolder}/repos")'
 properties:
   category:
     displayName: Category
@@ -550,9 +550,9 @@ properties:
 views:
   - type: table
     name: Review Queue
-    order:
-      - property: stars
-        direction: desc
+    sort:
+      - column: stars
+        direction: DESC
 ```
 
 ### stale-repos.base
@@ -560,7 +560,7 @@ views:
 ```yaml
 filters:
   and:
-    - 'inFolder(file.file, "{subfolder}/repos")'
+    - 'file.inFolder("{subfolder}/repos")'
     - 'status == "active"'
     - 'last_pushed < now() - "365d"'
 properties:
@@ -575,9 +575,9 @@ properties:
 views:
   - type: table
     name: Stale Repos (>1 year)
-    order:
-      - property: last_pushed
-        direction: asc
+    sort:
+      - column: last_pushed
+        direction: ASC
 ```
 
 ### unstarred.base
@@ -585,7 +585,7 @@ views:
 ```yaml
 filters:
   and:
-    - 'inFolder(file.file, "{subfolder}/repos")'
+    - 'file.inFolder("{subfolder}/repos")'
     - 'status == "unstarred"'
 properties:
   language:
@@ -601,9 +601,9 @@ properties:
 views:
   - type: table
     name: Unstarred Repos
-    order:
-      - property: date_unstarred
-        direction: desc
+    sort:
+      - column: date_unstarred
+        direction: DESC
 ```
 
 ---

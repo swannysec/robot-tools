@@ -57,8 +57,8 @@ STEP 5: For each repository, classify and summarize:
   useful — a feature like "Plugin architecture for extensibility" is
   better than just "plugins".
 - Determine a display name for the author/org
-- Identify 1-3 similar/related well-known projects (e.g., "Similar to
-  Express.js" or "Alternative to Terraform"). Use well-known projects
+- Identify 1-3 similar/related well-known projects as GitHub "owner/repo"
+  slugs (e.g., "expressjs/express", "hashicorp/terraform"). Use projects
   the user would recognize. If nothing fits well, use an empty array.
 - Suggest a primary use case in one sentence (what would someone use
   this for?)
@@ -76,7 +76,7 @@ same order as the input array. Each object must match this schema:
   "normalized_topics": ["topic-one", "topic-two"],
   "summary": "3-5 sentence synthesis of what this repo does and why it matters.",
   "key_features": ["Detailed feature description 1", "Detailed feature description 2"],
-  "similar_to": ["well-known-project-1", "well-known-project-2"],
+  "similar_to": ["owner/repo-1", "owner/repo-2"],
   "use_case": "One sentence describing the primary use case.",
   "maturity": "active",
   "author_display": "Author or Organization Name"
@@ -91,7 +91,7 @@ RULES:
 - normalized_topics: lowercase, hyphen-separated, matching ^[a-z0-9]+(-[a-z0-9]+)*$
 - summary: max 500 characters, 3-5 sentences
 - key_features: 3-8 items, each max 100 characters
-- similar_to: 0-3 items, well-known project names only (no obscure repos)
+- similar_to: 0-3 items as "owner/repo" GitHub slugs (e.g., "run-llama/llama_index")
 - use_case: max 150 characters, one sentence
 - maturity: one of "experimental", "active", "mature", "unmaintained"
 - author_display: max 100 characters
@@ -124,7 +124,7 @@ exactly {batch_size} objects matching the schema from the original prompt.
   "normalized_topics": ["string array — lowercase hyphenated topics"],
   "summary": "string — 3-5 sentences, max 500 chars",
   "key_features": ["string array — 3-8 items, each max 100 chars"],
-  "similar_to": ["string array — 0-3 well-known project names"],
+  "similar_to": ["string array — 0-3 GitHub owner/repo slugs"],
   "use_case": "string — one sentence, max 150 chars",
   "maturity": "string — one of: experimental, active, mature, unmaintained",
   "author_display": "string — display name for author/org, max 100 chars"
@@ -197,7 +197,7 @@ Apply before writing to .md files:
 | `summary`, `key_features[]` | Strip all Templater variants (`<%[\*\-_~]?.*?%>` — catches `<%`, `<%*`, `<%-`, etc.), Dataview inline fields (`[key:: value]`), Dataview/DataviewJS code blocks (` ```dataview `, ` ```dataviewjs `), all dangerous HTML tags (`<script>`, `<iframe>`, `<object>`, `<embed>`, `<form>`, `<input>`, `<img` with event handlers, `<a href="javascript:"`), and any `on[a-z]+=` event handler attributes |
 | `category` | Verify against fixed list; reject unknowns with "Uncategorized" fallback |
 | `normalized_topics[]` | Must match `^[a-z0-9]+(-[a-z0-9]+)*$`; strip non-matching entries |
-| `similar_to[]` | Strip `[`, `]`, `|`, `#` characters; verify items are plausible project names |
+| `similar_to[]` | Must match `^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$` (owner/repo format); strip non-matching entries |
 | `use_case` | Same sanitization as `summary` (Templater/Dataview/HTML stripping) |
 | `maturity` | Must be one of: `experimental`, `active`, `mature`, `unmaintained`; reject others with `active` fallback |
 | `author_display` | Strip `[`, `]`, `|`, `#` characters (wikilink safety) |
@@ -308,8 +308,12 @@ set if missing). For any field NOT in the auto-managed or set-once list, preserv
 {if similar_to:}
 ## Similar Projects
 
-{for each similar:}
-- {similar}
+{for each similar (owner/repo slug):}
+{if similar is in catalog (matching full_name):}
+- [[{similar-repo-filename}]]
+{else:}
+- [{similar}](https://github.com/{similar})
+{end if}
 {end for}
 {end if}
 
@@ -421,7 +425,7 @@ Bases syntax reference: https://help.obsidian.md/bases/syntax
 
 **Key syntax notes:**
 - `.base` files are valid YAML with top-level keys: `filters`, `formulas`, `properties`, `summaries`, `views`
-- Filters use `and`/`or`/`not` conjunctions with either structured objects (`property`/`operator`/`value`) or expression strings
+- Filters use `and`/`or`/`not` conjunctions with bare expression strings (e.g., `- status == "active"`)
 - Views support `type` (table/list/cards/map), `name`, `filters`, `groupBy`, `order`, `limit`, `summaries`
 - File properties: `file.name`, `file.path`, `file.folder`, `file.inFolder(folder)`, `file.mtime`, `file.ctime`
 - Date functions: `now()`, `today()`, duration arithmetic (`now() - "365d"`)
@@ -433,7 +437,7 @@ Bases syntax reference: https://help.obsidian.md/bases/syntax
 ```yaml
 filters:
   and:
-    - expression: 'file.inFolder("{subfolder}/repos")'
+    - file.inFolder("{subfolder}/repos")
 properties:
   language:
     displayName: Language
@@ -458,8 +462,8 @@ views:
 ```yaml
 filters:
   and:
-    - expression: 'file.inFolder("{subfolder}/repos")'
-    - expression: 'status == "active"'
+    - file.inFolder("{subfolder}/repos")
+    - status == "active"
 properties:
   language:
     displayName: Language
@@ -482,8 +486,8 @@ views:
 ```yaml
 filters:
   and:
-    - expression: 'file.inFolder("{subfolder}/repos")'
-    - expression: 'status == "active"'
+    - file.inFolder("{subfolder}/repos")
+    - status == "active"
 properties:
   category:
     displayName: Category
@@ -506,8 +510,8 @@ views:
 ```yaml
 filters:
   and:
-    - expression: 'file.inFolder("{subfolder}/repos")'
-    - expression: 'status == "active"'
+    - file.inFolder("{subfolder}/repos")
+    - status == "active"
 properties:
   category:
     displayName: Category
@@ -531,9 +535,9 @@ views:
 ```yaml
 filters:
   and:
-    - expression: 'reviewed == false'
-    - expression: 'status == "active"'
-    - expression: 'file.inFolder("{subfolder}/repos")'
+    - reviewed == false
+    - status == "active"
+    - file.inFolder("{subfolder}/repos")
 properties:
   category:
     displayName: Category
@@ -556,9 +560,9 @@ views:
 ```yaml
 filters:
   and:
-    - expression: 'file.inFolder("{subfolder}/repos")'
-    - expression: 'status == "active"'
-    - expression: 'last_pushed < now() - "365d"'
+    - file.inFolder("{subfolder}/repos")
+    - status == "active"
+    - last_pushed < now() - "365d"
 properties:
   language:
     displayName: Language
@@ -581,8 +585,8 @@ views:
 ```yaml
 filters:
   and:
-    - expression: 'file.inFolder("{subfolder}/repos")'
-    - expression: 'status == "unstarred"'
+    - file.inFolder("{subfolder}/repos")
+    - status == "unstarred"
 properties:
   language:
     displayName: Language

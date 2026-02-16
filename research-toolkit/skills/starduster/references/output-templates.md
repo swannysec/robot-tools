@@ -425,11 +425,11 @@ Bases syntax reference: https://help.obsidian.md/bases/syntax
 
 **Key syntax notes:**
 - `.base` files are valid YAML with top-level keys: `filters`, `formulas`, `properties`, `summaries`, `views`
-- Filters use `and`/`or`/`not` conjunctions with bare expression strings (e.g., `- status == "active"`)
+- **Filter expressions MUST be YAML-quoted strings.** Use single quotes to wrap expressions
+  that contain double quotes: `- 'status == "active"'`. Unquoted expressions cause parse errors.
+- Filter functions use `inFolder(file.file, "path")` syntax (NOT `file.inFolder("path")`)
 - Views support `type` (table/list/cards/map), `name`, `filters`, `groupBy`, `order`, `limit`, `summaries`
-- File properties: `file.name`, `file.path`, `file.folder`, `file.inFolder(folder)`, `file.mtime`, `file.ctime`
 - Date functions: `now()`, `today()`, duration arithmetic (`now() - "365d"`)
-- String functions: `string.contains(value)`, `string.isEmpty()`
 - Replace `{subfolder}` with the configured subfolder path (e.g., `tools/github`)
 
 ### master-index.base
@@ -437,7 +437,7 @@ Bases syntax reference: https://help.obsidian.md/bases/syntax
 ```yaml
 filters:
   and:
-    - file.inFolder("{subfolder}/repos")
+    - 'inFolder(file.file, "{subfolder}/repos")'
 properties:
   language:
     displayName: Language
@@ -462,8 +462,8 @@ views:
 ```yaml
 filters:
   and:
-    - file.inFolder("{subfolder}/repos")
-    - status == "active"
+    - 'inFolder(file.file, "{subfolder}/repos")'
+    - 'status == "active"'
 properties:
   language:
     displayName: Language
@@ -486,8 +486,8 @@ views:
 ```yaml
 filters:
   and:
-    - file.inFolder("{subfolder}/repos")
-    - status == "active"
+    - 'inFolder(file.file, "{subfolder}/repos")'
+    - 'status == "active"'
 properties:
   category:
     displayName: Category
@@ -510,8 +510,8 @@ views:
 ```yaml
 filters:
   and:
-    - file.inFolder("{subfolder}/repos")
-    - status == "active"
+    - 'inFolder(file.file, "{subfolder}/repos")'
+    - 'status == "active"'
 properties:
   category:
     displayName: Category
@@ -535,9 +535,9 @@ views:
 ```yaml
 filters:
   and:
-    - reviewed == false
-    - status == "active"
-    - file.inFolder("{subfolder}/repos")
+    - 'reviewed == false'
+    - 'status == "active"'
+    - 'inFolder(file.file, "{subfolder}/repos")'
 properties:
   category:
     displayName: Category
@@ -560,9 +560,9 @@ views:
 ```yaml
 filters:
   and:
-    - file.inFolder("{subfolder}/repos")
-    - status == "active"
-    - last_pushed < now() - "365d"
+    - 'inFolder(file.file, "{subfolder}/repos")'
+    - 'status == "active"'
+    - 'last_pushed < now() - "365d"'
 properties:
   language:
     displayName: Language
@@ -585,8 +585,8 @@ views:
 ```yaml
 filters:
   and:
-    - file.inFolder("{subfolder}/repos")
-    - status == "unstarred"
+    - 'inFolder(file.file, "{subfolder}/repos")'
+    - 'status == "unstarred"'
 properties:
   language:
     displayName: Language

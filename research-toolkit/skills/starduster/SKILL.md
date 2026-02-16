@@ -160,7 +160,8 @@ the AI synthesis happens in a privilege-restricted sub-agent.
    - `output_path` — Obsidian vault root or any directory (default: `~/obsidian-vault/GitHub Stars`)
    - `vault_name` — Optional, enables Obsidian URI links (default: empty)
    - `subfolder` — Path within vault (default: `tools/github`)
-   - `synthesis_model` — `sonnet` or `opus` (default: `sonnet`)
+   - `main_model` — `haiku`, `sonnet`, or `opus` for the main agent workflow (default: `haiku`)
+   - `synthesis_model` — `haiku`, `sonnet`, or `opus` for the synthesis sub-agent (default: `sonnet`)
    - `synthesis_batch_size` — Repos per sub-agent call (default: `25`)
 4. Validate `subfolder` against `^[a-zA-Z0-9_-]+(/[a-zA-Z0-9_-]+)*$` — reject `..` or shell metacharacters
 5. Validate output path exists or create it
@@ -172,6 +173,7 @@ starduster:
   output_path: ~/obsidian-vault
   vault_name: "MyVault"
   subfolder: tools/github
+  main_model: haiku
   synthesis_model: sonnet
   synthesis_batch_size: 25
 ```
@@ -261,7 +263,7 @@ For each batch:
 3. Report progress: "Synthesizing batch N/M (repos X-Y)..."
 4. Spawn sandboxed sub-agent via Task tool:
    - `subagent_type: "Explore"` (NO Write, Edit, Bash, or Task)
-   - `model:` from config (`"sonnet"` or `"opus"`)
+   - `model:` from `synthesis_model` config (`"haiku"`, `"sonnet"`, or `"opus"`)
    - Sub-agent reads: batch metadata file (safe structured fields), `stars-extracted.json`
      (for descriptions — untrusted content), README files via paths, topic-normalization reference
    - Sub-agent follows the **full synthesis prompt** from [references/output-templates.md](references/output-templates.md) (verbatim prompt, not ad-hoc)
@@ -324,10 +326,11 @@ only, no `..`, max 100 chars). Validate final write path is within output direct
     instead of a broken wikilink.
 - **Related repos** (main agent determines): find other starred repos sharing 2+ normalized
   topics or same category. Link up to 5 as wikilinks: `[[owner-repo1]]`, `[[owner-repo2]]`
-- **Similar projects** (from synthesis): `similar_to` contains `owner/repo` slugs. For each,
-  check if it exists in the catalog (match against `full_name`). If present, render as a
-  wikilink `[[filename]]`. If not, render as a direct GitHub link:
-  `[owner/repo](https://github.com/owner/repo)`
+- **Similar projects** (from synthesis): `similar_to` contains `owner/repo` slugs. After
+  synthesis, validate each slug via `gh api repos/{slug}` and silently drop any that return
+  non-200 (see output-templates.md Step 2b). For each validated slug, check if it exists in
+  the catalog (match against `full_name`). If present, render as a wikilink `[[filename]]`.
+  If not, render as a direct GitHub link: `[owner/repo](https://github.com/owner/repo)`
 - Same-author links if other starred repos share the owner
 - `<!-- USER-NOTES-START -->` empty section for user edits
 - `<!-- USER-NOTES-END -->` marker

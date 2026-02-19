@@ -103,14 +103,16 @@ Both use bird-cli for Twitter access but serve different purposes.
 
 ```
 kcap <url> [focus question]
-kcap --deep <url> [focus question]
+kcap deep <url> [focus question]
+kcap full <url>
 ```
 
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `<url>` | Yes | HTTPS URL to capture (web article, YouTube video, or Twitter/X post) |
 | `[focus question]` | No | Optional angle for the synthesis (e.g., "focus on security implications") |
-| `--deep` | No | Extended analysis with critical analysis, counterarguments, and action items |
+| `deep` | No | Extended analysis with critical analysis, counterarguments, and action items |
+| `full` | No | Full content capture with cleanup (not summarization). Web and Twitter only — not YouTube. |
 
 ## Workflow
 
@@ -123,7 +125,7 @@ kcap --deep <url> [focus question]
 2. Apply defaults for any missing config values:
    - `output_path: ~/Documents/kcap`
    - `subfolder: "captures"`
-   - `synthesis_model: sonnet`
+   - `synthesis_model: haiku`
    - `default_mode: standard`
    - No vault integration
 3. Validate `subfolder` matches `^[a-zA-Z0-9_-]+(/[a-zA-Z0-9_-]+)*$` — reject `..`, absolute paths
@@ -138,8 +140,8 @@ kcap:
   vault_name: "My Vault"        # Optional — enables Obsidian URI
   subfolder: "kcap"
   default_tags: []
-  synthesis_model: sonnet        # sonnet | opus
-  default_mode: standard         # standard | deep (--deep flag overrides)
+  synthesis_model: haiku          # haiku | sonnet | opus
+  default_mode: standard         # standard | deep | full (flags override)
 ```
 
 ### Step 1: URL Validation
@@ -181,31 +183,53 @@ kcap:
 ### Step 5: Synthesis (Sub-Agent)
 
 1. Determine mode:
-   - `--deep` flag on invocation → deep mode
+   - `full` argument on invocation → full mode
+   - Config `default_mode: full` → full mode
+   - `deep` flag on invocation → deep mode
    - Config `default_mode: deep` → deep mode
    - Otherwise → standard mode
-2. Determine model: read `config.kcap.synthesis_model` (default: `sonnet`)
-3. Spawn sub-agent via Task tool:
+2. **Full mode gate:** Full mode is only valid for **web articles and Twitter/X
+   threads**. If a YouTube URL is detected with `full` mode, fall back to standard
+   mode with a notice: "Full mode not supported for YouTube videos — using standard."
+3. Determine model:
+   - Deep or Full mode → always `"sonnet"` (overrides config — deeper analysis and cleanup need stronger reasoning)
+   - Standard → read `config.kcap.synthesis_model` (default: `haiku`)
+4. Spawn sub-agent via Task tool:
    - `subagent_type: "Explore"` (NO Write, Edit, Bash, or Task)
-   - `model:` from config (`"sonnet"` or `"opus"`) — passed as Task tool parameter
-4. Sub-agent prompt includes:
+   - `model:` from config (`"haiku"`, `"sonnet"`, or `"opus"`) — passed as Task tool parameter
+5. Sub-agent prompt varies by mode:
+   - **Standard/Deep:** Analysis and summarization prompt (see output-templates.md)
+   - **Full:** Cleanup prompt — the sub-agent reads the raw content, reformats it into
+     clean readable markdown, extracts minimal metadata (title, author, tags), and
+     returns the **full cleaned content** plus metadata as JSON. The sub-agent does NOT
+     summarize or truncate — it preserves all substantive content while removing
+     navigation cruft, ads, boilerplate, and fixing broken formatting.
+   - Load [references/output-templates.md](references/output-templates.md) for all three prompts
+6. Sub-agent prompt includes:
    - **File path** to `$WORK_DIR/content.txt` (sub-agent reads it via Read tool)
    - Metadata (YouTube JSON path for video, or URL/type info as plain strings)
-   - User's focus question (if provided)
+   - User's focus question (if provided, standard/deep only)
    - JSON schema for the appropriate mode
    - **NOTE:** The main agent MUST NOT read `content.txt` — pass only the path
-5. Extract JSON from response (handle markdown fences, preamble text)
-6. If invalid JSON: retry once with corrective prompt
-7. Validate required fields: `title`, `tldr`, `summary`, `takeaways`, `tags`
-8. Sanitize all field content before use
-9. Load [references/output-templates.md](references/output-templates.md) for prompts, schemas, and sanitization rules
+6. Extract JSON from response (handle markdown fences, preamble text)
+7. If invalid JSON: retry once with corrective prompt
+8. Validate required fields: `title`, `tldr`, `summary`, `takeaways`, `tags`
+9. Sanitize all field content before use
+10. Load [references/output-templates.md](references/output-templates.md) for prompts, schemas, and sanitization rules
 
 **Mode × Model combinations:**
 
-| | Standard | Deep |
-|---|---------|------|
-| **Sonnet** | Fast daily capture | Extended analysis, lower cost |
-| **Opus** | High-quality summary | Maximum quality + depth |
+**Mode × Model combinations:**
+
+| | Standard | Deep | Full |
+|---|---------|------|------|
+| **Haiku** | Fast daily capture (default) | — | — |
+| **Sonnet** | Higher-quality summary | Always (extended analysis) | Always (cleanup) |
+| **Opus** | Maximum quality summary | — | — |
+
+Deep and Full modes always use **Sonnet** regardless of `synthesis_model` config.
+Extended analysis and content cleanup both require stronger reasoning than Haiku.
+The `synthesis_model` config only affects standard mode.
 
 ### Step 6: Assemble & Write
 
@@ -257,6 +281,6 @@ Full error matrix with recovery procedures: [references/error-handling.md](refer
 
 ## Headless / Automation
 
-kcap can be invoked via `claude -p "kcap URL [focus]"` for Raycast or automation.
-The synthesis model and mode are controlled by the config file, not the CLI `--model`
-flag (which sets the orchestrator model, not the sub-agent).
+kcap can be invoked via `claude -p "kcap URL [focus]"` or `claude -p "kcap full URL"`
+for Raycast or automation. The synthesis model and mode are controlled by the config
+file, not the CLI `--model` flag (which sets the orchestrator model, not the sub-agent).

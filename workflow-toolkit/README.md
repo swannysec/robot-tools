@@ -29,6 +29,7 @@ Development workflow automation, review orchestration, and productivity tools fo
 | `safe-skill-install` | Supply chain security scanning for skill installations. Wraps Cisco skill-scanner to vet skills before installation with static + behavioral analysis. Supports MANUAL (default), AUTO-INSTALL, and SECURE modes. **Note:** AUTO-INSTALL mode is off by default — scanner evasion is possible for non-Python files where only static YARA patterns apply. Use SECURE mode for high-security environments. |
 | `session-retrospective` | Iterative reflection skill for extracting actionable learnings from Claude Code sessions. Produces agent-ready context documents for future implementation. |
 | `plugin-qa` | Validates plugin manifests, README cross-references, SKILL.md frontmatter, version sync, and keyword coverage. Two modes: validate (check and report) and release-prep (validate + version bump workflow). |
+| `gh-aw-helper` | GitHub Agentic Workflows — write AI-powered automation in natural-language markdown that compiles to secure GitHub Actions. Covers setup, workflow authoring, triggers, safe I/O, security, MCP tools, 14 operational patterns, engine configuration, and troubleshooting. |
 
 ### Agents
 
@@ -98,6 +99,11 @@ Skills activate automatically via trigger phrases:
 - `"plugin qa"`, `"validate plugins"`, `"lint plugins"`
 - `"prepare release"`, `"bump version"`, `"release prep"`
 
+**gh-aw-helper**:
+- `"gh-aw"`, `"gh aw"`, `"agentic workflow"`, `"agentic workflows"`
+- `"create agentic workflow"`, `"compile workflow"`, `"workflow frontmatter"`
+- `"safe outputs"`, `"safe inputs"`, `"fuzzy schedule"`, `"slash command trigger"`
+
 ### Agents
 
 Agents are invoked by Claude Code when their specialized capabilities match the task:
@@ -123,6 +129,9 @@ Agents are invoked by Claude Code when their specialized capabilities match the 
 "Orchestrate a comprehensive review of this PR"
 "Run plugin QA to check consistency"
 "Prepare a release for workflow-toolkit"
+"Help me create an agentic workflow for issue triage"
+"How do I configure safe outputs for gh-aw?"
+"Help me set up fuzzy scheduling for a daily workflow"
 ```
 
 ## Security: safe-skill-install Threat Model

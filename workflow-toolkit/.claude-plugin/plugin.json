@@ -23,6 +23,7 @@
     "supply-chain",
     "skill-scanning",
     "phased-review",
-    "plugin-qa"
+    "plugin-qa",
+    "gh-aw-helper"
   ]
 }

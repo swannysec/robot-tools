@@ -30,6 +30,7 @@ Development workflow automation, review orchestration, and productivity tools fo
 | `session-retrospective` | Iterative reflection skill for extracting actionable learnings from Claude Code sessions. Produces agent-ready context documents for future implementation. |
 | `plugin-qa` | Validates plugin manifests, README cross-references, SKILL.md frontmatter, version sync, and keyword coverage. Two modes: validate (check and report) and release-prep (validate + version bump workflow). |
 | `gh-aw-helper` | GitHub Agentic Workflows — write AI-powered automation in natural-language markdown that compiles to secure GitHub Actions. Covers setup, workflow authoring, triggers, safe I/O, security, MCP tools, 14 operational patterns, engine configuration, and troubleshooting. |
+| `gha-hardening` | GitHub Actions security hardening and configuration best practices. Covers workflow permissions, secrets, OIDC, attack patterns (injection, pwn requests, supply chain), detection tools (zizmor, scorecard, poutine, actionlint, harden-runner), runner security, and incident response. 60% security, 40% implementation guidance. |
 
 ### Agents
 
@@ -104,6 +105,12 @@ Skills activate automatically via trigger phrases:
 - `"create agentic workflow"`, `"compile workflow"`, `"workflow frontmatter"`
 - `"safe outputs"`, `"safe inputs"`, `"fuzzy schedule"`, `"slash command trigger"`
 
+**gha-hardening**:
+- `"github actions security"`, `"gha security"`, `"gha hardening"`
+- `"workflow security"`, `"actions hardening"`, `"secure github actions"`
+- `"pull_request_target"`, `"script injection actions"`, `"sha pinning actions"`
+- `"zizmor"`, `"scorecard checks"`, `"harden-runner"`, `"self-hosted runner security"`
+
 ### Agents
 
 Agents are invoked by Claude Code when their specialized capabilities match the task:
@@ -132,6 +139,10 @@ Agents are invoked by Claude Code when their specialized capabilities match the 
 "Help me create an agentic workflow for issue triage"
 "How do I configure safe outputs for gh-aw?"
 "Help me set up fuzzy scheduling for a daily workflow"
+"Harden this GitHub Actions workflow for security"
+"Is this pull_request_target workflow safe?"
+"What zizmor rules should I care about?"
+"How do I set up OIDC for AWS in GitHub Actions?"
 ```
 
 ## Security: safe-skill-install Threat Model

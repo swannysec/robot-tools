@@ -24,6 +24,7 @@
     "skill-scanning",
     "phased-review",
     "plugin-qa",
-    "gh-aw-helper"
+    "gh-aw-helper",
+    "gha-hardening"
   ]
 }

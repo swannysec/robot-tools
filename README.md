@@ -22,6 +22,7 @@ Security investigation and analysis tools.
 **Skills:**
 - `secret-scanning-investigator` - Investigate GitHub secret scanning alerts with evidence-based analysis
 - `security-vuln-analyzer` - Multi-agent vulnerability analysis with CVSS scoring and fix recommendations
+- `gha-hardening` - GitHub Actions security hardening — permissions, secrets, OIDC, attack patterns, supply chain, detection tools, runner security, incident response
 
 [View Documentation](./security-toolkit/README.md)
 
@@ -50,7 +51,6 @@ Development workflow automation and productivity tools.
 - `session-retrospective` - Extract learnings from Claude Code sessions
 - `plugin-qa` - Validate plugin manifests, READMEs, versions, and cross-references; guided release prep with version bumping
 - `gh-aw-helper` - GitHub Agentic Workflows guide — setup, authoring, triggers, safe I/O, security, MCP tools, patterns, troubleshooting
-- `gha-hardening` - GitHub Actions security hardening — permissions, secrets, OIDC, attack patterns, supply chain, detection tools, runner security, incident response
 
 **Agents:**
 - `code-reviewer` - Staff-level Rust code review specialist

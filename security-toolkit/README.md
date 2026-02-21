@@ -12,6 +12,7 @@ Security investigation and analysis tools for GitHub secret scanning and securit
 |-------|-------------|
 | `secret-scanning-investigator` | Investigate GitHub secret scanning alerts with evidence-based analysis. Trace provenance of leaked secrets, assess risk, and generate structured security reports. Includes batch processing and parallel sub-agent execution. |
 | `security-vuln-analyzer` | Multi-agent security vulnerability analysis and remediation. Orchestrates 4 parallel security agents (Security Auditor, Threat Modeling Expert, Backend Security Coder, Comprehensive Reviewer) to analyze vulnerability reports, validate findings, assess risk with CVSS scoring, and provide framework-specific fix recommendations. |
+| `gha-hardening` | GitHub Actions security hardening and configuration best practices. Covers workflow permissions, secrets, OIDC, attack patterns (injection, pwn requests, supply chain), detection tools (zizmor, scorecard, poutine, actionlint, harden-runner), runner security, and incident response. |
 
 ## Installation
 
@@ -48,6 +49,12 @@ Skills activate automatically via trigger phrases:
 - `"XSS/CSRF/injection issue"`
 - `"bug bounty submission"`
 
+**gha-hardening**:
+- `"github actions security"`, `"gha security"`, `"gha hardening"`
+- `"workflow security"`, `"actions hardening"`, `"secure github actions"`
+- `"pull_request_target"`, `"script injection actions"`, `"sha pinning actions"`
+- `"zizmor"`, `"scorecard checks"`, `"harden-runner"`, `"self-hosted runner security"`
+
 ### Example Commands
 
 ```
@@ -57,6 +64,10 @@ Skills activate automatically via trigger phrases:
 "I received a vulnerability report for clickjacking on our signup page"
 "Analyze this security disclosure and recommend fixes"
 "Review this CVE and assess its impact on our application"
+"Harden this GitHub Actions workflow for security"
+"Is this pull_request_target workflow safe?"
+"What zizmor rules should I care about?"
+"How do I set up OIDC for AWS in GitHub Actions?"
 ```
 
 ## Safety Features

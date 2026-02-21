@@ -1,6 +1,6 @@
 {
   "name": "security-toolkit",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Security investigation and analysis tools",
   "author": {
     "name": "swannysec",
@@ -14,6 +14,8 @@
     "secrets",
     "investigation",
     "github",
-    "scanning"
+    "scanning",
+    "gha-hardening",
+    "github-actions"
   ]
 }

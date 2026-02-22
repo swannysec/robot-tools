@@ -1,6 +1,6 @@
 {
   "name": "workflow-toolkit",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Development workflow automation, review orchestration, and productivity tools",
   "author": {
     "name": "swannysec",
@@ -23,6 +23,7 @@
     "skill-scanning",
     "phased-review",
     "plugin-qa",
-    "gh-aw-helper"
+    "gh-aw-helper",
+    "anti-laziness-guard"
   ]
 }

@@ -30,6 +30,7 @@ Development workflow automation, review orchestration, and productivity tools fo
 | `session-retrospective` | Iterative reflection skill for extracting actionable learnings from Claude Code sessions. Produces agent-ready context documents for future implementation. |
 | `plugin-qa` | Validates plugin manifests, README cross-references, SKILL.md frontmatter, version sync, and keyword coverage. Two modes: validate (check and report) and release-prep (validate + version bump workflow). |
 | `gh-aw-helper` | GitHub Agentic Workflows — write AI-powered automation in natural-language markdown that compiles to secure GitHub Actions. Covers setup, workflow authoring, triggers, safe I/O, security, MCP tools, 14 operational patterns, engine configuration, and troubleshooting. |
+| `anti-laziness-guard` | Three-layer Stop hook that detects and blocks work-skipping rationalizations. Layer 1: regex detection of known laziness phrases. Layer 2: Haiku-evaluated intent detection for premature victory and silent omission. Layer 3: optional agent-based deep verification against task lists and plan files. |
 
 ### Agents
 
@@ -103,6 +104,10 @@ Skills activate automatically via trigger phrases:
 - `"gh-aw"`, `"gh aw"`, `"agentic workflow"`, `"agentic workflows"`
 - `"create agentic workflow"`, `"compile workflow"`, `"workflow frontmatter"`
 - `"safe outputs"`, `"safe inputs"`, `"fuzzy schedule"`, `"slash command trigger"`
+
+**anti-laziness-guard** (passive — activates automatically via hooks, no slash command needed):
+- `"anti-laziness"`, `"laziness guard"`, `"stop hook"`
+- `"work skipping"`, `"skip detection"`, `"agent laziness"`, `"premature stop"`
 
 ### Agents
 

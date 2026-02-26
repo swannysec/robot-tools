@@ -21,7 +21,7 @@ Security investigation and analysis tools.
 
 **Skills:**
 - `secret-scanning-investigator` - Investigate GitHub secret scanning alerts with evidence-based analysis
-- `security-vuln-analyzer` - Multi-agent vulnerability analysis with CVSS scoring and fix recommendations
+- `security-vuln-analyzer` - Multi-agent vulnerability analysis with 5 parallel agents, EPSS+KEV+CVSS scoring, STRIDE threat modeling, Rust security patterns, and evidence-only policy
 - `gha-hardening` - GitHub Actions security hardening — permissions, secrets, OIDC, attack patterns, supply chain, detection tools, runner security, incident response
 
 [View Documentation](./security-toolkit/README.md)

@@ -11,7 +11,7 @@ Security investigation and analysis tools for GitHub secret scanning and securit
 | Skill | Description |
 |-------|-------------|
 | `secret-scanning-investigator` | Investigate GitHub secret scanning alerts with evidence-based analysis. Trace provenance of leaked secrets, assess risk, and generate structured security reports. Includes batch processing and parallel sub-agent execution. |
-| `security-vuln-analyzer` | Multi-agent security vulnerability analysis and remediation. Orchestrates 4 parallel security agents (Security Auditor, Threat Modeling Expert, Backend Security Coder, Comprehensive Reviewer) to analyze vulnerability reports, validate findings, assess risk with CVSS scoring, and provide framework-specific fix recommendations. |
+| `security-vuln-analyzer` | Multi-agent security vulnerability analysis and remediation. Orchestrates 5 parallel agents (Security Sentinel, Threat Modeling Expert, Backend Security Coder, Comprehensive Reviewer, Codex 5.3) with evidence-only policy, EPSS+KEV+CVSS scoring, STRIDE-per-interaction threat modeling, Rust-specific security patterns, and standardized output format for consistent synthesis. Includes 5 reference files for detailed methodology. |
 | `gha-hardening` | GitHub Actions security hardening and configuration best practices. Covers workflow permissions, secrets, OIDC, attack patterns (injection, pwn requests, supply chain), detection tools (zizmor, scorecard, poutine, actionlint, harden-runner), runner security, and incident response. |
 
 ## Installation

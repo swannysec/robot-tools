@@ -1,6 +1,6 @@
 {
   "name": "security-toolkit",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Security investigation and analysis tools",
   "author": {
     "name": "swannysec",
@@ -15,7 +15,16 @@
     "investigation",
     "github",
     "scanning",
+    "secret-scanning-investigator",
+    "security-vuln-analyzer",
     "gha-hardening",
-    "github-actions"
+    "github-actions",
+    "vulnerability-analysis",
+    "cvss",
+    "epss",
+    "stride",
+    "owasp",
+    "rust-security",
+    "threat-modeling"
   ]
 }

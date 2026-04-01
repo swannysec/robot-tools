@@ -24,15 +24,15 @@ Every remediation recommendation should follow this format:
 | Rank | Category | Key Controls | Test Items |
 |------|----------|-------------|------------|
 | A01 | Broken Access Control | RBAC, deny by default, rate limiting, CORS, disable directory listing | Verify all endpoints enforce auth; test horizontal/vertical privilege escalation |
-| A02 | Cryptographic Failures | TLS 1.2+, strong ciphers, no MD5/SHA-1, key management | Check cert config, data-at-rest encryption, password hashing algorithms |
-| **A03** | **Supply Chain Failures** (new in 2025) | Dependency auditing, SBOM, lockfiles, signature verification, vendor assessment | `cargo audit`, `cargo deny`, check for typosquatting, verify package integrity |
-| A04 | Insecure Design | Threat modeling (STRIDE), secure design patterns, abuse case testing | Review design docs, check for business logic flaws, test abuse scenarios |
-| A05 | Security Misconfiguration | Hardened defaults, remove unused features, patch management, error handling | Check debug mode, default credentials, unnecessary services, stack traces |
-| A06 | Vulnerable and Outdated Components | Dependency scanning, version monitoring, removal of unused deps | `cargo outdated`, `cargo audit`, check for end-of-life crates |
-| A07 | Identification and Authentication Failures | MFA, strong password policies, session management, credential stuffing protection | Test brute force protection, session fixation, token handling |
-| A08 | Software and Data Integrity Failures | Code signing, CI/CD integrity, update verification, serialization validation | Check pipeline security, verify update mechanisms, test deserialization |
-| A09 | Security Logging and Monitoring Failures | Audit logging, alerting, log integrity, incident detection | Verify auth events logged, check log injection, test alert triggers |
-| **A10** | **Exceptional Conditions** (new in 2025) | Graceful error handling, resource limits, circuit breakers, panic-safe code | Test error paths, resource exhaustion, malformed input handling |
+| A02 | Security Misconfiguration | Hardened defaults, remove unused features, patch management, error handling | Check debug mode, default credentials, unnecessary services, stack traces |
+| **A03** | **Software Supply Chain Failures** (new in 2025) | Dependency auditing, SBOM, lockfiles, signature verification, vendor assessment | `cargo audit`, `cargo deny`, check for typosquatting, verify package integrity |
+| A04 | Cryptographic Failures | TLS 1.2+, strong ciphers, no MD5/SHA-1, key management | Check cert config, data-at-rest encryption, password hashing algorithms |
+| A05 | Injection | Parameterized queries, input validation, output encoding, allowlisting | Test SQL/NoSQL/OS/LDAP injection, verify parameterized queries, check encoding |
+| A06 | Insecure Design | Threat modeling (STRIDE), secure design patterns, abuse case testing | Review design docs, check for business logic flaws, test abuse scenarios |
+| A07 | Authentication Failures | MFA, strong password policies, session management, credential stuffing protection | Test brute force protection, session fixation, token handling |
+| A08 | Software or Data Integrity Failures | Code signing, CI/CD integrity, update verification, serialization validation | Check pipeline security, verify update mechanisms, test deserialization |
+| A09 | Security Logging and Alerting Failures | Audit logging, alerting, log integrity, incident detection | Verify auth events logged, check log injection, test alert triggers |
+| **A10** | **Mishandling of Exceptional Conditions** (new in 2025) | Graceful error handling, resource limits, circuit breakers, panic-safe code | Test error paths, resource exhaustion, malformed input handling |
 
 ## Security Headers Implementation
 

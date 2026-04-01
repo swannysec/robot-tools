@@ -11,7 +11,7 @@ Security investigation and analysis tools for GitHub secret scanning and securit
 | Skill | Description |
 |-------|-------------|
 | `secret-scanning-investigator` | Investigate GitHub secret scanning alerts with evidence-based analysis. Trace provenance of leaked secrets, assess risk, and generate structured security reports. Includes batch processing and parallel sub-agent execution. |
-| `security-vuln-analyzer` | Multi-agent security vulnerability analysis and remediation. Orchestrates 5 parallel agents (Security Sentinel, Threat Modeling Expert, Backend Security Coder, Comprehensive Reviewer, Codex 5.3) with evidence-only policy, EPSS+KEV+CVSS scoring, STRIDE-per-interaction threat modeling, Rust-specific security patterns, and standardized output format for consistent synthesis. Includes 5 reference files for detailed methodology. |
+| `security-vuln-analyzer` | Multi-agent security vulnerability analysis with adversarial verification and ICD 203 analytic standards. Orchestrates 5 parallel finder agents (Security Sentinel, Threat Modeling Expert, Backend Security Coder, Comprehensive Security Reviewer, Codex Adversarial Analyst) with confirmation bias mitigation, CWE-specific verification procedures, and guided context gathering. Multi-phase synthesis with ICD 203 confidence/exploitability assessment, cross-model adversarial verification (Claude + Codex with 4-gate review), and deterministic validation. Includes 8 reference files. |
 | `gha-hardening` | GitHub Actions security hardening and configuration best practices. Covers workflow permissions, secrets, OIDC, attack patterns (injection, pwn requests, supply chain), detection tools (zizmor, scorecard, poutine, actionlint, harden-runner), runner security, and incident response. |
 
 ## Installation
@@ -42,12 +42,10 @@ Skills activate automatically via trigger phrases:
 - `"secret scanning report"`
 
 **security-vuln-analyzer**:
-- `"vulnerability report"`
-- `"security disclosure"`
-- `"analyze this CVE"`
-- `"clickjacking vulnerability"`
-- `"XSS/CSRF/injection issue"`
-- `"bug bounty submission"`
+- `"vulnerability report"`, `"security issue"`
+- `"security disclosure"`, `"bug bounty submission"`
+- `"analyze this CVE"`, `"vulnerability analysis"`
+- `"clickjacking"`, `"XSS"`, `"CSRF"`, `"injection"`
 
 **gha-hardening**:
 - `"github actions security"`, `"gha security"`, `"gha hardening"`

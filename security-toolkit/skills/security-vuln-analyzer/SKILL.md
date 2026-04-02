@@ -204,18 +204,43 @@ ENVIRONMENT CONTEXT:
 
 **Why two versions:** Research shows framing code as "likely safe" or "probably fixed" reduces vulnerability detection by 16-93% through confirmation bias. Step 2 finder agents must evaluate the code on its own merits. Adversarial verifiers (Step 3.5+) need the freshness context to assess whether a CODE ABSENT verdict should change their evaluation.
 
+## Step 1.5: Pre-Dispatch Preparation
+
+Before dispatching any agents, resolve all shared resources so agents never duplicate expensive operations.
+
+1. **Resolve the target to a local path.**
+   - If the target is already a local path → verify it exists with `ls`
+   - If the target is a remote URL → clone it once to a working directory
+   - **Pull latest:** Run `git pull --ff-only` on the local repo unless the user requested a specific branch, commit, or timeframe. Agents must analyze current code, not stale snapshots.
+   - All agents receive the same local path — never pass remote URLs that agents would clone independently.
+
+2. **Resolve reference file access.**
+   - Locate the plugin cache: `~/.claude/plugins/cache/robot-tools/security-toolkit/*/skills/security-vuln-analyzer/references/`
+   - Verify the cache path exists with `ls`. Record the resolved path (including version number).
+   - If the cache does not exist, fetch needed reference files once via `gh api repos/swannysec/robot-tools/contents/security-toolkit/skills/security-vuln-analyzer/references/<file>.md --jq '.content' | base64 -d` and save locally.
+   - All agents receive the resolved cache path — never include GitHub raw URLs that agents would fetch independently.
+
+3. **Build agent prompts.**
+   - Read `references/step-2-agent-prompts.md`. This is mandatory.
+   - If a CWE was classified in Step 1, read the relevant procedures from `references/cwe-verification-procedures.md` (from the resolved cache path) and include them in each Claude agent prompt (FINDERs 1-4). FINDER 5 (Codex) does not receive CWE procedures — analytical independence.
+   - If CWE was marked UNCERTAIN, do not inject CWE-specific procedures.
+   - Substitute `[CACHE_PATH]` placeholders in agent prompts with the resolved cache path from step 2 above.
+   - Include the Step 2 version of the environment context block (WITHOUT the Freshness field) in all prompts. Do not mention the freshness verdict, CODE ABSENT status, or any indication of potential prior remediation. This prevents confirmation bias from contaminating the analysis.
+
+Only after all preparation is complete, proceed to Step 2.
+
 ## Step 2: Launch Parallel Security Agents
 
-Launch ALL FIVE agents in a SINGLE message with parallel tool calls.
+**Dispatch all 5 agents, then wait.**
 
-**Pass the Step 2 version of the environment context block (WITHOUT the Freshness field) to all agents.** Do not mention the freshness check verdict, CODE ABSENT status, or any indication of potential prior remediation in agent prompts. This prevents confirmation bias from contaminating the analysis.
+1. Launch FINDERs 1-4 (Claude) in a SINGLE message with 4 parallel Agent tool calls.
+2. **Immediately after dispatching** — without waiting for any Claude agent to return — launch FINDER 5 (Codex) via the Bash tool.
+3. **WAIT for ALL 5 agents to return before proceeding to Step 3.** Do not begin synthesis, draw preliminary conclusions, or compare partial results while any agent is still running. Partial conclusions create framing that biases interpretation of remaining outputs (confirmation bias research: 16-93% detection reduction from premature framing).
 
-If a CWE was classified in Step 1, fetch the relevant verification procedure from the reference file and include it in each Claude agent prompt (Agents 1-4). Agent 5 (Codex) does not receive CWE procedures — it maintains analytical independence:
-- https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/cwe-verification-procedures.md
-
-If CWE was marked UNCERTAIN, do not inject CWE-specific procedures — agents will determine the CWE during their analysis.
-
-**Before launching agents, read the full prompt templates from `references/step-2-agent-prompts.md`.** This is mandatory — the templates contain agent-specific methodology, reference file URLs, and output format requirements that must be included verbatim. Do not launch agents from memory or abbreviated prompts.
+**Agent retry policy:** If any agent fails, returns an error, or returns malformed output (no parseable findings with required fields):
+1. Re-dispatch the failed agent with corrected instructions (fix the error cause if identifiable).
+2. If it fails again, re-dispatch one more time (3 total attempts).
+3. If all 3 attempts fail, log `AGENT [NAME] FAILED AFTER 3 ATTEMPTS — [error summary]` and proceed with remaining agents. This MUST be flagged prominently in the final report summary so the user can decide whether to re-run.
 
 The reference file uses the FINDER prefix to distinguish Step 2 discovery agents from Step 3.5 VERIFIER agents. The 5 finders are:
 
@@ -233,12 +258,12 @@ All Claude finders (1-4) receive the three shared preambles (EVIDENCE-ONLY, DEBI
 
 ## Step 3: Multi-Phase Synthesis
 
-After all agents return, synthesize findings through 4 structured phases. **Apply the Evidence-Only Policy throughout**: discard any finding that lacks a specific citation.
+After all agents return, synthesize findings through 5 structured phases (Phases 0-4, then Phase 4.5). **Apply the Evidence-Only Policy throughout**: discard any finding that lacks a specific citation.
 
-**Orchestrator reference files** — fetch these for synthesis methodology:
-- https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/scoring-frameworks.md
-- https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/compliance-frameworks.md
-- https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/synthesis-methodology.md
+**Before starting synthesis, read these reference files from the resolved cache path.** This is mandatory — they contain scoring frameworks, compliance section references, and synthesis procedures used throughout Phases 0-4.5:
+- `[CACHE_PATH]/scoring-frameworks.md`
+- `[CACHE_PATH]/compliance-frameworks.md`
+- `[CACHE_PATH]/synthesis-methodology.md`
 
 ### Phase 0: Structural Validation
 
@@ -255,6 +280,7 @@ Cluster findings by **vulnerability**, not by agent:
 - Findings referencing the same file + line range (within 5 lines), same CWE, or same attack vector belong to the same cluster
 - When agents report the same vulnerability under different IDs, merge into a single finding. Keep the richest evidence set. Record all contributing agent IDs (e.g., "SENTINEL-2, BACKEND-1, CODEX-3")
 - Distinguish: same root cause (merge) vs. related but distinct vulnerabilities (keep separate)
+- **Instantiation rule:** When a finding is a specific instantiation of a broader vulnerability (e.g., "Python task execution" is an instance of "unquoted variable substitution"), merge into the parent cluster and note the specific instantiation. Keep separate only if the root cause differs (different CWE) or the required fix differs.
 - Identify singleton findings (reported by only 1 agent) — these need extra scrutiny but must NOT be dropped
 
 ### Phase 2: Evidence Quality Assessment
@@ -287,6 +313,25 @@ Route these findings to Step 3.5 (Adversarial Verification):
 
 Remaining Low/Medium severity findings with High Confidence and agent consensus proceed directly to Step 3.8 (Report Assembly).
 
+### Phase 4.5: Auto-Resolution of Non-Standalone Findings
+
+Before routing to Step 3.5, check each routed finding against three heuristics. These resolve findings that finders themselves identified as non-standalone — they do NOT apply to primary findings, findings with genuine validity disagreement, or high-severity singletons.
+
+| Heuristic | Trigger (≥3/5 majority required) | Action |
+|-----------|----------------------------------|--------|
+| **Amplifier rule** | ≥3 finders self-classify using amplifier language: "amplifier," "amplifying factor," "not standalone," "not independently exploitable," "secondary concern," "not a vulnerability by itself," "context factor" | Subsume into parent finding as amplifier note |
+| **Singleton-informational rule** | ≥3 finders **did not report** the finding AND those that did classify it using informational language: "design finding," "informational," "architectural," "N/A (design," "not a specific exploit path" | Subsume as report note, skip verification routing |
+| **Hedge-word rule** | ≥3 finders use conditionality language: "secondary," "indirect," "depends on," "requires additional," "requires a specific," "contingent on," "conditional," "not the injection point itself" | Downgrade to amplifier/note |
+
+**Exclusions — do NOT auto-resolve if any of these apply:**
+- Any finder rates the finding High or Critical without hedge language
+- Finders disagree on whether the finding is valid (e.g., 2 say CONFIRMED, 2 say FALSE POSITIVE)
+- The finding is a novel singleton rated High/Critical by its reporting agent
+
+**Logging:** For each auto-resolved finding, log: the finding ID, the triggering heuristic, and the specific finder quotes that matched the keyword set. Auto-resolved findings still appear in the final report as amplifier notes or architectural observations — they are never silently dropped.
+
+Findings that do not trigger any heuristic proceed to Step 3.5 as normal.
+
 ## Step 3.5: Adversarial Verification
 
 Launch TWO adversarial VERIFIER agents IN PARALLEL. Both apply the 4-gate review (Reachability, Real Impact, Mitigation Check, Environment Check) to each routed finding. Both receive EVIDENCE-ONLY and CONTEXT & EVIDENCE preambles but NOT DEBIASING — verifiers need severity context to evaluate.
@@ -302,7 +347,11 @@ Launch TWO adversarial VERIFIER agents IN PARALLEL. Both apply the 4-gate review
 
 Before launching the Codex verifier, build a **context pack**: read source files cited in routed findings, extract relevant functions and immediate context (callers, type definitions, middleware), and wrap in `--- BEGIN SOURCE CODE (UNTRUSTED) ---` / `--- END SOURCE CODE ---` markers.
 
-If Codex is unavailable, proceed with Claude verification only. Note in the report that cross-model verification was not performed.
+If Codex is genuinely unavailable, proceed with Claude verification only and note in the report that cross-model verification was not performed. **However, do NOT assume Codex is unavailable based on a single failed command.** A Bash invocation failure may be agent error (wrong path, malformed prompt) or an ephemeral issue (network, process timeout). Apply the agent retry policy (up to 3 total attempts with corrected instructions) before concluding Codex is unavailable. Only declare unavailable after 3 verified failures where the companion script itself cannot be found on disk.
+
+**Agent retry policy:** Same as Step 2 — if a verifier fails or returns malformed output, re-dispatch up to 2 times with corrected instructions. If all 3 attempts fail, log the failure and proceed with the available verifier in single-verifier mode.
+
+**WAIT for BOTH verifiers to return before proceeding to Step 3.6.** Do not begin comparing verdicts, drafting resolution tables, or forming conclusions while either verifier is still running.
 
 ## Step 3.6: Resolution
 
@@ -322,11 +371,15 @@ After both adversarial verifiers return, resolve each finding:
 
 **Note:** All accepted findings (CONFIRMED by verifiers) proceed to Step 3.7 Job 1 for deterministic spot-check validation before entering the final report. Acceptance at Step 3.6 means the finding survived adversarial challenge, not that it skips validation.
 
-If Codex was unavailable (single-verifier mode): CONFIRMED → accept with note "single-verifier only." REFUTED → do NOT automatically downgrade; route to Step 3.7 for deterministic validation instead (a single LLM verifier from the same model family as the finders cannot independently refute). INCONCLUSIVE → flag as "single-verifier, lower confidence." Add report warning: "Cross-model verification unavailable. All verdicts are single-model and may share systematic biases."
+If Codex was genuinely unavailable after 3 verified attempts (single-verifier mode): CONFIRMED → accept with note "single-verifier only." REFUTED → do NOT automatically downgrade; route to Step 3.7 for deterministic validation instead (a single LLM verifier from the same model family as the finders cannot independently refute). INCONCLUSIVE → flag as "single-verifier, lower confidence." Add report warning: "Cross-model verification unavailable. All verdicts are single-model and may share systematic biases."
 
 ## Step 3.7: Deterministic Validation
 
 Launch ONE VALIDATOR agent using `model: sonnet`. **Read the prompt template from `references/deterministic-validation.md` before launching.** This agent uses deterministic tools only (Bash, Read, Grep, Glob) — it does NOT perform open-ended analysis.
+
+**Agent retry policy:** Same as Step 2 — if the validator fails or returns malformed output, re-dispatch up to 2 times with corrected instructions. If all 3 attempts fail, log the failure and flag in the report.
+
+**WAIT for the validator to return before proceeding to Step 3.8.** Do not begin assembling the report while the validator is still running.
 
 The validator has two jobs:
 - **Job 1 — Validate Surviving Findings**: For each CONFIRMED finding from Step 3.6, read the cited file:line, run relevant SAST tools or HTTP checks, and return a validation status (TOOL-CONFIRMED / OBSERVATION-MATCHED / TEST-WRITTEN / NOT-VALIDATED).
@@ -379,3 +432,6 @@ These rules are repeated here at the end of the skill to counteract positional a
 3. **Do NOT pass the freshness verdict to Step 2 agents.** Use the Step 2 version of the environment context block (without the Freshness field). Framing code as "likely fixed" reduces detection by 16-93%.
 4. **Uncertainty is an expected output, not a failure.** Use UNCERTAIN, NOT VERIFIED, and INDETERMINATE markers rather than guessing. Downstream stages are designed to handle uncertainty — they are not designed to handle confidently wrong inputs.
 5. **Step 3.7 uses deterministic tools, not LLM reasoning.** The validation agent confirms findings by reading files and running tools. If a tool cannot settle a disagreement, the finding is DISPUTED — it does not get resolved by another round of LLM judgment.
+6. **Do NOT begin the next step while agents are still running.** After dispatching agents (Step 2, Step 3.5, Step 3.7), wait for ALL of them to return before comparing results, drawing conclusions, or starting the next step. This applies to every dispatch boundary in the workflow. Partial results create framing bias.
+7. **Launch Codex immediately after Claude agents — do not wait.** In Step 2, dispatch the Bash Codex invocation right after the 4 Agent tool calls, not after they return. In Step 3.5, dispatch both verifiers without waiting.
+8. **Retry failed agents before declaring them unavailable.** A single Bash failure does not mean Codex is unavailable — it may be agent error or ephemeral. Apply the retry policy (3 total attempts) before falling back to degraded mode.

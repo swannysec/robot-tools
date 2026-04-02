@@ -150,10 +150,12 @@ Before delivering final report, verify:
 - [ ] Vulnerability validated with actual evidence
 - [ ] CWE classified or marked UNCERTAIN
 - [ ] Environment context captured (runtime, network, framework, auth, deployment stage)
+- [ ] Pre-dispatch preparation completed (target resolved to local path with fresh pull, reference cache verified)
 
 **Step 2 — Analysis:**
-- [ ] All 5 agents launched in parallel (single message)
 - [ ] Prompts loaded from `references/step-2-agent-prompts.md` (not from memory)
+- [ ] FINDERs 1-4 launched in a single message with parallel Agent tool calls
+- [ ] FINDER 5 (Codex) launched immediately after — not after Claude agents returned
 - [ ] DEBIASING preamble included in all Step 2 agent prompts (NOT in verifier prompts)
 - [ ] CONTEXT & EVIDENCE preamble included in all agent prompts
 - [ ] CWE-specific verification procedures injected (if CWE was classified)
@@ -163,13 +165,19 @@ Before delivering final report, verify:
 - [ ] ICD 203 Exploitability (7-point likelihood scale) in all agent output
 - [ ] CVSS score provided with breakdown (from 3+ agents)
 - [ ] EPSS/KEV scoring considered (from Sentinel — not CVSS alone)
+- [ ] Orchestrator waited for ALL 5 agents to return before starting Step 3
+- [ ] Failed agents re-dispatched up to 2 times before moving on
 
 **Step 3 — Synthesis:**
+- [ ] Synthesis methodology reference files read (scoring-frameworks, compliance-frameworks, synthesis-methodology)
 - [ ] Findings deduplicated by vulnerability (not by agent)
+- [ ] Instantiation rule applied (specific instances merged into parent clusters)
 - [ ] Evidence quality rated per ICD 203 (High/Moderate/Low Confidence)
 - [ ] Low Confidence findings discarded with explanation
 - [ ] Conflicts resolved by evidence quality (not vote counting)
 - [ ] Critical/High + DISPUTED + singletons + Moderate Confidence routed to verification
+- [ ] Phase 4.5 auto-resolution applied (amplifier, singleton-informational, hedge-word rules)
+- [ ] Auto-resolved findings logged with triggering rule and finder quotes
 
 **Steps 3.5-3.7 — Verification:**
 - [ ] Verifier prompts loaded from `references/adversarial-verification.md`
@@ -177,8 +185,10 @@ Before delivering final report, verify:
 - [ ] Step 3.5+ environment context block used (WITH Freshness field)
 - [ ] Codex verifier received context pack (orchestrator-packed source code)
 - [ ] Adversarial verdicts recorded with 4-gate results per finding
+- [ ] Orchestrator waited for BOTH verifiers to return before starting Step 3.6
 - [ ] Resolution table applied correctly (agree->accept, disagree->deterministic check)
 - [ ] Deterministic validation used `model: sonnet` per `references/deterministic-validation.md`
+- [ ] Orchestrator waited for validator to return before starting Step 3.8
 - [ ] Verifier disagreements resolved by deterministic ground truth (not another LLM)
 
 **Step 3.8 — Report:**
@@ -193,6 +203,7 @@ Before delivering final report, verify:
 - [ ] HUMAN REVIEW REQUIRED warning present in Risk Summary Box
 - [ ] Every finding cites specific evidence (file:line, header, or doc URL)
 - [ ] Unverified claims marked "NOT VERIFIED" with reason
+- [ ] Any agent failures clearly flagged in report summary with attempt counts
 
 **Step 4 — Fix Validation (if applicable):**
 - [ ] If fixes applied: /codex:adversarial-review run against working tree

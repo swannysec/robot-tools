@@ -67,10 +67,12 @@ prompt: |
 
   OWASP Top 10:2025 — use the 2025 version (not 2021): A03 is now "Software Supply Chain Failures", A05 is "Injection", A10 is "Mishandling of Exceptional Conditions". Assess compliance against all 10 categories.
 
-  REFERENCE FILES — fetch and read these for detailed methodology before starting analysis:
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/scoring-frameworks.md
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/rust-security.md
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/remediation-patterns.md
+  REFERENCE FILES — read these from the local cache path provided by the orchestrator before starting analysis:
+  - [CACHE_PATH]/scoring-frameworks.md
+  - [CACHE_PATH]/rust-security.md
+  - [CACHE_PATH]/remediation-patterns.md
+  If the cache path does not exist, use: gh api repos/swannysec/robot-tools/contents/security-toolkit/skills/security-vuln-analyzer/references/<filename>.md --jq '.content' | base64 -d
+  Do NOT clone the entire repository. Report the failure in your output if both methods fail.
 
   Perform a structured security audit of this vulnerability:
 
@@ -129,9 +131,11 @@ prompt: |
 
   For each identified threat, map to a specific mitigation control and note applicable compliance references (e.g., "PCI-DSS 6.5.1", "NIST SP 800-53 AC-3", "OWASP ASVS 5.2.1").
 
-  REFERENCE FILES — fetch and read these for detailed methodology before starting analysis:
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/threat-modeling-methodology.md
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/compliance-frameworks.md
+  REFERENCE FILES — read these from the local cache path provided by the orchestrator before starting analysis:
+  - [CACHE_PATH]/threat-modeling-methodology.md
+  - [CACHE_PATH]/compliance-frameworks.md
+  If the cache path does not exist, use: gh api repos/swannysec/robot-tools/contents/security-toolkit/skills/security-vuln-analyzer/references/<filename>.md --jq '.content' | base64 -d
+  Do NOT clone the entire repository. Report the failure in your output if both methods fail.
 
   Create threat model for this vulnerability:
 
@@ -196,9 +200,11 @@ prompt: |
   - Raw SQL via format!() instead of parameterized queries (sqlx::query! or diesel)
   - Unchecked integer arithmetic in release builds
 
-  REFERENCE FILES — fetch and read these for detailed methodology before starting analysis:
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/rust-security.md
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/remediation-patterns.md
+  REFERENCE FILES — read these from the local cache path provided by the orchestrator before starting analysis:
+  - [CACHE_PATH]/rust-security.md
+  - [CACHE_PATH]/remediation-patterns.md
+  If the cache path does not exist, use: gh api repos/swannysec/robot-tools/contents/security-toolkit/skills/security-vuln-analyzer/references/<filename>.md --jq '.content' | base64 -d
+  Do NOT clone the entire repository. Report the failure in your output if both methods fail.
 
   Assess the backend security surface for this vulnerability and provide implementation-grade fixes:
 
@@ -262,10 +268,12 @@ prompt: |
   Incident response awareness — if the vulnerability is actively exploited or high-risk:
   Recommend the response sequence: Detect → Contain (isolate affected systems) → Investigate (determine scope and access) → Remediate (apply fixes) → Recover (restore from clean state) → Learn (post-mortem, update controls)
 
-  REFERENCE FILES — fetch and read these for detailed methodology before starting analysis:
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/compliance-frameworks.md
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/scoring-frameworks.md
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/rust-security.md
+  REFERENCE FILES — read these from the local cache path provided by the orchestrator before starting analysis:
+  - [CACHE_PATH]/compliance-frameworks.md
+  - [CACHE_PATH]/scoring-frameworks.md
+  - [CACHE_PATH]/rust-security.md
+  If the cache path does not exist, use: gh api repos/swannysec/robot-tools/contents/security-toolkit/skills/security-vuln-analyzer/references/<filename>.md --jq '.content' | base64 -d
+  Do NOT clone the entire repository. Report the failure in your output if both methods fail.
 
   Provide comprehensive security review:
 
@@ -390,7 +398,7 @@ CODEX_PROMPT
 fi
 ```
 
-If the Codex companion script is not found, log the message and continue synthesis with 4 agents. The Codex agent is valuable but not required — the skill degrades gracefully.
+If the Codex companion script is not found, apply the agent retry policy: re-dispatch up to 2 times with corrected instructions (verify the find path, check plugin installation). A single Bash failure may be agent error or ephemeral — do NOT assume Codex is unavailable after one attempt. Only declare unavailable after 3 verified failures where the companion script itself cannot be found on disk. If genuinely unavailable after retries, log the message and continue synthesis with 4 agents.
 
 **Data classification note:** Invoking the Codex agent sends vulnerability details, target information, and environment context to OpenAI's API. The Codex adversarial verifier in Step 3.5 additionally sends source code excerpts (context pack). Ensure this is acceptable under your organization's data classification and third-party data sharing policies before enabling Codex integration. If not acceptable, the skill operates with Claude-only agents by skipping Agent 5 and the Codex verifier.
 

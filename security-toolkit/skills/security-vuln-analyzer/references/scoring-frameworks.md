@@ -11,6 +11,14 @@ Do not use CVSS alone. Use three complementary signals:
 - Measures: attack vector, complexity, privileges required, user interaction, scope, impact (confidentiality/integrity/availability)
 - Limitation: does not predict real-world exploitation likelihood
 
+### Scope Metric Guidance for Desktop/Local Targets
+
+For desktop applications and local-execution targets, agents frequently disagree on the CVSS 3.1 Scope metric (S:U vs S:C). Apply these guidelines:
+
+- **S:U (Unchanged)**: The exploit runs in the same user context as the vulnerable component. Use when: shell injection executes as the same user, privilege level does not change, no sandbox or isolation boundary is crossed.
+- **S:C (Changed)**: The exploit crosses a defined trust/isolation boundary. Use when: sandbox escape (e.g., extension sandbox → host filesystem), privilege escalation (user → root), or cross-tenant access.
+- **Default for desktop targets**: When agents disagree on Scope for a local target where the exploit runs as the invoking user, default to **S:U** and note the ambiguity in the consensus table. Escaping from "intended functionality" to "arbitrary shell" within the same user context is NOT a scope change under CVSS 3.1 — the security authority (the OS user account) has not changed.
+
 ### EPSS (Exploit Prediction Scoring System)
 - Probability (0.0-1.0) that a CVE will be exploited in the wild within the next 30 days
 - Source: [first.org/epss](https://www.first.org/epss/)

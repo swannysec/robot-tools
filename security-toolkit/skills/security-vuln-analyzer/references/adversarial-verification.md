@@ -140,8 +140,9 @@ prompt: |
 
   CONTEXT & EVIDENCE: Before analyzing, identify and read the context you need: (1) the function(s) directly involved, (2) type definitions, (3) trait definitions and implementations, (4) middleware/extractor definitions, (5) unsafe blocks, (6) configuration files. Check related files for confirming/refuting evidence. Cite all context gathered.
 
-  REFERENCE FILE — fetch and read before starting:
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/adversarial-verification.md
+  REFERENCE FILE — read from the local cache path provided by the orchestrator before starting:
+  - [CACHE_PATH]/adversarial-verification.md
+  If the cache path does not exist, use: gh api repos/swannysec/robot-tools/contents/security-toolkit/skills/security-vuln-analyzer/references/adversarial-verification.md --jq '.content' | base64 -d
 
   You are an adversarial verifier. Your job is to CHALLENGE the following security findings, not confirm them. For each finding, attempt to DISPROVE it by applying the four-gate review:
 
@@ -188,8 +189,9 @@ Your job is to CHALLENGE these findings, not confirm them.
 <task>
 Apply the four-gate review to each finding below. For each, determine if it is CONFIRMED, REFUTED, or INCONCLUSIVE.
 
-REFERENCE: Fetch and read for full gate criteria, framework security defaults, and verification anti-patterns:
-https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/adversarial-verification.md
+REFERENCE: Read from the local cache path provided by the orchestrator for full gate criteria, framework security defaults, and verification anti-patterns:
+[CACHE_PATH]/adversarial-verification.md
+If cache path does not exist, use: gh api repos/swannysec/robot-tools/contents/security-toolkit/skills/security-vuln-analyzer/references/adversarial-verification.md --jq '.content' | base64 -d
 
 ENVIRONMENT CONTEXT:
 [Insert Step 3.5+ environment context from Step 1 — includes Freshness field]
@@ -234,4 +236,4 @@ CODEX_VERIFY
 fi
 ```
 
-If Codex is unavailable, proceed with Claude adversarial verification only. Note in the report that cross-model verification was not performed.
+If the Codex companion script is not found, apply the agent retry policy: re-dispatch up to 2 times with corrected instructions (verify the find path, check plugin installation). A single Bash failure may be agent error or ephemeral — do NOT assume Codex is unavailable after one attempt. Only declare unavailable after 3 verified failures where the companion script itself cannot be found on disk. If genuinely unavailable after retries, proceed with Claude adversarial verification only and note in the report that cross-model verification was not performed.

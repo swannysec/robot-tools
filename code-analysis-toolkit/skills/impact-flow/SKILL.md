@@ -10,11 +10,20 @@ description: |
   (5) Dead code detection ("unused exports", "safe to delete", "orphan code")
   (6) Comprehensive analysis ("full analysis", "analyze this codebase")
 
-  Triggers: "impact-flow", "impact flow", "dependency graph", "blast radius", "impact analysis",
-  "health score", "what depends on", "call graph", "trace execution", "dead code", "module dependencies"
-
   NOTE: For security scanning, defer to security-sentinel. For design patterns, defer to
   pattern-recognition-specialist. For architecture compliance, defer to architecture-strategist.
+triggers:
+  - "impact-flow"
+  - "impact flow"
+  - "dependency graph"
+  - "blast radius"
+  - "impact analysis"
+  - "health score"
+  - "what depends on"
+  - "call graph"
+  - "trace execution"
+  - "dead code"
+  - "module dependencies"
 ---
 
 # Impact Flow Analysis

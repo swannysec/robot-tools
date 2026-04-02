@@ -8,7 +8,16 @@ description: |
   (4) Comparative analysis of AI frameworks, models, or services
   (5) Current state-of-the-art analysis with authoritative citations
 
-  Triggers: "research AI", "compare LLMs", "RAG architecture", "agentic workflow", "AI coding tools", "which model should I use", "how does X work in AI", "best practices for AI development", "production AI systems", "AI implementation guidance"
+triggers:
+  - "research AI"
+  - "compare LLMs"
+  - "RAG architecture"
+  - "agentic workflow"
+  - "AI coding tools"
+  - "which model should I use"
+  - "best practices for AI development"
+  - "production AI systems"
+  - "AI implementation guidance"
 ---
 
 # AI-Enabled Software Development Research Agent

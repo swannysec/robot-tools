@@ -2,6 +2,13 @@
 
 STRIDE-per-interaction analysis, attack tree construction, control library, defense-in-depth assessment, and risk calibration data.
 
+## Table of Contents
+
+- [STRIDE-per-Interaction Mapping](#stride-per-interaction-mapping)
+- [Attack Tree Model](#attack-tree-model)
+- [Control Library](#control-library)
+- [Risk Calibration Data](#risk-calibration-data)
+
 ## STRIDE-per-Interaction Mapping
 
 Apply STRIDE categories based on the source→target element pair in each data flow, not uniformly to every component:

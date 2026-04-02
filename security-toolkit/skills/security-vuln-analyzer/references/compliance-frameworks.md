@@ -2,6 +2,13 @@
 
 SOC 2 Trust Service Criteria, framework section number mappings, incident response playbook, and audit report structure.
 
+## Table of Contents
+
+- [SOC 2 Trust Service Criteria](#soc-2-trust-service-criteria)
+- [Compliance Section Number References](#compliance-section-number-references)
+- [Incident Response Playbook](#incident-response-playbook)
+- [Security Audit Report Structure](#security-audit-report-structure)
+
 ## SOC 2 Trust Service Criteria
 
 ### Common Criteria (CC1-CC9)

@@ -2,6 +2,20 @@
 
 Per-CWE detection checklists, verification steps, and known mitigations. Use to guide vulnerability analysis when the CWE class is identified.
 
+## Table of Contents
+
+- [CWE-79: Cross-Site Scripting (XSS)](#cwe-79-cross-site-scripting-xss)
+- [CWE-89: SQL Injection](#cwe-89-sql-injection)
+- [CWE-78: OS Command Injection](#cwe-78-os-command-injection)
+- [CWE-22: Path Traversal](#cwe-22-path-traversal)
+- [CWE-352: Cross-Site Request Forgery (CSRF)](#cwe-352-cross-site-request-forgery-csrf)
+- [CWE-918: Server-Side Request Forgery (SSRF)](#cwe-918-server-side-request-forgery-ssrf)
+- [CWE-287: Improper Authentication](#cwe-287-improper-authentication)
+- [CWE-862: Missing Authorization](#cwe-862-missing-authorization)
+- [CWE-190: Integer Overflow (Rust-relevant)](#cwe-190-integer-overflow-rust-relevant)
+- [CWE-416: Use After Free (Rust unsafe)](#cwe-416-use-after-free-rust-unsafe)
+- [CWE-119: Buffer Overflow (Rust unsafe/FFI)](#cwe-119-buffer-overflow-rust-unsafeffi)
+
 ## CWE-79: Cross-Site Scripting (XSS)
 ### Detection Patterns
 - Template rendering with unescaped user input (triple-brace in Handlebars, `| safe` in Jinja2, raw HTML insertion in React)

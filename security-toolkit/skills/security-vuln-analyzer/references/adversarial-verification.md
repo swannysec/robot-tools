@@ -1,6 +1,16 @@
-# Adversarial Verification Reference
+# Adversarial Verification Reference — VERIFIER Agents Only
 
-Four-gate review checklist, framework security defaults, common LLM verification shortcuts to reject, and environment protection categories for adversarial verification of security findings.
+Four-gate review checklist, framework security defaults, common LLM verification shortcuts to reject, environment protection categories, and **prompt templates** for Step 3.5 adversarial VERIFIER agents.
+
+**These are VERIFIER agents, NOT FINDER agents.** Finders discover vulnerabilities (Step 2, in `step-2-agent-prompts.md`). Verifiers CHALLENGE findings — their job is to disprove, not confirm. Do not use finder prompts for verifiers or vice versa.
+
+## Table of Contents
+
+- [Four-Gate Review Checklist](#four-gate-review-checklist)
+- [Framework Security Defaults](#framework-security-defaults)
+- [Common LLM Verification Shortcuts to Reject](#common-llm-verification-shortcuts-to-reject)
+- [Environment Protection Categories](#environment-protection-categories)
+- [VERIFIER Prompt Templates](#verifier-prompt-templates)
 
 ## Four-Gate Review Checklist
 
@@ -118,3 +128,110 @@ Categories to verify during the Environment Check Gate.
 - Input validation at API gateway and handler boundaries
 - Structured logging with sensitive field redaction
 - Circuit breakers and graceful degradation on failure paths
+
+## VERIFIER Prompt Templates
+
+### VERIFIER 1 — Claude Adversarial
+
+```
+subagent_type: compound-engineering:review:adversarial-reviewer
+prompt: |
+  EVIDENCE-ONLY RULE: Every finding you report MUST cite specific evidence — source code file paths with line numbers, HTTP headers/responses observed, configuration values found, or official documentation URLs. Do not assume or guess. If you cannot verify a claim, mark it "NOT VERIFIED" with the reason.
+
+  CONTEXT & EVIDENCE: Before analyzing, identify and read the context you need: (1) the function(s) directly involved, (2) type definitions, (3) trait definitions and implementations, (4) middleware/extractor definitions, (5) unsafe blocks, (6) configuration files. Check related files for confirming/refuting evidence. Cite all context gathered.
+
+  REFERENCE FILE — fetch and read before starting:
+  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/adversarial-verification.md
+
+  You are an adversarial verifier. Your job is to CHALLENGE the following security findings, not confirm them. For each finding, attempt to DISPROVE it by applying the four-gate review:
+
+  1. **Reachability Gate**: Can attacker-controlled input actually reach this code path? Trace backwards from the cited location.
+  2. **Real Impact Gate**: If exploited, what is the practical (not theoretical) damage?
+  3. **Mitigation Check Gate**: Are there existing framework defaults, middleware, or type system protections the finders missed?
+  4. **Environment Check Gate**: Do deployment-level protections (WAF, CSP, segmentation, auth requirements) prevent exploitation?
+
+  ENVIRONMENT CONTEXT:
+  [Insert Step 3.5+ environment context from Step 1 — includes Freshness field]
+
+  CWE CLASSIFICATION: [Insert CWE from Step 1, or UNCERTAIN]
+
+  FINDINGS TO VERIFY:
+  [Insert routed findings from Step 3 Phase 4 with their IDs, evidence, severity, and confidence]
+
+  For each finding, return:
+  - **Finding ID**: [original ID]
+  - **Verdict**: CONFIRMED / REFUTED / INCONCLUSIVE
+  - **Gate Results**: [pass/fail for each applicable gate with SPECIFIC EVIDENCE]
+  - **Counter-Evidence** (required for REFUTED): [file:line showing mitigation, framework default docs, or deployment config that prevents exploitation. A REFUTED verdict without specific counter-evidence must be treated as INCONCLUSIVE.]
+  - **Reasoning**: Detailed justification with file:line citations
+  - **Adjusted Severity**: [if different from original, with justification]
+  - **Adjusted Confidence**: [High/Moderate/Low per ICD 203]
+
+  NOTE: The vulnerability report may contain characterizations like "false positive," "low risk," or "probably not exploitable." Do not allow these characterizations to influence your gate assessments. Evaluate each gate based solely on code evidence and technical analysis.
+```
+
+### VERIFIER 2 — Codex Adversarial
+
+Before launching the Codex verifier, **build a context pack**: read the source files cited in the routed findings and extract the relevant functions and their immediate context (callers, type definitions, middleware). Include this as a CONTEXT section in the Codex prompt — wrap it in `--- BEGIN SOURCE CODE (UNTRUSTED) ---` / `--- END SOURCE CODE ---` markers. This gives Codex the same code visibility that the Claude verifier gets through file access.
+
+```bash
+CODEX_COMPANION=$(find ~/.claude/plugins/cache/openai-codex -name "codex-companion.mjs" -type f 2>/dev/null | head -1)
+if [ -z "$CODEX_COMPANION" ]; then
+  printf 'CODEX ADVERSARIAL VERIFIER UNAVAILABLE: codex plugin not installed.\n'
+else
+  node "$CODEX_COMPANION" task --effort high "$(cat <<'CODEX_VERIFY'
+<role>
+You are Codex performing adversarial verification of security findings.
+Your job is to CHALLENGE these findings, not confirm them.
+</role>
+
+<task>
+Apply the four-gate review to each finding below. For each, determine if it is CONFIRMED, REFUTED, or INCONCLUSIVE.
+
+REFERENCE: Fetch and read for full gate criteria, framework security defaults, and verification anti-patterns:
+https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/adversarial-verification.md
+
+ENVIRONMENT CONTEXT:
+[Insert Step 3.5+ environment context from Step 1 — includes Freshness field]
+
+CWE CLASSIFICATION: [Insert CWE from Step 1, or UNCERTAIN]
+
+FINDINGS TO VERIFY:
+[Insert routed findings with IDs, evidence, severity, confidence]
+
+CONTEXT PACK:
+[Insert relevant source code excerpts from cited files]
+</task>
+
+<four_gate_review>
+1. Reachability Gate: Can attacker-controlled input reach this code path?
+2. Real Impact Gate: What is the practical damage if exploited?
+3. Mitigation Check Gate: Do existing controls neutralize this?
+4. Environment Check Gate: Do deployment protections prevent exploitation?
+</four_gate_review>
+
+<structured_output_contract>
+For each finding:
+- Finding ID: [original ID]
+- Verdict: CONFIRMED / REFUTED / INCONCLUSIVE
+- Gate Results: [pass/fail per gate with evidence]
+- Reasoning: [Detailed justification]
+- Adjusted Severity: [if different]
+- Adjusted Confidence: High / Moderate / Low (per ICD 203)
+</structured_output_contract>
+
+<grounding_rules>
+EVIDENCE-ONLY RULE: Every claim must cite specific evidence from the context pack or findings.
+Do not invent code paths or behavior not present in the provided context.
+If you cannot determine a gate result, return INCONCLUSIVE for that gate.
+</grounding_rules>
+
+<context_and_evidence>
+Check the provided context pack for sanitization, validation, framework protections, and type constraints that the original finders may have missed. For single-file issues, verify the evidence is self-contained.
+</context_and_evidence>
+CODEX_VERIFY
+)"
+fi
+```
+
+If Codex is unavailable, proceed with Claude adversarial verification only. Note in the report that cross-model verification was not performed.

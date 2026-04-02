@@ -1,6 +1,6 @@
 {
   "name": "research-toolkit",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "AI/ML research and verification tools for software development",
   "author": {
     "name": "swannysec",
@@ -15,6 +15,9 @@
     "research",
     "verification",
     "development",
+    "ai-dev-research",
+    "ai-twitter-radar",
+    "research-verification",
     "kcap",
     "starduster"
   ]

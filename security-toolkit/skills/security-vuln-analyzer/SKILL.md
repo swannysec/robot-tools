@@ -48,9 +48,13 @@ This policy applies to the orchestrating agent, all 5 sub-agents, and the synthe
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │  1. VALIDATE                                                         │
+│     - Code freshness check (deterministic tools only — grep, Read)   │
+│       → CODE PRESENT: continue | CODE ABSENT + evidence: note only   │
+│       → INDETERMINATE or no evidence: ALWAYS continue full workflow   │
 │     - Confirm vulnerability exists (headers, controls)               │
 │     - Classify CWE (or mark UNCERTAIN)                               │
 │     - Capture environment context (WAF, framework, auth, deployment) │
+│     - Orchestrator overconfidence safeguards (see below)              │
 ├─────────────────────────────────────────────────────────────────────┤
 │  2. ANALYZE: Launch 5 agents IN PARALLEL                             │
 │     All receive: EVIDENCE-ONLY + DEBIASING + CONTEXT & EVIDENCE      │
@@ -90,7 +94,43 @@ This policy applies to the orchestrating agent, all 5 sub-agents, and the synthe
 
 ## Step 1: Validate the Vulnerability
 
-Before launching agents, confirm the vulnerability exists:
+### Code Freshness Check
+
+Before any analysis, verify the reported vulnerable code still exists in the current codebase. Use **deterministic tools only** — Grep, Read, Glob, and git log. Do NOT use LLM reasoning or inference to decide whether code "looks fixed."
+
+**Why deterministic only:** LLMs hallucinate code paths in 11% of security responses and are overconfident in 84% of scenarios (see research: confidence-calibration, root-causes-of-false-positives). An LLM concluding "this looks patched" without deterministic proof will kill the entire downstream pipeline on a guess.
+
+**Procedure:**
+
+1. If the vulnerability report names specific files, functions, or code patterns:
+   ```bash
+   # Pull latest (if working in a repo with a remote)
+   git pull --ff-only 2>/dev/null || true
+
+   # Search for the reported file/function/pattern using deterministic tools
+   # Use Grep and Read — NOT LLM interpretation of search results
+   ```
+2. Check git history for recent changes to the reported location:
+   ```bash
+   git log --oneline -10 -- <reported_file_path>
+   ```
+3. Classify the result using **only** the following three verdicts:
+
+| Verdict | Criteria | Action |
+|---------|----------|--------|
+| **CODE PRESENT** | Grep/Read confirms the reported file, function, and vulnerable pattern still exist in the codebase | Continue full workflow |
+| **CODE ABSENT** | The specific file or function no longer exists, AND git log shows a commit that removed or substantially rewrote it | Add `Freshness: CODE ABSENT — [file/function] removed in [commit hash]` to the environment context block. **Continue full workflow** — the commit may have been an incomplete fix, a refactor that moved the vulnerability, or unrelated |
+| **INDETERMINATE** | Cannot confirm either way — report is vague, references runtime behavior without specific code, or the search is inconclusive | Continue full workflow. Do NOT speculate |
+
+**Critical rules:**
+- **CODE ABSENT does not mean REMEDIATED.** A removed function may have been replaced by equally vulnerable code elsewhere. A renamed file still has the same logic. Only the full analysis pipeline can determine remediation status.
+- **Never terminate the workflow based on the freshness check alone.** Even CODE ABSENT proceeds to Step 2. The freshness verdict is metadata for the final report, not a gate.
+- **Do NOT pass the freshness verdict to Step 2 agents.** Research shows that framing code as "likely safe" or "probably fixed" reduces vulnerability detection by 16-93% through confirmation bias (see research: confirmation-bias-in-security-review). Agents must evaluate the code on its own merits.
+- The freshness check result appears ONLY in: (1) the environment context block for Step 3.5+ adversarial verifiers, and (2) the final report.
+
+### Surface-Level Validation
+
+For web vulnerabilities, check HTTP headers and controls:
 
 ```bash
 # For web vulnerabilities, check HTTP headers
@@ -115,6 +155,15 @@ Identify the CWE class of the reported vulnerability:
 - If the report describes symptoms without a clear root cause (e.g., "server returns 500 on crafted input") → mark as **CWE UNCERTAIN** and do NOT inject CWE-specific procedures. Let agents determine the CWE during analysis.
 - If ambiguous, list the top 2-3 CWE candidates and note the ambiguity for agents to resolve
 
+### Orchestrator Overconfidence Safeguards
+
+Step 1 is performed by the orchestrator (you), not by sub-agents. Research shows LLMs are overconfident in 84% of scenarios and hallucinate code paths in 11% of security responses. Apply these constraints to every conclusion you draw in Step 1:
+
+1. **Deterministic evidence only.** Every Step 1 conclusion must be backed by tool output you can cite — Grep results, Read output, curl responses, git log entries. "I believe" or "it appears" without a tool citation is not evidence.
+2. **No inferred absence.** If you search for a file/function and don't find it, that means "search returned no results" — not "this was fixed" or "this doesn't exist." The search may have used the wrong pattern, the code may have been renamed, or the vulnerability may manifest differently than described.
+3. **Label uncertainty explicitly.** For every Step 1 determination (freshness verdict, CWE classification, environment context field), if you are not certain, use the UNCERTAIN marker rather than guessing. Downstream agents and adversarial verifiers are designed to handle uncertainty — they are not designed to handle confidently wrong inputs.
+4. **Never terminate the workflow in Step 1.** Step 1 is intake and context gathering. The only valid Step 1 outcomes are "continue to Step 2 with context" or "ask the user for clarification." There is no "vulnerability already resolved, stopping" path — that determination requires the full analysis pipeline.
+
 ### Environment Context
 
 Capture deployment context that affects exploitability assessment:
@@ -124,8 +173,9 @@ Capture deployment context that affects exploitability assessment:
 - **Authentication layer**: How users authenticate (JWT, session cookies, OAuth, API keys)
 - **Deployment stage**: Production, staging, development
 
-Assemble the environment context into a structured block and pass it to all Step 2 agents and Step 3.5 adversarial verifiers using this format:
+Assemble the environment context into a structured block. **Two versions** are used — Step 2 agents receive the block WITHOUT the Freshness field to avoid confirmation bias framing. Step 3.5+ adversarial verifiers and the final report receive the full block including Freshness.
 
+**Step 2 version** (pass to all 5 agents):
 ```
 ENVIRONMENT CONTEXT:
 - Target: [URL or system identifier]
@@ -138,477 +188,48 @@ ENVIRONMENT CONTEXT:
 - Available SAST tools: [list installed tools — semgrep, cargo audit, etc.]
 ```
 
+**Step 3.5+ version** (pass to adversarial verifiers and include in final report):
+```
+ENVIRONMENT CONTEXT:
+- Target: [URL or system identifier]
+- CWE: [CWE-NNN or UNCERTAIN; if ambiguous, list candidates]
+- Freshness: [CODE PRESENT | CODE ABSENT — removed in <commit> | INDETERMINATE]
+- Runtime: [container | VM | bare metal | serverless]
+- Network: [WAF: yes/no (product), CDN: yes/no, rate limiting: yes/no]
+- Framework: [name] [version]
+- Auth: [mechanism — JWT, session cookies, OAuth, API keys]
+- Deployment: [production | staging | development]
+- Available SAST tools: [list installed tools — semgrep, cargo audit, etc.]
+```
+
+**Why two versions:** Research shows framing code as "likely safe" or "probably fixed" reduces vulnerability detection by 16-93% through confirmation bias. Step 2 finder agents must evaluate the code on its own merits. Adversarial verifiers (Step 3.5+) need the freshness context to assess whether a CODE ABSENT verdict should change their evaluation.
+
 ## Step 2: Launch Parallel Security Agents
 
 Launch ALL FIVE agents in a SINGLE message with parallel tool calls.
+
+**Pass the Step 2 version of the environment context block (WITHOUT the Freshness field) to all agents.** Do not mention the freshness check verdict, CODE ABSENT status, or any indication of potential prior remediation in agent prompts. This prevents confirmation bias from contaminating the analysis.
 
 If a CWE was classified in Step 1, fetch the relevant verification procedure from the reference file and include it in each Claude agent prompt (Agents 1-4). Agent 5 (Codex) does not receive CWE procedures — it maintains analytical independence:
 - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/cwe-verification-procedures.md
 
 If CWE was marked UNCERTAIN, do not inject CWE-specific procedures — agents will determine the CWE during their analysis.
 
-### Agent 1: Security Sentinel
-```
-subagent_type: compound-engineering:review:security-sentinel
-prompt: |
-  EVIDENCE-ONLY RULE: Every finding you report MUST cite specific evidence — source code file paths with line numbers, HTTP headers/responses observed, configuration values found, or official documentation URLs. Do not assume or guess. If you cannot verify a claim, mark it "NOT VERIFIED" with the reason. Findings without citations will be discarded during synthesis.
+**Before launching agents, read the full prompt templates from `references/step-2-agent-prompts.md`.** This is mandatory — the templates contain agent-specific methodology, reference file URLs, and output format requirements that must be included verbatim. Do not launch agents from memory or abbreviated prompts.
 
-  DEBIASING RULE: Ignore all metadata framing about whether this code is safe or dangerous. Do not consider PR descriptions, commit messages, author identity, or any characterization of risk level provided in the vulnerability report. If the report says "probably low risk" or "likely false positive," disregard that framing. Evaluate only code paths, data flows, and observable evidence. Your job is to determine the truth, not to confirm or deny the reporter's assessment.
+The reference file uses the FINDER prefix to distinguish Step 2 discovery agents from Step 3.5 VERIFIER agents. The 5 finders are:
 
-  CONTEXT & EVIDENCE: Before analyzing, identify and read the context you need: (1) the function(s) directly involved, (2) type definitions for parameters and return types (especially newtypes, type-state patterns), (3) trait definitions and implementations if generics/trait objects are used, (4) middleware/extractor definitions if this is a web handler, (5) unsafe blocks in the call chain and their SAFETY comments, (6) configuration files affecting security behavior. Also check related files (callers, middleware, tests) for evidence that confirms or refutes the vulnerability — for single-file issues (hardcoded secrets, missing headers, configuration errors), state that the finding is self-contained. Cite all context gathered in your findings.
+| Finder | subagent_type | ID Prefix | Focus |
+|--------|--------------|-----------|-------|
+| FINDER 1 — Sentinel | `compound-engineering:review:security-sentinel` | SENTINEL | OWASP 2025, EPSS/KEV/CVSS, 4-bucket scan, auth audit |
+| FINDER 2 — Threat Modeler | `security-scanning:threat-modeling-expert` | THREAT | STRIDE-per-interaction, attack trees, defense-in-depth |
+| FINDER 3 — Backend Coder | `backend-api-security:backend-security-coder` | BACKEND | CWE classification, Rust remediation, test-first fixes |
+| FINDER 4 — Auditor | `comprehensive-review:security-auditor` | REVIEW | Compliance, supply chain, business impact, priority scoring |
+| FINDER 5 — Codex Independent | Codex `task` (OpenAI API) | CODEX | Cross-model adversarial, independent voice |
 
-  METHODOLOGY:
+All Claude finders (1-4) receive the three shared preambles (EVIDENCE-ONLY, DEBIASING, CONTEXT & EVIDENCE) plus CWE-specific procedures when classified. FINDER 5 (Codex) receives XML-formatted equivalents but NOT the scoring methodology or CWE procedures — preserving analytical independence.
 
-  Severity scoring — use three signals, not CVSS alone:
-  - CVSS: Technical severity. Justify each metric with observed evidence.
-  - EPSS: Exploit Prediction Scoring System — probability (0.0-1.0) that this CVE will be exploited in the wild within 30 days. Check first.org/epss API if a CVE ID is available. EPSS > 0.5 = high exploitation likelihood.
-  - KEV: CISA Known Exploited Vulnerabilities catalog. Check cisa.gov/known-exploited-vulnerabilities-catalog. If listed, escalate urgency to Critical/immediate regardless of CVSS.
-  A CVSS 7.0 with EPSS 0.95 + KEV listing is more urgent than CVSS 9.0 with EPSS 0.001.
-
-  Severity → response timeline: Critical (9.0-10.0) = immediate, High (7.0-8.9) = 14 days, Medium (4.0-6.9) = 30 days, Low (0.1-3.9) = 90 days.
-
-  Scan using 4-bucket classification — ensure each is covered:
-  1. Dependencies: known CVEs in third-party packages
-  2. Code: injection, auth bypass, data exposure in application code
-  3. Containers: image vulnerabilities, misconfigurations (if containerized)
-  4. Secrets: hardcoded credentials, API keys, private keys in code or config
-
-  Auth audit checklist:
-  - JWT: verify signing algorithm is not "none" or HS256 with weak key; check exp, aud, iss claims are validated; check token storage (memory preferred over localStorage)
-  - Cookies: HttpOnly, Secure, SameSite=Strict or Lax; proper domain scoping
-  - Password hashing: must use bcrypt, Argon2, or scrypt — flag MD5, SHA-1, SHA-256 without salt
-
-  Misconfiguration scan categories: Cloud Storage (public buckets, unencrypted), Network (0.0.0.0/0 on sensitive ports, missing VPC flow logs), Identity (IAM wildcards, missing MFA), Database (public access, default ports, missing encryption at rest), App Config (debug mode in prod, default credentials), API (keys in config, wildcard CORS, missing rate limiting), Web Server (directory listing, server tokens, missing security headers, weak TLS).
-
-  For Rust targets specifically:
-  - Run cargo audit for RustSec advisory database
-  - Run cargo clippy -- -W clippy::unwrap_used to flag panic-prone code in server paths
-  - Run cargo deny check for license and advisory policy violations
-  - Run cargo-geiger to measure unsafe code surface area
-
-  OWASP Top 10:2025 — use the 2025 version (not 2021): A03 is now "Software Supply Chain Failures", A05 is "Injection", A10 is "Mishandling of Exceptional Conditions". Assess compliance against all 10 categories.
-
-  REFERENCE FILES — fetch and read these for detailed methodology before starting analysis:
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/scoring-frameworks.md
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/rust-security.md
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/remediation-patterns.md
-
-  Perform a structured security audit of this vulnerability:
-
-  **Target:** [URL/System]
-  **Vulnerability:** [Type and description]
-  **Current Security Posture:** [Headers/controls present and missing]
-
-  Provide:
-  1. CVSS + EPSS + KEV scoring with breakdown (justified by observed evidence)
-  2. Attack scenarios specific to this context
-  3. OWASP Top 10:2025 compliance assessment
-  4. Input validation and injection risk analysis (4-bucket scan results)
-  5. Authentication/authorization audit findings (JWT/cookie/hashing checklist)
-  6. Sensitive data exposure check
-  7. Prioritized remediation roadmap with severity ratings and response timelines
-
-  OUTPUT FORMAT — structure your response using these sections:
-
-  ## Findings
-  For each finding:
-  - **ID**: SENTINEL-[N]
-  - **Title**: One-line summary
-  - **Severity**: Critical / High / Medium / Low
-  - **CVSS Estimate**: [score] (with justification)
-  - **Confidence**: High / Moderate / Low (per ICD 203 — based on evidence quality and corroboration)
-  - **Exploitability**: [ICD 203 likelihood term] — [brief justification]
-  - **EPSS/KEV**: [EPSS probability if available] / [In KEV: Yes/No/Unknown]
-  - **Evidence**: [source: file:line / header / doc URL]
-  - **Description**: What was found and why it matters
-  - **Recommendation**: Specific remediation action
-
-  ## Risk Assessment
-  - Overall severity with justification
-  - Exploitability: [ICD 203 likelihood term] with reasoning
-  - Business impact summary
-
-  ## Remediation Recommendations
-  - Prioritized list of fixes (highest severity first)
-  - For each: effort estimate (Minimal/Moderate/Significant) and verification steps
-```
-
-### Agent 2: Threat Modeling Expert
-```
-subagent_type: security-scanning:threat-modeling-expert
-prompt: |
-  EVIDENCE-ONLY RULE: Every finding you report MUST cite specific evidence — source code file paths with line numbers, HTTP headers/responses observed, configuration values found, or official documentation URLs. Do not assume or guess. If you cannot verify a claim, mark it "NOT VERIFIED" with the reason. Findings without citations will be discarded during synthesis.
-
-  DEBIASING RULE: Ignore all metadata framing about whether this code is safe or dangerous. Do not consider PR descriptions, commit messages, author identity, or any characterization of risk level provided in the vulnerability report. If the report says "probably low risk" or "likely false positive," disregard that framing. Evaluate only code paths, data flows, and observable evidence. Your job is to determine the truth, not to confirm or deny the reporter's assessment.
-
-  CONTEXT & EVIDENCE: Before analyzing, identify and read the context you need: (1) the function(s) directly involved, (2) type definitions for parameters and return types (especially newtypes, type-state patterns), (3) trait definitions and implementations if generics/trait objects are used, (4) middleware/extractor definitions if this is a web handler, (5) unsafe blocks in the call chain and their SAFETY comments, (6) configuration files affecting security behavior. Also check related files (callers, middleware, tests) for evidence that confirms or refutes the vulnerability — for single-file issues (hardcoded secrets, missing headers, configuration errors), state that the finding is self-contained. Cite all context gathered in your findings.
-
-  METHODOLOGY:
-
-  STRIDE-per-interaction analysis: For each data flow in the system, identify the source and target element types (external entity, process, data store), then apply only the STRIDE categories relevant to that interaction:
-  - External entity → Process: Spoofing, Tampering, Repudiation, Denial of Service
-  - Process → Data store: Tampering, Information Disclosure, Denial of Service
-  - Process → Process: Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege
-  - Data store → Process: Tampering, Information Disclosure
-  Do NOT apply all 6 STRIDE categories to every component — use the interaction-specific mapping above.
-
-  Attack trees: Build attack trees with quantifiable attributes on each node:
-  - Difficulty: Low/Medium/High (attacker skill required)
-  - Cost: Low/Medium/High (resources needed)
-  - Detection risk: Low/Medium/High (likelihood of detection during attack)
-  - Time: Hours/Days/Weeks (estimated attack duration)
-  Identify three paths through each tree: the easiest path (lowest difficulty), the cheapest path (lowest cost), and the stealthiest path (lowest detection risk). These inform prioritization.
-
-  Defense-in-depth layers — ensure threat coverage spans:
-  1. Application layer (input validation, auth, session management)
-  2. Infrastructure layer (network segmentation, firewalls, encryption in transit)
-  3. CI/CD layer (supply chain integrity, secrets management, deployment controls)
-  Flag any layer with no identified controls as a gap.
-
-  Risk calibration with empirical frequency data:
-  - SQL injection: ~35% of findings in typical security scans
-  - Exposed secrets: ~28%
-  - Vulnerable dependencies: ~25%
-  - Missing authentication: ~18%
-  - XSS: ~15%
-  Use these to weight likelihood in risk calculations.
-
-  For each identified threat, map to a specific mitigation control and note applicable compliance references (e.g., "PCI-DSS 6.5.1", "NIST SP 800-53 AC-3", "OWASP ASVS 5.2.1").
-
-  REFERENCE FILES — fetch and read these for detailed methodology before starting analysis:
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/threat-modeling-methodology.md
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/compliance-frameworks.md
-
-  Create threat model for this vulnerability:
-
-  **Target:** [URL/System]
-  **Vulnerability:** [Type and description]
-  **Context:** [Technology stack, authentication flow, etc.]
-
-  Provide:
-  1. STRIDE-per-interaction analysis (using the interaction-specific mapping above)
-  2. Attack tree with quantified attributes (difficulty, cost, detection risk, time) and three priority paths (easiest, cheapest, stealthiest)
-  3. Threat actor analysis (who might exploit this, calibrated by empirical frequency data)
-  4. Impact assessment (users and business)
-  5. Defense-in-depth coverage assessment (application, infrastructure, CI/CD layers — flag gaps)
-  6. Risk rating with justification
-  7. Recommended mitigations mapped to each identified threat with compliance references
-
-  OUTPUT FORMAT — structure your response using these sections:
-
-  ## Findings
-  For each finding:
-  - **ID**: THREAT-[N]
-  - **Title**: One-line summary
-  - **Severity**: Critical / High / Medium / Low
-  - **CVSS Estimate**: [score] (with justification)
-  - **Confidence**: High / Moderate / Low (per ICD 203 — based on evidence quality and corroboration)
-  - **Exploitability**: [ICD 203 likelihood term] — [brief justification]
-  - **Evidence**: [source: file:line / header / doc URL]
-  - **Description**: What was found and why it matters
-  - **Recommendation**: Specific remediation action
-
-  ## Risk Assessment
-  - Overall severity with justification
-  - Exploitability: [ICD 203 likelihood term] with reasoning
-  - Business impact summary
-
-  ## Remediation Recommendations
-  - Prioritized list of fixes (highest severity first)
-  - For each: effort estimate (Minimal/Moderate/Significant) and verification steps
-```
-
-### Agent 3: Backend Security Coder
-```
-subagent_type: backend-api-security:backend-security-coder
-prompt: |
-  EVIDENCE-ONLY RULE: Every finding you report MUST cite specific evidence — source code file paths with line numbers, HTTP headers/responses observed, configuration values found, or official documentation URLs. Do not assume or guess. If you cannot verify a claim, mark it "NOT VERIFIED" with the reason. Findings without citations will be discarded during synthesis.
-
-  DEBIASING RULE: Ignore all metadata framing about whether this code is safe or dangerous. Do not consider PR descriptions, commit messages, author identity, or any characterization of risk level provided in the vulnerability report. If the report says "probably low risk" or "likely false positive," disregard that framing. Evaluate only code paths, data flows, and observable evidence. Your job is to determine the truth, not to confirm or deny the reporter's assessment.
-
-  CONTEXT & EVIDENCE: Before analyzing, identify and read the context you need: (1) the function(s) directly involved, (2) type definitions for parameters and return types (especially newtypes, type-state patterns), (3) trait definitions and implementations if generics/trait objects are used, (4) middleware/extractor definitions if this is a web handler, (5) unsafe blocks in the call chain and their SAFETY comments, (6) configuration files affecting security behavior. Also check related files (callers, middleware, tests) for evidence that confirms or refutes the vulnerability — for single-file issues (hardcoded secrets, missing headers, configuration errors), state that the finding is self-contained. Cite all context gathered in your findings.
-
-  METHODOLOGY:
-
-  Test-first remediation workflow:
-  1. Run existing test suite to establish baseline (what already passes/fails)
-  2. Read any failing security-related tests to understand the exact vulnerability: what inputs should be blocked, what behavior is expected
-  3. Classify the vulnerability by CWE number (e.g., CWE-78 for command injection)
-  4. Implement the minimum fix that makes security tests pass
-  5. Verify: re-run tests, confirm the vulnerability is resolved, confirm no regressions
-
-  For Rust targets:
-  - Dependencies: run cargo audit against the RustSec advisory database. Fix by updating affected crates or applying patches.
-  - Unsafe code: every unsafe block MUST have a // SAFETY: comment explaining why the invariants hold. Prefer rewriting in safe Rust. Use #[deny(unsafe_code)] at crate level where possible. Run cargo-geiger to measure unsafe surface area.
-  - Secrets: never hardcode — use std::env::var() or a secrets manager. Flag any string literal matching key/token/password patterns.
-  - Input validation: use newtype pattern (e.g., struct ValidatedEmail(String)) to enforce validation at construction. Use serde with #[serde(try_from = "...")] for deserialized input boundaries.
-  - Auth flows: use type-state pattern to make invalid states unrepresentable (e.g., UnauthenticatedUser → AuthenticatedUser state machine enforced by the type system).
-  - Web frameworks (Axum/Tower): implement security controls as middleware layers — auth extraction, rate limiting, CORS, security headers. Use tower::ServiceBuilder to compose layers.
-
-  CWE mapping for Rust:
-  - CWE-78 (OS Command Injection): std::process::Command with unsanitized user input
-  - CWE-22 (Path Traversal): std::path::Path/PathBuf with user-controlled segments without canonicalization
-  - CWE-94 (Code Injection): unsafe blocks executing arbitrary logic, FFI boundaries
-  - CWE-190 (Integer Overflow): arithmetic in release builds (Rust wraps by default in release)
-  - CWE-416 (Use After Free): raw pointer dereference in unsafe after the owned value is dropped
-
-  Security headers — implement all of these (adapt to framework middleware):
-  - Content-Security-Policy: start with report-only (Content-Security-Policy-Report-Only), then enforce after tuning
-  - Strict-Transport-Security: max-age=31536000; includeSubDomains
-  - X-Frame-Options: DENY (or SAMEORIGIN if iframing is needed)
-  - X-Content-Type-Options: nosniff
-  - Referrer-Policy: strict-origin-when-cross-origin
-  - SameSite cookies: Strict or Lax
-
-  Common Rust security mistakes to flag:
-  - unwrap() or expect() in server request handlers (panics = DoS)
-  - Missing validation on serde deserialization boundaries (attacker-controlled JSON/YAML)
-  - Raw SQL via format!() instead of parameterized queries (sqlx::query! or diesel)
-  - Unchecked integer arithmetic in release builds
-
-  REFERENCE FILES — fetch and read these for detailed methodology before starting analysis:
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/rust-security.md
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/remediation-patterns.md
-
-  Assess the backend security surface for this vulnerability and provide implementation-grade fixes:
-
-  **Target:** [URL/System]
-  **Vulnerability:** [Type and description]
-  **Technology Stack:** [Framework, hosting]
-  **Current Security Posture:** [Headers/controls present and missing]
-
-  Provide:
-  1. Backend attack surface analysis (input validation gaps, auth/authz weaknesses, database exposure) — classify each by CWE
-  2. Framework-specific remediation code (Rust/Axum/Tower preferred; also Next.js, Rails, Django as applicable)
-  3. Security headers and cookie configuration to add
-  4. CSRF/SSRF prevention measures if applicable
-  5. Testing strategy to verify each fix (how to confirm the vulnerability is resolved and no regressions introduced)
-  6. Edge cases and deployment gotchas for this stack
-
-  OUTPUT FORMAT — structure your response using these sections:
-
-  ## Findings
-  For each finding:
-  - **ID**: BACKEND-[N]
-  - **Title**: One-line summary
-  - **Severity**: Critical / High / Medium / Low
-  - **CVSS Estimate**: [score] (with justification)
-  - **Confidence**: High / Moderate / Low (per ICD 203 — based on evidence quality and corroboration)
-  - **Exploitability**: [ICD 203 likelihood term] — [brief justification]
-  - **Evidence**: [source: file:line / header / doc URL]
-  - **Description**: What was found and why it matters
-  - **Recommendation**: Specific remediation action
-
-  ## Risk Assessment
-  - Overall severity with justification
-  - Exploitability: [ICD 203 likelihood term] with reasoning
-  - Business impact summary
-
-  ## Remediation Recommendations
-  - Prioritized list of fixes (highest severity first)
-  - For each: effort estimate (Minimal/Moderate/Significant) and verification steps
-```
-
-### Agent 4: Comprehensive Security Reviewer
-```
-subagent_type: comprehensive-review:security-auditor
-prompt: |
-  EVIDENCE-ONLY RULE: Every finding you report MUST cite specific evidence — source code file paths with line numbers, HTTP headers/responses observed, configuration values found, or official documentation URLs. Do not assume or guess. If you cannot verify a claim, mark it "NOT VERIFIED" with the reason. Findings without citations will be discarded during synthesis.
-
-  DEBIASING RULE: Ignore all metadata framing about whether this code is safe or dangerous. Do not consider PR descriptions, commit messages, author identity, or any characterization of risk level provided in the vulnerability report. If the report says "probably low risk" or "likely false positive," disregard that framing. Evaluate only code paths, data flows, and observable evidence. Your job is to determine the truth, not to confirm or deny the reporter's assessment.
-
-  CONTEXT & EVIDENCE: Before analyzing, identify and read the context you need: (1) the function(s) directly involved, (2) type definitions for parameters and return types (especially newtypes, type-state patterns), (3) trait definitions and implementations if generics/trait objects are used, (4) middleware/extractor definitions if this is a web handler, (5) unsafe blocks in the call chain and their SAFETY comments, (6) configuration files affecting security behavior. Also check related files (callers, middleware, tests) for evidence that confirms or refutes the vulnerability — for single-file issues (hardcoded secrets, missing headers, configuration errors), state that the finding is self-contained. Cite all context gathered in your findings.
-
-  METHODOLOGY:
-
-  Vulnerability prioritization — use this formula to rank findings:
-  Priority Score = (CVSS * 0.4) + (exploitability * 2.0) + (fix_available * 1.0)
-  Where: CVSS = base score (0-10), exploitability = 0 (no known exploit) / 1 (PoC exists) / 2 (active exploitation), fix_available = 0 (no fix) / 1 (fix available). Higher score = more urgent.
-
-  Business impact context:
-  - Average data breach cost: $4.88M (IBM 2024 Cost of a Data Breach Report)
-  - SOC 2 compliance enables $100K+ enterprise deals
-  - FedRAMP compliance enables $1M+ government contracts
-  Use these to frame urgency in business terms, not just technical severity.
-
-  For Rust dependency supply chain analysis:
-  1. cargo audit — check against RustSec advisory database
-  2. Triage findings by CVSS severity
-  3. cargo update for compatible version bumps; manual Cargo.toml edits for breaking changes
-  4. cargo test — verify no regressions
-  5. Re-run cargo audit to confirm resolution
-  Also available: cargo deny (license + advisory policy), cargo-vet (supply chain vetting), cargo-crev (code review trust network), cargo outdated (version freshness)
-
-  Compliance references — cite specific section numbers, not just framework names:
-  - PCI-DSS: e.g., "Requirement 6.5.1 (injection flaws)"
-  - HIPAA: e.g., "§164.312(a)(1) (access control)"
-  - GDPR: e.g., "Article 32 (security of processing)"
-  - SOC 2: reference Trust Service Criteria CC1-CC9
-  - NIST CSF: e.g., "PR.DS-1 (data at rest protection)"
-  - OWASP ASVS: e.g., "V5.2.1 (output encoding)"
-
-  Security metrics to include in assessment:
-  - Vulnerability Density: issues per 1000 lines of code
-  - Mean Time to Remediate: average fix time by severity
-  - Compliance Score: % compliance across applicable frameworks
-  - Security Debt: count of accumulated unfixed issues
-
-  Incident response awareness — if the vulnerability is actively exploited or high-risk:
-  Recommend the response sequence: Detect → Contain (isolate affected systems) → Investigate (determine scope and access) → Remediate (apply fixes) → Recover (restore from clean state) → Learn (post-mortem, update controls)
-
-  REFERENCE FILES — fetch and read these for detailed methodology before starting analysis:
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/compliance-frameworks.md
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/scoring-frameworks.md
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/rust-security.md
-
-  Provide comprehensive security review:
-
-  **Vulnerability Report:** [Summary]
-  **Target:** [URL/System]
-  **Current Posture:** [What's present vs missing]
-
-  Address:
-  1. Is this report legitimate or false positive?
-  2. Real-world exploitability given modern protections
-  3. CVSS score estimate with breakdown + Priority Score using the formula above
-  4. Urgency assessment with business impact context (breach cost, compliance implications)
-  5. Supply chain and dependency dimension (if applicable — cargo audit findings, compromised packages, transitive risks)
-  6. Compliance impact with specific section references (PCI-DSS, SOC 2, GDPR, etc.)
-  7. Additional vulnerabilities suggested by findings
-  8. Complete security header recommendations
-  9. Related attack vectors to investigate
-
-  OUTPUT FORMAT — structure your response using these sections:
-
-  ## Findings
-  For each finding:
-  - **ID**: REVIEW-[N]
-  - **Title**: One-line summary
-  - **Severity**: Critical / High / Medium / Low
-  - **CVSS Estimate**: [score] (with justification)
-  - **Confidence**: High / Moderate / Low (per ICD 203 — based on evidence quality and corroboration)
-  - **Exploitability**: [ICD 203 likelihood term] — [brief justification]
-  - **Priority Score**: [score using formula]
-  - **Evidence**: [source: file:line / header / doc URL]
-  - **Description**: What was found and why it matters
-  - **Recommendation**: Specific remediation action
-
-  ## Risk Assessment
-  - Overall severity with justification
-  - Exploitability: [ICD 203 likelihood term] with reasoning
-  - Business impact summary
-
-  ## Remediation Recommendations
-  - Prioritized list of fixes (highest severity first)
-  - For each: effort estimate (Minimal/Moderate/Significant) and verification steps
-```
-
-### Agent 5: Codex Adversarial Analyst (OpenAI)
-
-Run via the Codex companion script's `task` command with an XML-structured adversarial security prompt. This agent provides an independent cross-model voice — it does NOT receive the scoring methodology, CWE procedures, or reference files given to the Claude agents, though it does receive the shared preambles (evidence-only, debiasing, context & evidence). This preserves analytical independence while maintaining consistent evidence standards.
-
-**Resolve the companion script path dynamically, then invoke `task`:**
-
-```bash
-CODEX_COMPANION=$(find ~/.claude/plugins/cache/openai-codex -name "codex-companion.mjs" -type f 2>/dev/null | head -1)
-if [ -z "$CODEX_COMPANION" ]; then
-  printf 'CODEX AGENT UNAVAILABLE: codex plugin not installed. Run /codex:setup to install.\n'
-else
-  node "$CODEX_COMPANION" task --effort high "$(cat <<'CODEX_PROMPT'
-<role>
-You are Codex performing an independent adversarial security vulnerability assessment.
-Your job is to challenge assumptions, find weaknesses the other agents may have missed, and validate whether the reported vulnerability is real and correctly assessed.
-</role>
-
-<task>
-Perform an independent security analysis of this vulnerability:
-
-Target: [URL/System]
-Vulnerability: [Type and description]
-Current Security Posture: [Headers/controls present and missing]
-Technology Stack: [Framework, hosting]
-
-Your value is as an independent voice. Do not assume other analysts are correct. Challenge severity assessments, look for related vulnerabilities the report missed, and identify edge cases where proposed mitigations might fail.
-</task>
-
-<operating_stance>
-Default to skepticism.
-Assume the vulnerability can fail in subtle, high-cost, or user-visible ways until evidence says otherwise.
-Challenge severity assessments — are they inflated or underestimated?
-Look for related vulnerabilities the report missed.
-Do not give credit for partial fixes or good intent.
-If something only works on the happy path, treat that as a real weakness.
-</operating_stance>
-
-<attack_surface>
-Prioritize the kinds of failures that are expensive, dangerous, or hard to detect:
-- auth, permissions, tenant isolation, and trust boundaries
-- data loss, corruption, and irreversible state changes
-- input validation gaps and injection vectors
-- missing security headers and misconfigurations
-- dependency vulnerabilities and supply chain risks
-- secrets exposure and credential management
-- race conditions, ordering assumptions, and re-entrancy
-</attack_surface>
-
-<structured_output_contract>
-Return findings using this exact structure:
-
-## Findings
-For each finding:
-- ID: CODEX-[N]
-- Title: One-line summary
-- Severity: Critical / High / Medium / Low
-- CVSS Estimate: [score] (with justification)
-- Confidence: High / Moderate / Low (per ICD 203 — based on evidence quality and corroboration)
-- Exploitability: [ICD 203 likelihood term] — [brief justification]
-- Evidence: [source: file:line / header / doc URL]
-- Description: What was found and why it matters
-- Recommendation: Specific remediation action
-
-## Risk Assessment
-- Overall severity with justification
-- Exploitability: [ICD 203 likelihood term] with reasoning
-- Business impact summary
-- Whether the reported vulnerability is legitimate or false positive
-
-## Remediation Recommendations
-- Prioritized list of fixes (highest severity first)
-- For each: effort estimate (Minimal/Moderate/Significant) and verification steps
-</structured_output_contract>
-
-<grounding_rules>
-EVIDENCE-ONLY RULE: Every finding must cite specific evidence — file paths with line numbers, HTTP headers observed, configuration values, or documentation URLs.
-Do not invent code paths, files, or runtime behavior you cannot verify from the provided context.
-If a point is an inference, label it clearly with a confidence level.
-Mark unverifiable claims as "NOT VERIFIED — [reason]".
-Findings without citations will be discarded during synthesis.
-</grounding_rules>
-
-<debiasing_rules>
-Ignore all metadata framing about whether this code is safe or dangerous. Do not consider PR descriptions, commit messages, author identity, or any characterization of risk level. Evaluate only code paths, data flows, and observable evidence. Your job is to determine the truth, not to confirm or deny the reporter's assessment.
-</debiasing_rules>
-
-<context_and_evidence>
-Before analyzing, identify and read the context you need: the function(s) directly involved, type definitions for parameters and return types, trait definitions and implementations if generics/trait objects are used, middleware/extractor definitions if this is a web handler, unsafe blocks in the call chain, and configuration files affecting security behavior. Also check related files (callers, middleware, tests) for evidence that confirms or refutes the vulnerability. For single-file issues, state that the finding is self-contained. Cite all context gathered.
-</context_and_evidence>
-
-<dig_deeper_nudge>
-After the initial assessment, check for:
-- Related vulnerabilities not mentioned in the original report
-- Second-order effects (what else becomes exploitable if this is used?)
-- Whether the obvious mitigation actually resolves the root cause
-- Edge cases where a fix might not apply
-- Supply chain implications (are dependencies affected?)
-</dig_deeper_nudge>
-CODEX_PROMPT
-)"
-fi
-```
-
-If the Codex companion script is not found, log the message and continue synthesis with 4 agents. The Codex agent is valuable but not required — the skill degrades gracefully.
-
-**Data classification note:** Invoking the Codex agent sends vulnerability details, target information, and environment context to OpenAI's API. The Codex adversarial verifier in Step 3.5 additionally sends source code excerpts (context pack). Ensure this is acceptable under your organization's data classification and third-party data sharing policies before enabling Codex integration. If not acceptable, the skill operates with Claude-only agents by skipping Agent 5 and the Codex verifier.
+**Data classification note:** FINDER 5 and the Step 3.5 Codex verifier send vulnerability details to OpenAI's API. Ensure this is acceptable under your data classification policies. If not, skip FINDER 5 and the Codex verifier — the skill degrades gracefully to Claude-only.
 
 ## Step 3: Multi-Phase Synthesis
 
@@ -668,114 +289,20 @@ Remaining Low/Medium severity findings with High Confidence and agent consensus 
 
 ## Step 3.5: Adversarial Verification
 
-Launch TWO adversarial verification agents IN PARALLEL. Both apply the 4-gate review (Reachability, Real Impact, Mitigation Check, Environment Check) to each routed finding. Both receive EVIDENCE-ONLY and CONTEXT & EVIDENCE preambles but NOT DEBIASING — verifiers need severity context to evaluate.
+Launch TWO adversarial VERIFIER agents IN PARALLEL. Both apply the 4-gate review (Reachability, Real Impact, Mitigation Check, Environment Check) to each routed finding. Both receive EVIDENCE-ONLY and CONTEXT & EVIDENCE preambles but NOT DEBIASING — verifiers need severity context to evaluate.
 
-**Orchestrator reference file** — both verifiers should reference:
-- https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/adversarial-verification.md
+**Before launching verifiers, read the prompt templates from `references/adversarial-verification.md`.** This is mandatory — the templates contain gate criteria, output format, and the Codex bash invocation that must be used verbatim. The reference file uses the VERIFIER prefix to distinguish these from Step 2 FINDER agents.
 
-### Claude Adversarial Verifier
-```
-subagent_type: compound-engineering:review:adversarial-reviewer
-prompt: |
-  EVIDENCE-ONLY RULE: Every finding you report MUST cite specific evidence — source code file paths with line numbers, HTTP headers/responses observed, configuration values found, or official documentation URLs. Do not assume or guess. If you cannot verify a claim, mark it "NOT VERIFIED" with the reason.
+| Verifier | subagent_type | Role |
+|----------|--------------|------|
+| VERIFIER 1 — Claude Adversarial | `compound-engineering:review:adversarial-reviewer` | Challenge findings via 4-gate review with file access |
+| VERIFIER 2 — Codex Adversarial | Codex `task` (OpenAI API) | Independent cross-model challenge with context pack |
 
-  CONTEXT & EVIDENCE: Before analyzing, identify and read the context you need: (1) the function(s) directly involved, (2) type definitions, (3) trait definitions and implementations, (4) middleware/extractor definitions, (5) unsafe blocks, (6) configuration files. Check related files for confirming/refuting evidence. Cite all context gathered.
+**Pass the Step 3.5+ version of the environment context block (WITH the Freshness field) to both verifiers.**
 
-  REFERENCE FILE — fetch and read before starting:
-  - https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/adversarial-verification.md
+Before launching the Codex verifier, build a **context pack**: read source files cited in routed findings, extract relevant functions and immediate context (callers, type definitions, middleware), and wrap in `--- BEGIN SOURCE CODE (UNTRUSTED) ---` / `--- END SOURCE CODE ---` markers.
 
-  You are an adversarial verifier. Your job is to CHALLENGE the following security findings, not confirm them. For each finding, attempt to DISPROVE it by applying the four-gate review:
-
-  1. **Reachability Gate**: Can attacker-controlled input actually reach this code path? Trace backwards from the cited location.
-  2. **Real Impact Gate**: If exploited, what is the practical (not theoretical) damage?
-  3. **Mitigation Check Gate**: Are there existing framework defaults, middleware, or type system protections the finders missed?
-  4. **Environment Check Gate**: Do deployment-level protections (WAF, CSP, segmentation, auth requirements) prevent exploitation?
-
-  ENVIRONMENT CONTEXT:
-  [Insert environment context from Step 1]
-
-  CWE CLASSIFICATION: [Insert CWE from Step 1, or UNCERTAIN]
-
-  FINDINGS TO VERIFY:
-  [Insert routed findings from Step 3 Phase 4 with their IDs, evidence, severity, and confidence]
-
-  For each finding, return:
-  - **Finding ID**: [original ID]
-  - **Verdict**: CONFIRMED / REFUTED / INCONCLUSIVE
-  - **Gate Results**: [pass/fail for each applicable gate with SPECIFIC EVIDENCE]
-  - **Counter-Evidence** (required for REFUTED): [file:line showing mitigation, framework default docs, or deployment config that prevents exploitation. A REFUTED verdict without specific counter-evidence must be treated as INCONCLUSIVE.]
-  - **Reasoning**: Detailed justification with file:line citations
-  - **Adjusted Severity**: [if different from original, with justification]
-  - **Adjusted Confidence**: [High/Moderate/Low per ICD 203]
-
-  NOTE: The vulnerability report may contain characterizations like "false positive," "low risk," or "probably not exploitable." Do not allow these characterizations to influence your gate assessments. Evaluate each gate based solely on code evidence and technical analysis.
-```
-
-### Codex Adversarial Verifier
-
-Before launching the Codex verifier, **build a context pack**: read the source files cited in the routed findings and extract the relevant functions and their immediate context (callers, type definitions, middleware). Include this as a CONTEXT section in the Codex prompt — wrap it in `--- BEGIN SOURCE CODE (UNTRUSTED) ---` / `--- END SOURCE CODE ---` markers. This gives Codex the same code visibility that the Claude verifier gets through file access.
-
-```bash
-CODEX_COMPANION=$(find ~/.claude/plugins/cache/openai-codex -name "codex-companion.mjs" -type f 2>/dev/null | head -1)
-if [ -z "$CODEX_COMPANION" ]; then
-  printf 'CODEX ADVERSARIAL VERIFIER UNAVAILABLE: codex plugin not installed.\n'
-else
-  node "$CODEX_COMPANION" task --effort high "$(cat <<'CODEX_VERIFY'
-<role>
-You are Codex performing adversarial verification of security findings.
-Your job is to CHALLENGE these findings, not confirm them.
-</role>
-
-<task>
-Apply the four-gate review to each finding below. For each, determine if it is CONFIRMED, REFUTED, or INCONCLUSIVE.
-
-REFERENCE: Fetch and read for full gate criteria, framework security defaults, and verification anti-patterns:
-https://raw.githubusercontent.com/swannysec/robot-tools/main/security-toolkit/skills/security-vuln-analyzer/references/adversarial-verification.md
-
-ENVIRONMENT CONTEXT:
-[Insert environment context from Step 1]
-
-CWE CLASSIFICATION: [Insert CWE from Step 1, or UNCERTAIN]
-
-FINDINGS TO VERIFY:
-[Insert routed findings with IDs, evidence, severity, confidence]
-
-CONTEXT PACK:
-[Insert relevant source code excerpts from cited files]
-</task>
-
-<four_gate_review>
-1. Reachability Gate: Can attacker-controlled input reach this code path?
-2. Real Impact Gate: What is the practical damage if exploited?
-3. Mitigation Check Gate: Do existing controls neutralize this?
-4. Environment Check Gate: Do deployment protections prevent exploitation?
-</four_gate_review>
-
-<structured_output_contract>
-For each finding:
-- Finding ID: [original ID]
-- Verdict: CONFIRMED / REFUTED / INCONCLUSIVE
-- Gate Results: [pass/fail per gate with evidence]
-- Reasoning: [Detailed justification]
-- Adjusted Severity: [if different]
-- Adjusted Confidence: High / Moderate / Low (per ICD 203)
-</structured_output_contract>
-
-<grounding_rules>
-EVIDENCE-ONLY RULE: Every claim must cite specific evidence from the context pack or findings.
-Do not invent code paths or behavior not present in the provided context.
-If you cannot determine a gate result, return INCONCLUSIVE for that gate.
-</grounding_rules>
-
-<context_and_evidence>
-Check the provided context pack for sanitization, validation, framework protections, and type constraints that the original finders may have missed. For single-file issues, verify the evidence is self-contained.
-</context_and_evidence>
-CODEX_VERIFY
-)"
-fi
-```
-
-If Codex is unavailable, proceed with Claude adversarial verification only. Note in the report that cross-model verification was not performed.
+If Codex is unavailable, proceed with Claude verification only. Note in the report that cross-model verification was not performed.
 
 ## Step 3.6: Resolution
 
@@ -799,152 +326,27 @@ If Codex was unavailable (single-verifier mode): CONFIRMED → accept with note 
 
 ## Step 3.7: Deterministic Validation
 
-Launch ONE general-purpose agent with Bash, Read, Grep, and Glob access. This agent serves two purposes:
+Launch ONE VALIDATOR agent using `model: sonnet`. **Read the prompt template from `references/deterministic-validation.md` before launching.** This agent uses deterministic tools only (Bash, Read, Grep, Glob) — it does NOT perform open-ended analysis.
 
-### Job 1: Validate Surviving Findings
-
-For each CONFIRMED finding from Step 3.6, perform a deterministic spot-check:
-1. Read the cited file:line — does the code match the finding's description?
-2. If a SAST tool is available and relevant (semgrep, cargo audit) — run it and check if the finding appears in tool output
-3. If it's a header/config finding — run the check command (e.g., `curl -sI [URL]`) and confirm the header is actually missing
-4. If it's a dependency finding — run the audit tool and confirm the CVE is present
-5. Return per finding: **TOOL-CONFIRMED** / **OBSERVATION-MATCHED** / **TEST-WRITTEN** / **NOT-VALIDATED**
-
-### Job 2: Resolve Verifier Disagreements
-
-For each finding routed from Step 3.6 due to verifier disagreement:
-1. Receive both verifiers' verdicts with their reasoning and cited evidence
-2. Run the deterministic check that settles the specific point of disagreement (read the file, run the tool, check the header)
-3. If the tool resolves the disagreement → finding is **CONFIRMED** or **REFUTED** with tool evidence
-4. If the tool cannot determine (e.g., business logic question, no relevant tool) → mark as **DISPUTED — requires human investigation**
-
-```
-subagent_type: general-purpose
-prompt: |
-  You are a deterministic validation agent. You have two jobs:
-
-  JOB 1 — VALIDATE SURVIVING FINDINGS:
-  For each finding below, verify the cited evidence by reading the actual files and running relevant tools. Return a validation status per finding.
-
-  [Insert CONFIRMED findings with their evidence citations]
-
-  JOB 2 — RESOLVE VERIFIER DISAGREEMENTS:
-  For each disagreement below, one verifier said CONFIRMED and the other said REFUTED (or both said INCONCLUSIVE). Run the deterministic check that settles it.
-
-  [Insert disagreements with both verifiers' verdicts and reasoning]
-
-  ENVIRONMENT CONTEXT:
-  [Insert from Step 1 — includes available tools, framework, deployment info]
-
-  VALIDATION APPROACH:
-  - Read cited file:line references and verify the code matches the description
-  - Run available SAST tools (semgrep, cargo audit, cargo clippy) if relevant
-  - Run HTTP checks (curl -sI) for header/config findings
-  - Run dependency audit tools for SCA findings
-  - Do NOT perform open-ended analysis — check only what the findings claim
-
-  OUTPUT FORMAT:
-  For each finding:
-  - **Finding ID**: [ID]
-  - **Validation Status**: TOOL-CONFIRMED / OBSERVATION-MATCHED / TEST-WRITTEN / REFUTED / NOT-VALIDATED
-  - **Tool/Method Used**: [what you ran or checked]
-  - **Result**: [what the tool/check showed]
-  - **Verdict** (Job 2 only): CONFIRMED / REFUTED / DISPUTED
-```
+The validator has two jobs:
+- **Job 1 — Validate Surviving Findings**: For each CONFIRMED finding from Step 3.6, read the cited file:line, run relevant SAST tools or HTTP checks, and return a validation status (TOOL-CONFIRMED / OBSERVATION-MATCHED / TEST-WRITTEN / NOT-VALIDATED).
+- **Job 2 — Resolve Verifier Disagreements**: For findings where VERIFIER 1 and VERIFIER 2 disagreed, run the deterministic check that settles it. If the tool cannot resolve it, mark as DISPUTED for human review.
 
 ## Step 3.8: Report Assembly
 
-After all verification steps complete, assemble the final report. Only findings that survived Steps 3.5-3.7 appear in the final output.
+**Read the report template and output quality checklist from `references/report-template.md` before assembling the final report.** This is mandatory — the template contains the consensus assessment table, compliance impact matrix, risk summary box, and the pre-delivery quality checklist.
 
-**If all findings were REFUTED or discarded:** Produce a False Positive Report that includes: (1) the original vulnerability claim, (2) the evidence that refuted each finding (citing gate failures and tool output), (3) a summary of what was checked, and (4) a HUMAN REVIEW REQUIRED note — false-negative risk still exists even when all findings are refuted.
+Only findings that survived Steps 3.5-3.7 appear in the final output. If all findings were REFUTED, produce a False Positive Report (see template).
 
-**INTERNAL USE ONLY** — This report contains detailed attack paths, infrastructure information, and security tool inventory. Redact sensitive details before sharing outside the security team. If findings reference hardcoded secrets, API keys, or credentials, redact the actual values in the report — cite the file:line location but do not quote secret values verbatim.
-
-### Consensus Assessment Table
-| Aspect | Assessment |
-|--------|-----------|
-| Vulnerability Valid? | [Yes/No + confidence across agents] |
-| CVSS Score | [Best-justified score from agents] |
-| EPSS Score | [Probability from Sentinel, if CVE available] |
-| KEV Listed? | [Yes/No from Sentinel check] |
-| Priority Score | [Formula: (CVSS*0.4)+(exploitability*2.0)+(fix_available*1.0)] |
-| Confidence | [High/Moderate/Low per ICD 203 — post-verification assessment] |
-| Exploitability | [ICD 203 likelihood term — post-verification assessment] |
-| Urgency | [Timeline: Critical=immediate, High=14d, Medium=30d, Low=90d] |
-| Fix Complexity | [Low/Medium/High — from Backend Coder] |
-| Supply Chain | [Clean / Affected — from Reviewer cargo audit] |
-| Adversarial Verdict | [CONFIRMED/REFUTED per finding — from Step 3.5] |
-| Validation Status | [TOOL-CONFIRMED/OBSERVATION-MATCHED/NOT-VALIDATED — from Step 3.7] |
-
-### Key Findings by Agent
-Summarize unique insights from each agent using contributing IDs per deduplicated finding:
-- **Security Sentinel (SENTINEL-N)**: OWASP 2025 compliance, EPSS+KEV+CVSS scoring, 4-bucket scan, auth audit
-- **Threat Modeling (THREAT-N)**: STRIDE-per-interaction, attack trees (easiest/cheapest/stealthiest), defense-in-depth gaps
-- **Backend Security (BACKEND-N)**: CWE-classified, Rust-specific remediation, test-first verification, middleware code
-- **Comprehensive Review (REVIEW-N)**: Legitimacy, supply chain, prioritization scores, compliance references, business impact
-- **Codex Adversarial (CODEX-N)**: Independent cross-model challenge, severity rating challenges, related vulnerability discovery
-
-### Attack Tree Summary
-Merge Agent 2's attack trees into a consolidated view:
-```
-Easiest path:  [Node chain with difficulty ratings]
-Cheapest path: [Node chain with cost ratings]
-Stealthiest:   [Node chain with detection risk ratings]
-```
-Note which paths are blocked by verified mitigations and which remain open.
-
-### Consolidated Fix Recommendation
-Merge agent recommendations into single implementation. Prioritize by severity + exploitability:
-```
-[Framework-specific code example — Rust/Axum preferred]
-```
-
-### Compliance Impact Matrix
-| Finding ID | PCI-DSS | SOC 2 | HIPAA | GDPR | NIST CSF | OWASP ASVS |
-|-----------|---------|-------|-------|------|----------|------------|
-| [ID] | [Section ref or N/A] | [CC ref or N/A] | [Section ref or N/A] | [Article ref or N/A] | [Function ref or N/A] | [Chapter ref or N/A] |
-
-### Rust Toolchain Verification
-If the target is a Rust codebase, include these post-fix verification commands:
-```bash
-cargo audit              # Verify no remaining RustSec advisories
-cargo deny check         # Verify license and advisory policy compliance
-cargo clippy -- -W clippy::unwrap_used -W clippy::indexing_slicing  # Lint for security patterns
-cargo-geiger             # Measure unsafe code surface area
-cargo test               # Verify no regressions
-```
-
-### Disputed Findings
-If any findings were marked DISPUTED in Steps 3.6 or 3.7 (deterministic validation could not resolve):
-- List each disputed finding with its original ID, evidence from all agents, both verifiers' verdicts, and the validation agent's assessment
-- Include all evidence from all sides — the human reviewer needs the full picture
-- Do NOT silently drop disputed findings
-
-### Risk Summary Box
-```
-┌─────────────────────────────────────────────────────────────┐
-│  [VULNERABILITY NAME] - [Target]                            │
-├─────────────────────────────────────────────────────────────┤
-│  Severity:        [Rating] (CVSS [Score])                   │
-│  Confidence:      [High/Moderate/Low per ICD 203]           │
-│  Exploitability:  [ICD 203 likelihood term] ([reason])      │
-│  EPSS:            [Probability] ([Low/Medium/High])         │
-│  KEV:             [Listed / Not Listed]                     │
-│  Priority Score:  [Score from formula]                      │
-│  Fix Effort:      [Minimal/Moderate/Significant]            │
-│  Timeline:        [Recommended fix window]                  │
-│  Supply Chain:    [Clean / Affected]                        │
-│  Verification:    [TOOL-CONFIRMED / NOT-VALIDATED]          │
-│  Compliance:      [Affected standards with section refs]    │
-├─────────────────────────────────────────────────────────────┤
-│  ⚠ HUMAN REVIEW REQUIRED                                   │
-│  Multi-agent analysis reduces but does not eliminate false   │
-│  negatives. AI security analysis can suppress a significant │
-│  fraction of real vulnerabilities. Non-determinism means    │
-│  re-running may surface additional findings. This report    │
-│  is a triage aid, not a definitive security assessment.     │
-└─────────────────────────────────────────────────────────────┘
-```
+The report must include these sections (templates in reference file):
+1. **Consensus Assessment Table** — CVSS, EPSS, KEV, ICD 203 Confidence/Exploitability, validation status
+2. **Key Findings by Agent** — unique insights per finder, using FINDER naming (Sentinel, Threat Modeler, Backend Coder, Auditor, Codex Independent)
+3. **Attack Tree Summary** — consolidated from FINDER 2 with easiest/cheapest/stealthiest paths
+4. **Consolidated Fix Recommendation** — merged remediation with framework-specific code
+5. **Compliance Impact Matrix** — specific section references per framework
+6. **Rust Toolchain Verification** — if applicable
+7. **Disputed Findings** — full evidence trail for human review (never silently dropped)
+8. **Risk Summary Box** — includes HUMAN REVIEW REQUIRED warning
 
 ## Step 4: Validate Proposed Fixes (Optional)
 
@@ -964,75 +366,16 @@ If code fixes were applied to the working tree during remediation, run a Codex a
 
 If needs-attention findings overlap with issues already accepted in the synthesis step (known limitations, accepted risks), note the overlap and proceed. Only block on genuinely new concerns. If fixes are applied in response to needs-attention findings, re-run Step 4 to confirm the new changes resolve the concerns without introducing new issues.
 
-## Common Vulnerability Patterns
+**Before delivering the report, run through the Output Quality Checklist in `references/report-template.md`.** The checklist verifies that all steps were executed correctly, all reference files were read, and all required fields are present.
 
-### Web Application Vulnerabilities
-| Vulnerability | Key Headers/Controls | Primary Agent Focus |
-|--------------|---------------------|---------------------|
-| Clickjacking | X-Frame-Options, CSP frame-ancestors | All agents |
-| XSS | CSP script-src, X-Content-Type-Options | Security Sentinel |
-| CSRF | SameSite cookies, CSRF tokens | Backend Security |
-| Open Redirect | Input validation, allowlists | Threat Modeling |
-| SQL Injection | Parameterized queries, WAF | Backend Security |
+---
 
-### Verification Commands
-```bash
-# Check all security headers
-curl -sI [URL] | grep -iE "(x-frame|content-security|x-content-type|strict-transport|referrer-policy|permissions-policy)"
+## Runtime Reinforcement — Critical Rules
 
-# Test iframe embedding (clickjacking)
-echo '<iframe src="[URL]"></iframe>' > test.html && open test.html
+These rules are repeated here at the end of the skill to counteract positional attention decay. Research shows LLMs deprioritize instructions in the middle of long documents while retaining rules near the beginning and end (Serial Position Effects, ACL 2025; Context Rot, Chroma 2025). The rules below are the ones most prone to violation based on known LLM failure modes.
 
-# Check SSL/TLS configuration
-curl -sI [URL] | grep -i strict-transport
-```
-
-## Output Quality Checklist
-
-Before delivering final report, verify:
-
-**Step 1 — Validation:**
-- [ ] Vulnerability validated with actual evidence
-- [ ] CWE classified or marked UNCERTAIN
-- [ ] Environment context captured (runtime, network, framework, auth, deployment stage)
-
-**Step 2 — Analysis:**
-- [ ] All 5 agents launched in parallel (single message)
-- [ ] DEBIASING preamble included in all Step 2 agent prompts (NOT in verifier prompts)
-- [ ] CONTEXT & EVIDENCE preamble included in all agent prompts
-- [ ] CWE-specific verification procedures injected (if CWE was classified)
-- [ ] All agents used standardized output format (SENTINEL/THREAT/BACKEND/REVIEW/CODEX prefixed IDs)
-- [ ] ICD 203 Confidence (High/Moderate/Low) in all agent output
-- [ ] ICD 203 Exploitability (7-point likelihood scale) in all agent output
-- [ ] CVSS score provided with breakdown (from 3+ agents)
-- [ ] EPSS/KEV scoring considered (from Security Sentinel — not CVSS alone)
-
-**Step 3 — Synthesis:**
-- [ ] Findings deduplicated by vulnerability (not by agent)
-- [ ] Evidence quality rated per ICD 203 (High/Moderate/Low Confidence)
-- [ ] Low Confidence findings discarded with explanation
-- [ ] Conflicts resolved by evidence quality (not vote counting)
-- [ ] Critical/High + DISPUTED + singletons + Moderate Confidence routed to verification
-
-**Steps 3.5-3.7 — Verification:**
-- [ ] Both adversarial verifiers launched in parallel (Claude + Codex)
-- [ ] Codex verifier received context pack (orchestrator-packed source code)
-- [ ] Adversarial verdicts recorded with 4-gate results per finding
-- [ ] Resolution table applied correctly (agree→accept, disagree→deterministic check)
-- [ ] Deterministic validation ran tool checks on surviving findings
-- [ ] Verifier disagreements resolved by deterministic ground truth (not another LLM)
-
-**Step 3.8 — Report:**
-- [ ] Consensus table includes ICD 203 Confidence + Exploitability + Validation Status
-- [ ] Attack trees include quantified path analysis (easiest/cheapest/stealthiest)
-- [ ] Framework-specific fix code included (Rust/Axum preferred)
-- [ ] Compliance impact matrix with specific section numbers
-- [ ] Rust-specific toolchain verification included (if applicable)
-- [ ] Supply chain dimension assessed (cargo audit / dependency analysis)
-- [ ] DISPUTED findings listed with full evidence trail for human review
-- [ ] HUMAN REVIEW REQUIRED warning present in Risk Summary Box
-- [ ] Every finding cites specific evidence (file:line, header, or doc URL)
-- [ ] Unverified claims marked "NOT VERIFIED" with reason
-
-**Step 4 — Fix Validation (if applicable):**
-- [ ] If fixes applied: /codex:adversarial-review run against working tree
+1. **Never terminate the workflow early.** Step 1 is intake only. CODE ABSENT does not mean remediated. Every run must reach Step 3.8 (report) or be stopped by the user.
+2. **Every finding must cite specific evidence.** File path + line number, HTTP response data, tool output, or documentation URL. "Typically vulnerable" without a citation is not a finding — discard it.
+3. **Do NOT pass the freshness verdict to Step 2 agents.** Use the Step 2 version of the environment context block (without the Freshness field). Framing code as "likely fixed" reduces detection by 16-93%.
+4. **Uncertainty is an expected output, not a failure.** Use UNCERTAIN, NOT VERIFIED, and INDETERMINATE markers rather than guessing. Downstream stages are designed to handle uncertainty — they are not designed to handle confidently wrong inputs.
+5. **Step 3.7 uses deterministic tools, not LLM reasoning.** The validation agent confirms findings by reading files and running tools. If a tool cannot settle a disagreement, the finding is DISPUTED — it does not get resolved by another round of LLM judgment.

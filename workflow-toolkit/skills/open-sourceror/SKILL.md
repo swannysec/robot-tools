@@ -10,6 +10,14 @@ description: |
   - "add to marketplace", "add to robot-tools"
   - "create repo for skill", "package for sharing"
   - User has a skill directory, agent file, or collection to share
+triggers:
+  - "prepare for open source"
+  - "open source this skill"
+  - "upload skill to github"
+  - "share this agent"
+  - "add to marketplace"
+  - "create repo for skill"
+  - "package for sharing"
 ---
 
 # Open Sourceror

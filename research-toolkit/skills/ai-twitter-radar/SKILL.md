@@ -10,7 +10,15 @@ description: |
 
   This is a READ-ONLY skill - no posting, liking, or account modifications.
 
-  Triggers: "AI Twitter", "trending AI tools", "AI news Twitter", "what are AI developers saying", "AI tweets", "Twitter AI trends", "developer sentiment AI", "AI influencers"
+triggers:
+  - "AI Twitter"
+  - "trending AI tools"
+  - "AI news Twitter"
+  - "what are AI developers saying"
+  - "AI tweets"
+  - "Twitter AI trends"
+  - "developer sentiment AI"
+  - "AI influencers"
 ---
 
 # AI Twitter Radar

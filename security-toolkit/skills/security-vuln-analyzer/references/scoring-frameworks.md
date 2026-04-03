@@ -11,13 +11,33 @@ Do not use CVSS alone. Use three complementary signals:
 - Measures: attack vector, complexity, privileges required, user interaction, scope, impact (confidentiality/integrity/availability)
 - Limitation: does not predict real-world exploitation likelihood
 
-### Scope Metric Guidance for Desktop/Local Targets
+### Scope Metric — Security Authority Test
 
-For desktop applications and local-execution targets, agents frequently disagree on the CVSS 3.1 Scope metric (S:U vs S:C). Apply these guidelines:
+CVSS 3.1 defines Scope as whether the vulnerability impacts resources beyond the security authority governing the vulnerable component. A security authority is a mechanism (application sandbox, OS user account, container runtime, hypervisor) that defines and enforces access control.
 
-- **S:U (Unchanged)**: The exploit runs in the same user context as the vulnerable component. Use when: shell injection executes as the same user, privilege level does not change, no sandbox or isolation boundary is crossed.
-- **S:C (Changed)**: The exploit crosses a defined trust/isolation boundary. Use when: sandbox escape (e.g., extension sandbox → host filesystem), privilege escalation (user → root), or cross-tenant access.
-- **Default for desktop targets**: When agents disagree on Scope for a local target where the exploit runs as the invoking user, default to **S:U** and note the ambiguity in the consensus table. Escaping from "intended functionality" to "arbitrary shell" within the same user context is NOT a scope change under CVSS 3.1 — the security authority (the OS user account) has not changed.
+**To determine Scope, answer three questions:**
+1. What security authority governs the **vulnerable component**?
+2. What security authority governs the **impacted component(s)**?
+3. Are these the **SAME** authority? If yes → **S:U**. If no → **S:C**.
+
+| Example | Vulnerable Component | Impacted Component | Same Authority? | Scope |
+|---------|--------------------|--------------------|----------------|-------|
+| Zed Editor command injection | Zed text processing (OS user) | User's SSH keys, shell (OS user) | Yes | S:U |
+| VS Code extension sandbox escape | Extension host sandbox | Host filesystem (OS user) | No | S:C |
+| Container escape from dev tool | Container runtime | Host OS | No | S:C |
+| Privilege escalation via helper daemon | Unprivileged user process | Root-owned service | No | S:C |
+
+**Do NOT use application category (e.g., "developer tool") as a Scope heuristic.** Scope depends on security authority boundaries, not on what kind of software is being scored.
+
+**Mandatory: document the Scope decision** in the consensus table with the security authorities identified for both components.
+
+### Environmental Severity Note (Mandatory When Applicable)
+
+When the base score uses S:U but the target environment provides access to high-value assets beyond the application's own data, add an **ENVIRONMENTAL SEVERITY NOTE** to the consensus table:
+
+> "Base score uses S:U (single security authority: [authority]). However, the exploited context has access to [specific assets: SSH keys, cloud provider credentials, CI/CD signing keys, package registry tokens, etc.]. Real-world impact may exceed the base score. Organizations should apply CVSS Environmental metrics (Modified Scope, Confidentiality Requirement: High) or treat as [adjusted severity] for prioritization."
+
+This preserves spec-compliant base scores comparable to NVD while explicitly documenting the real blast radius for human reviewers.
 
 ### EPSS (Exploit Prediction Scoring System)
 - Probability (0.0-1.0) that a CVE will be exploited in the wild within the next 30 days

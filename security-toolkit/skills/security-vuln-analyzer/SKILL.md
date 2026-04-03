@@ -231,11 +231,13 @@ Only after all preparation is complete, proceed to Step 2.
 
 ## Step 2: Launch Parallel Security Agents
 
-**Dispatch all 5 agents, then wait.**
+**Dispatch all 5 agents using the Codex-first pattern, then wait.**
 
-1. Launch FINDERs 1-4 (Claude) in a SINGLE message with 4 parallel Agent tool calls.
-2. **Immediately after dispatching** — without waiting for any Claude agent to return — launch FINDER 5 (Codex) via the Bash tool.
+1. Launch FINDER 5 (Codex) FIRST via a foreground Bash tool call. This is independent of the Claude agents and takes ~4 minutes.
+2. In the NEXT message, launch FINDERs 1-4 (Claude) in a SINGLE message with 4 parallel foreground Agent tool calls. These block the turn for ~5-6 minutes, during which Codex is already running or has already completed.
 3. **WAIT for ALL 5 agents to return before proceeding to Step 3.** Do not begin synthesis, draw preliminary conclusions, or compare partial results while any agent is still running. Partial conclusions create framing that biases interpretation of remaining outputs (confirmation bias research: 16-93% detection reduction from premature framing).
+
+**Do NOT use `run_in_background` on any dispatch.** Do NOT use `sleep` or `TaskOutput` polling. All calls are foreground — results return automatically when agents complete.
 
 **Agent retry policy:** If any agent fails, returns an error, or returns malformed output (no parseable findings with required fields):
 1. Re-dispatch the failed agent with corrected instructions (fix the error cause if identifiable).
@@ -273,6 +275,7 @@ Before deduplication, validate each agent's output:
 3. Verify ID prefixes match the agent (SENTINEL for Agent 1, THREAT for Agent 2, BACKEND for Agent 3, REVIEW for Agent 4, CODEX for Agent 5)
 4. If an agent returned no parseable findings or an error, log "AGENT [N] RETURNED NO FINDINGS — [reason]" and continue with remaining agents
 5. If fewer than 3 agents returned valid output, add a warning: "REDUCED AGENT COVERAGE — [N]/5 agents contributed findings"
+6. Log a per-agent summary: `SENTINEL: [N] findings, [M] valid. THREAT: [N] findings, [M] valid.` etc. This provides an audit trail that all agents were checked.
 
 ### Phase 1: Deduplicate & Group
 
@@ -334,7 +337,12 @@ Findings that do not trigger any heuristic proceed to Step 3.5 as normal.
 
 ## Step 3.5: Adversarial Verification
 
-Launch TWO adversarial VERIFIER agents IN PARALLEL. Both apply the 4-gate review (Reachability, Real Impact, Mitigation Check, Environment Check) to each routed finding. Both receive EVIDENCE-ONLY and CONTEXT & EVIDENCE preambles but NOT DEBIASING — verifiers need severity context to evaluate.
+Launch TWO adversarial VERIFIER agents using the Codex-first pattern:
+1. Launch VERIFIER 2 (Codex) FIRST via a foreground Bash tool call — it starts immediately.
+2. Then launch VERIFIER 1 (Claude) via a foreground Agent tool call — Codex is already running.
+Both calls are foreground. Codex finishes during or shortly before the Claude verifier returns. Do NOT use `run_in_background`, `sleep`, or `TaskOutput` polling.
+
+Both apply the 4-gate review (Reachability, Real Impact, Mitigation Check, Environment Check) to each routed finding. Both receive EVIDENCE-ONLY and CONTEXT & EVIDENCE preambles but NOT DEBIASING — verifiers need severity context to evaluate.
 
 **Before launching verifiers, read the prompt templates from `references/adversarial-verification.md`.** This is mandatory — the templates contain gate criteria, output format, and the Codex bash invocation that must be used verbatim. The reference file uses the VERIFIER prefix to distinguish these from Step 2 FINDER agents.
 
@@ -433,5 +441,5 @@ These rules are repeated here at the end of the skill to counteract positional a
 4. **Uncertainty is an expected output, not a failure.** Use UNCERTAIN, NOT VERIFIED, and INDETERMINATE markers rather than guessing. Downstream stages are designed to handle uncertainty — they are not designed to handle confidently wrong inputs.
 5. **Step 3.7 uses deterministic tools, not LLM reasoning.** The validation agent confirms findings by reading files and running tools. If a tool cannot settle a disagreement, the finding is DISPUTED — it does not get resolved by another round of LLM judgment.
 6. **Do NOT begin the next step while agents are still running.** After dispatching agents (Step 2, Step 3.5, Step 3.7), wait for ALL of them to return before comparing results, drawing conclusions, or starting the next step. This applies to every dispatch boundary in the workflow. Partial results create framing bias.
-7. **Launch Codex immediately after Claude agents — do not wait.** In Step 2, dispatch the Bash Codex invocation right after the 4 Agent tool calls, not after they return. In Step 3.5, dispatch both verifiers without waiting.
+7. **Within each step, launch the Codex Bash call before Claude Agent calls.** Bash executes before Agent calls in the same message, so Codex gets a head start. Do NOT use `run_in_background`, `sleep`, or `TaskOutput` polling — all calls are foreground. Each step dispatches only its own agents.
 8. **Retry failed agents before declaring them unavailable.** A single Bash failure does not mean Codex is unavailable — it may be agent error or ephemeral. Apply the retry policy (3 total attempts) before falling back to degraded mode.

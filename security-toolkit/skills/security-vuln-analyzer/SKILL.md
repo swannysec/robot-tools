@@ -220,11 +220,27 @@ Before dispatching any agents, resolve all shared resources so agents never dupl
    - If the cache does not exist, fetch needed reference files once via `gh api repos/swannysec/robot-tools/contents/security-toolkit/skills/security-vuln-analyzer/references/<file>.md --jq '.content' | base64 -d` and save locally.
    - All agents receive the resolved cache path — never include GitHub raw URLs that agents would fetch independently.
 
-3. **Build agent prompts.**
+3. **Enumerate the attack surface.**
+   Using deterministic tools only (Grep, Glob), build a SURFACE MAP of files and patterns related to the vulnerability. This gives agents awareness of the full attack surface without constraining their exploration — agents should still pursue independent threads they discover.
+   - **Callsites:** Grep for all usages of the vulnerable function or pattern identified in Step 1 (e.g., `build_no_quote`, `shellexpand`, the specific sink). Record every file:line.
+   - **Sibling files:** If the vulnerability is in a language-specific file (e.g., `python.rs` task definitions), Glob for all sibling files matching the same structural pattern (e.g., `go.rs`, `typescript.rs`, `ruby.rs` in the same directory). These are likely instantiations of the same vulnerability class.
+   - **Escaping/sanitization functions:** Grep for all escaping or sanitization functions in the affected module (e.g., `regex::escape`, `shlex::quote`, `shell_escape`). Different escaping functions protect against different metacharacter sets — mismatched escaping is a common vulnerability pattern.
+   - Compile the results into a structured SURFACE MAP block:
+   ```
+   SURFACE MAP (from deterministic pre-analysis):
+   - Vulnerable function callsites: [list of file:line]
+   - Sibling files (same pattern): [list of files]
+   - Escaping functions found: [list of function:file:line]
+   Note: This map is additional context to aid thoroughness.
+   Investigate any independent threads you discover beyond this map.
+   ```
+
+4. **Build agent prompts.**
    - Read `references/step-2-agent-prompts.md`. This is mandatory.
    - If a CWE was classified in Step 1, read the relevant procedures from `references/cwe-verification-procedures.md` (from the resolved cache path) and include them in each Claude agent prompt (FINDERs 1-4). FINDER 5 (Codex) does not receive CWE procedures — analytical independence.
    - If CWE was marked UNCERTAIN, do not inject CWE-specific procedures.
    - Substitute `[CACHE_PATH]` placeholders in agent prompts with the resolved cache path from step 2 above.
+   - Include the SURFACE MAP from step 3 in all agent prompts. Frame it as additional context, NOT as a restrictive scope: "This surface map identifies known related files from pre-analysis. Use it to ensure thorough coverage, but do not limit your analysis to these files — investigate any independent threads you discover."
    - Include the Step 2 version of the environment context block (WITHOUT the Freshness field) in all prompts. Do not mention the freshness verdict, CODE ABSENT status, or any indication of potential prior remediation. This prevents confirmation bias from contaminating the analysis.
 
 Only after all preparation is complete, proceed to Step 2.

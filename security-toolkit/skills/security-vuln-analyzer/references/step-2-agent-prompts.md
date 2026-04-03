@@ -131,6 +131,8 @@ prompt: |
 
   For each identified threat, map to a specific mitigation control and note applicable compliance references (e.g., "PCI-DSS 6.5.1", "NIST SP 800-53 AC-3", "OWASP ASVS 5.2.1").
 
+  Finding consolidation: If multiple STRIDE categories apply to the same root cause with the same fix, consolidate them into a single finding with multiple STRIDE tags rather than reporting each category separately. Report the distinct vulnerability, not each perspective on it. Aim for 3-7 findings per analysis — significantly more suggests over-enumeration of the same root cause.
+
   REFERENCE FILES — read these from the local cache path provided by the orchestrator before starting analysis:
   - [CACHE_PATH]/threat-modeling-methodology.md
   - [CACHE_PATH]/compliance-frameworks.md

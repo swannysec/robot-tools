@@ -169,7 +169,7 @@ Before delivering final report, verify:
 **Step 2 — Analysis:**
 - [ ] Prompts loaded from `references/step-2-agent-prompts.md` (not from memory)
 - [ ] FINDERs 1-4 launched in a single message with parallel Agent tool calls
-- [ ] FINDER 5 (Codex) launched immediately after — not after Claude agents returned
+- [ ] FINDER 5 (Codex) launched via background Bash before Claude agents — runs concurrently
 - [ ] DEBIASING preamble included in all Step 2 agent prompts (NOT in verifier prompts)
 - [ ] CONTEXT & EVIDENCE preamble included in all agent prompts
 - [ ] CWE-specific verification procedures injected (if CWE was classified)

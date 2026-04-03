@@ -234,7 +234,7 @@ Only after all preparation is complete, proceed to Step 2.
 **Dispatch all 5 agents in two back-to-back messages, then wait.**
 
 1. **First message:** Launch FINDER 5 (Codex) via Bash with `run_in_background: true`. It starts immediately and runs concurrently.
-2. **Second message (immediately after):** Launch FINDERs 1-4 (Claude) in a SINGLE message with 4 parallel foreground Agent tool calls. These block the turn for ~5-6 minutes, during which Codex is already running in the background.
+2. **Second message (immediately after — do NOT wait for the Codex background job to finish):** Launch FINDERs 1-4 (Claude) in a SINGLE message with 4 parallel foreground Agent tool calls. These block the turn for ~5-6 minutes, during which Codex is already running in the background. The Codex notification will arrive while the Claude agents are running or shortly after they return.
 
 Codex delivers a completion notification automatically — do NOT use `sleep` or `TaskOutput` polling. Read the Codex output file only when the notification arrives.
 
@@ -342,7 +342,7 @@ Findings that do not trigger any heuristic proceed to Step 3.5 as normal.
 
 Launch TWO adversarial VERIFIER agents in two back-to-back messages:
 1. **First message:** Launch VERIFIER 2 (Codex) via Bash with `run_in_background: true`. It starts immediately.
-2. **Second message (immediately after):** Launch VERIFIER 1 (Claude) via a foreground Agent tool call. Codex is already running in the background.
+2. **Second message (immediately after — do NOT wait for the Codex background job to finish):** Launch VERIFIER 1 (Claude) via a foreground Agent tool call. Codex is already running in the background.
 
 When the Claude verifier returns, wait for the Codex background notification if it hasn't arrived yet. Read the output file only when the notification arrives. Do NOT use `sleep` or `TaskOutput` polling.
 

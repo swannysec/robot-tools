@@ -165,6 +165,7 @@ Before delivering final report, verify:
 - [ ] CWE classified or marked UNCERTAIN
 - [ ] Environment context captured (runtime, network, framework, auth, deployment stage)
 - [ ] Pre-dispatch preparation completed (target resolved to local path with fresh pull, reference cache verified)
+- [ ] Surface map enumerated (callsites, sibling files, escaping functions) and included in agent prompts
 
 **Step 2 — Analysis:**
 - [ ] Prompts loaded from `references/step-2-agent-prompts.md` (not from memory)

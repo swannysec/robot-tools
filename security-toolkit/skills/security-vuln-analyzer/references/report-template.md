@@ -118,6 +118,20 @@ If any findings were marked DISPUTED in Steps 3.6 or 3.7 (deterministic validati
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## Appendix: Environment Context Blocks
+
+Include both versions of the environment context block used during this analysis so reviewers can verify the Freshness field was correctly excluded from Step 2 agents:
+
+**Step 2 version (sent to FINDER agents — no Freshness field):**
+```
+[Paste the actual Step 2 environment context block used]
+```
+
+**Step 3.5+ version (sent to VERIFIER agents — includes Freshness field):**
+```
+[Paste the actual Step 3.5+ environment context block used]
+```
+
 ## Common Vulnerability Patterns
 
 ### Web Application Vulnerabilities

@@ -18,7 +18,7 @@ The orchestrator MUST read this file before launching Step 2 agents and use the 
 
 ## Shared Preambles
 
-Include ALL THREE preambles at the start of every Claude agent prompt (Agents 1-4). Agent 5 (Codex) receives XML-formatted equivalents.
+Include ALL FOUR preambles at the start of every Claude agent prompt (Agents 1-4). Agent 5 (Codex) receives XML-formatted equivalents.
 
 **Preamble 1 — EVIDENCE-ONLY RULE:**
 > Every finding you report MUST cite specific evidence — source code file paths with line numbers, HTTP headers/responses observed, configuration values found, or official documentation URLs. Do not assume or guess. If you cannot verify a claim, mark it "NOT VERIFIED" with the reason. Findings without citations will be discarded during synthesis.
@@ -28,6 +28,13 @@ Include ALL THREE preambles at the start of every Claude agent prompt (Agents 1-
 
 **Preamble 3 — CONTEXT & EVIDENCE:**
 > Before analyzing, identify and read the context you need: (1) the function(s) directly involved, (2) type definitions for parameters and return types (especially newtypes, type-state patterns), (3) trait definitions and implementations if generics/trait objects are used, (4) middleware/extractor definitions if this is a web handler, (5) unsafe blocks in the call chain and their SAFETY comments, (6) configuration files affecting security behavior. Also check related files (callers, middleware, tests) for evidence that confirms or refutes the vulnerability — for single-file issues (hardcoded secrets, missing headers, configuration errors), state that the finding is self-contained. Cite all context gathered in your findings.
+
+**Preamble 4 — CONFIDENCE EVIDENCE LADDER:**
+> Your ICD 203 Confidence level (High/Moderate/Low) must reflect what you actually investigated, not how you feel. Use this ladder:
+> - **Low**: Read flagged code but have not traced the full data flow path.
+> - **Moderate**: Traced source-to-sink across call boundaries but have not verified whether guards, sanitization, or framework protections are present or absent.
+> - **High**: Verified guards are absent (or bypassable) AND confirmed input is attacker-controlled with a concrete exploit scenario or specific payload.
+> Your rationale MUST cite the evidence that justifies your confidence level. If you have not traced data flow, you cannot claim Moderate. If you have not verified guards, you cannot claim High.
 
 ## FINDER 1 — Sentinel
 

@@ -28,6 +28,14 @@ Per-CWE detection checklists, verification steps, and known mitigations. Use to 
 ### Known Mitigations
 - Context-aware output encoding (HTML, URL, JS, CSS contexts each need distinct encoding)
 - CSP with `script-src 'self'` (no `unsafe-inline`); auto-escaping engines (Tera, Askama, Jinja2 strict)
+### Bypass Techniques (check before REFUTING)
+- Tag mutation (`<ScRiPt>`, `<img/src=x>`, `<svg/onload=>`) to bypass tag filters
+- Event handlers (`onerror`, `onfocus`, `onmouseover`) as script-free vectors
+- JavaScript Unicode escapes (`\u0061lert`) in JS contexts
+- Protocol handlers (`javascript:`, `data:text/html`) in href/src attributes
+- Template literal injection (`${expression}`) in JS contexts
+- DOM-based XSS via `document.location`, `innerHTML`, `eval` sinks
+- SVG/MathML namespace confusion for filter bypass
 
 ## CWE-89: SQL Injection
 ### Detection Patterns
@@ -40,6 +48,14 @@ Per-CWE detection checklists, verification steps, and known mitigations. Use to 
 ### Known Mitigations
 - Parameterized queries (`sqlx::query!("... $1", param)` in Rust, `?` placeholders elsewhere)
 - ORM query builders enforcing parameterization; least-privilege database users
+### Bypass Techniques (check before REFUTING)
+- Comment injection (`/**/`, `--`, `#`) to break query structure
+- Case variation (`SeLeCt`, `UnIoN`) to bypass keyword filters
+- URL encoding (`%27` for quote, `%2527` for double-encoding)
+- Numeric context — unquoted integers skip string-based filters
+- Time-based blind injection (`SLEEP`, `BENCHMARK`, `pg_sleep`)
+- Nested queries and UNION-based extraction
+- Second-order injection (stored input used later in a different query)
 
 ## CWE-78: OS Command Injection
 ### Detection Patterns
@@ -53,6 +69,13 @@ Per-CWE detection checklists, verification steps, and known mitigations. Use to 
 ### Known Mitigations
 - Pass arguments as discrete `arg()` calls, never through a shell interpreter
 - Allowlist validation of permitted values; avoid `sh -c` — invoke binaries directly
+### Bypass Techniques (check before REFUTING)
+- Command chaining with `;`, `|`, `||`, `&&`, and newline characters
+- Command substitution via `$()` and backticks
+- Whitespace bypass using `${IFS}`, tab characters, `{cat,/etc/passwd}`
+- Keyword bypass with `ca\t`, `c$@at`, `/???/c?t`, string concatenation
+- Hex/octal encoding (`\x63\x61\x74` for `cat`)
+- Environment variable abuse (`$PATH` manipulation, `$HOME` injection)
 
 ## CWE-22: Path Traversal
 ### Detection Patterns
@@ -65,6 +88,13 @@ Per-CWE detection checklists, verification steps, and known mitigations. Use to 
 ### Known Mitigations
 - `canonicalize()` then `starts_with()` against the allowed base directory
 - Reject components containing `..` or absolute prefixes; container filesystem isolation (defense in depth)
+### Bypass Techniques (check before REFUTING)
+- Encoded traversal sequences (`%2e%2e%2f`, `%2e%2e/`, `..%2f`)
+- Double-encoding (`%252e%252e%252f` after double decode)
+- Null byte truncation (`%00`) to strip file extension checks
+- Windows-specific backslash traversal (`..\..\\`)
+- Symlink following when file operations don't resolve link targets
+- Unicode normalization bypass (overlong UTF-8 encoding of `.`)
 
 ## CWE-352: Cross-Site Request Forgery (CSRF)
 ### Detection Patterns
@@ -77,6 +107,12 @@ Per-CWE detection checklists, verification steps, and known mitigations. Use to 
 ### Known Mitigations
 - Synchronizer token pattern (server-generated, validated per state-mutating request)
 - `SameSite=Strict` or `Lax` on session cookies; custom request headers for API calls
+### Bypass Techniques (check before REFUTING)
+- Subdomain takeover enabling attacker-controlled origin with valid SameSite
+- JSON content-type with no CSRF check (if server accepts JSON via form)
+- Flash/PDF cross-origin request submission (legacy)
+- Clickjacking combined with token auto-fill
+- Login CSRF (force victim into attacker's session)
 
 ## CWE-918: Server-Side Request Forgery (SSRF)
 ### Detection Patterns
@@ -90,6 +126,14 @@ Per-CWE detection checklists, verification steps, and known mitigations. Use to 
 ### Known Mitigations
 - URL allowlist (permitted schemes, hosts, ports); block private/loopback/metadata IPs post-resolution
 - Network-level egress filtering (firewall rules, service mesh policies)
+### Bypass Techniques (check before REFUTING)
+- Alternative IP representations (`0x7f000001`, `2130706433`, octal for 127.0.0.1)
+- DNS rebinding — domain resolves to internal IP after initial allowlist check
+- HTTP redirect chains from allowed domain to internal target
+- IPv6 representations (`[::1]`, `[::ffff:127.0.0.1]`)
+- Protocol smuggling via `gopher://`, `dict://`, `file://` handlers
+- URL parsing discrepancies between validator and HTTP client
+- Cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`)
 
 ## CWE-287: Improper Authentication
 ### Detection Patterns
@@ -103,6 +147,13 @@ Per-CWE detection checklists, verification steps, and known mitigations. Use to 
 ### Known Mitigations
 - Global auth middleware with explicit opt-out only for public routes
 - JWT configured to reject `none` algorithm; constant-time credential comparison
+### Bypass Techniques (check before REFUTING)
+- JWT `alg: none` or `alg: HS256` with public key as HMAC secret
+- Token confusion (ID token used as access token, or vice versa)
+- Password reset token reuse or predictability
+- Session fixation (pre-authentication session adopted post-login)
+- OAuth redirect manipulation to steal authorization codes
+- Timing attacks on credential comparison revealing valid usernames
 
 ## CWE-862: Missing Authorization
 ### Detection Patterns
@@ -116,6 +167,13 @@ Per-CWE detection checklists, verification steps, and known mitigations. Use to 
 ### Known Mitigations
 - Deny-by-default authorization with explicit per-endpoint grants
 - Resource-level ownership checks scoped to authenticated user's ID; centralized policy enforcement
+### Bypass Techniques (check before REFUTING)
+- IDOR via sequential/predictable IDs in URL parameters
+- Mass assignment — setting `role` or `is_admin` via unexpected request fields
+- HTTP method override (`X-HTTP-Method-Override: DELETE` on a GET endpoint)
+- Parameter pollution (duplicate params with different values parsed differently)
+- GraphQL nested query escalation (accessing related objects without authorization)
+- JWT claim manipulation (changing `role` or `sub` in unsigned/weakly-signed tokens)
 
 ## CWE-190: Integer Overflow (Rust-relevant)
 ### Detection Patterns

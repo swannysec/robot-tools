@@ -89,6 +89,36 @@ Adversarial verifiers must NOT accept these reasoning patterns. If a finding's e
 | "Multiple agents agree" | Consensus from shared training data is not independent confirmation. | Check if agents cited independent evidence or echoed each other. |
 | "CVSS base score is X for this type" | Base score ignores environmental and temporal factors. | Use CVSS with environmental metrics, add EPSS/KEV context, and express likelihood using ICD 203 estimative language. |
 
+## Common False-Dismissal Patterns
+
+When REFUTING a finding, do NOT accept these rationalizations without further investigation. Each has a known bypass:
+
+| Dismissal | Why It's Unreliable | What to Check Instead |
+|-----------|--------------------|-----------------------|
+| "The WAF will catch it" | WAFs are bypassable via encoding, parameter pollution, protocol-level tricks | Test the application logic directly — WAFs are defense-in-depth, not the security boundary |
+| "We use parameterized queries" | ORM misuse, stored procedures with dynamic SQL, and second-order injection bypass parameterization | Check for string concatenation in ANY query path, not just the flagged one |
+| "The framework handles XSS" | Template engines have raw output modes, JS contexts bypass HTML encoding, DOM XSS is client-side | Verify auto-escaping is active for THIS specific template/context |
+| "File uploads are safe because we check the extension" | Null bytes, double extensions, parser discrepancies bypass extension checks | Check the full validation chain: extension + content-type + magic bytes + filename sanitization |
+| "We validate on the frontend" | Client-side validation is UX, not security — any HTTP client bypasses it | Check for server-side validation of the same input |
+| "It's internal, auth doesn't matter" | Internal apps get compromised via SSRF, lateral movement, and supply chain attacks | Verify network segmentation and authentication requirements |
+| "Low severity, not worth flagging" | Low-severity findings chain into critical attack paths | Check for chaining potential (see Vulnerability Chain Patterns below) |
+
+## Vulnerability Chain Patterns
+
+When evaluating the Real Impact Gate, consider whether a finding that appears low-severity individually could chain with other weaknesses into a critical attack path:
+
+| Chain Pattern | Example |
+|--------------|---------|
+| Information disclosure → credential extraction → system compromise | Config file read exposes DB password → full database access |
+| SSRF → internal service access → data exfiltration | SSRF to metadata endpoint → cloud credentials → S3 bucket access |
+| Auth weakness → privilege escalation → admin functionality | Weak session management → admin panel access → data modification |
+| File upload → code execution → lateral movement | Image upload with PHP payload → RCE → internal network pivot |
+| XSS → session hijacking → account takeover | Stored XSS → steal admin cookie → full account control |
+| SQL injection → data extraction → credential reuse | SQLi dumps user table → password reuse → VPN/email compromise |
+| Path traversal → config read → credential extraction → further compromise | Directory traversal → read .env → API keys → third-party service abuse |
+
+A finding that enables the first step of a chain should not be dismissed as "Low" without checking whether the downstream steps are feasible.
+
 ## Environment Protection Categories
 
 Categories to verify during the Environment Check Gate.
@@ -144,7 +174,7 @@ prompt: |
   - [CACHE_PATH]/adversarial-verification.md
   If the cache path does not exist, use: gh api repos/swannysec/robot-tools/contents/security-toolkit/skills/security-vuln-analyzer/references/adversarial-verification.md --jq '.content' | base64 -d
 
-  You are an adversarial verifier. Your job is to CHALLENGE the following security findings, not confirm them. For each finding, attempt to DISPROVE it by applying the four-gate review:
+  You are a skeptical adversarial verifier. Assume each finding is a false positive until you can rule out all mitigating factors through the 4-gate review. LLM finders produce 88% false positives when operating alone — your skepticism is warranted and essential. Your job is to CHALLENGE the following security findings, not confirm them. For each finding, attempt to DISPROVE it by applying the four-gate review:
 
   1. **Reachability Gate**: Can attacker-controlled input actually reach this code path? Trace backwards from the cited location.
   2. **Real Impact Gate**: If exploited, what is the practical (not theoretical) damage?

@@ -94,6 +94,15 @@ This policy applies to the orchestrating agent, all 5 sub-agents, and the synthe
 
 ## Step 1: Validate the Vulnerability
 
+### Verbatim Report Capture
+
+Before any analysis, capture the original vulnerability report text as an immutable artifact. This is the first action in Step 1.
+
+1. **Identify the report source:** GHSA body (fetch via `gh api`), user-pasted text, bug bounty submission, email, or other channel.
+2. **Store the full text as `VERBATIM_REPORT_TEXT`.** This is the reporter's exact words — do not modify, summarize, paraphrase, or reinterpret. Include the reporter's description, PoC steps, impact statement, and any metadata they provided.
+3. **This artifact is used only in Step 3.8** (report assembly). Do NOT pass it to Step 2 agents or Step 3.5 verifiers — they work from your CWE classification and environment context, not the raw report.
+4. **At Step 3.8, copy from `VERBATIM_REPORT_TEXT` storage** — do not reconstruct from memory. LLM recall degrades over long contexts, and the entire point of this artifact is fidelity to the reporter's original words.
+
 ### Code Freshness Check
 
 Before any analysis, verify the reported vulnerable code still exists in the current codebase. Use **deterministic tools only** — Grep, Read, Glob, and git log. Do NOT use LLM reasoning or inference to decide whether code "looks fixed."
@@ -225,12 +234,18 @@ Before dispatching any agents, resolve all shared resources so agents never dupl
    - **Callsites:** Grep for all usages of the vulnerable function or pattern identified in Step 1 (e.g., `build_no_quote`, `shellexpand`, the specific sink). Record every file:line.
    - **Sibling files:** If the vulnerability is in a language-specific file (e.g., `python.rs` task definitions), Glob for all sibling files matching the same structural pattern (e.g., `go.rs`, `typescript.rs`, `ruby.rs` in the same directory). These are likely instantiations of the same vulnerability class.
    - **Escaping/sanitization functions:** Grep for all escaping or sanitization functions in the affected module (e.g., `regex::escape`, `shlex::quote`, `shell_escape`). Different escaping functions protect against different metacharacter sets — mismatched escaping is a common vulnerability pattern.
+   - **Anti-pattern search (codebase-wide):** Derive a search regex from the vulnerability's *mechanism* — the syntactic or structural pattern that makes the code vulnerable — and Grep the entire codebase. This catches independent instances of the same anti-pattern in unrelated code paths.
+     - When CWE is classified: read the Detection Patterns section for that CWE from `references/cwe-verification-procedures.md` and convert to a Grep regex (e.g., CWE-78 → search for `Command::new("sh").arg("-c")` patterns with interpolated variables).
+     - When CWE is UNCERTAIN: derive the regex from the vulnerability mechanism described in the report (e.g., "string interpolation into shell command" → search for shell command construction with format strings).
+     - Search the ENTIRE codebase, not just the affected module. Results are unioned with call-graph results, not intersected.
+     - These are search hits for awareness — NOT findings or assertions of vulnerability.
    - Compile the results into a structured SURFACE MAP block:
    ```
    SURFACE MAP (from deterministic pre-analysis):
    - Vulnerable function callsites: [list of file:line]
    - Sibling files (same pattern): [list of files]
    - Escaping functions found: [list of function:file:line]
+   - Anti-pattern matches (codebase-wide): [list of file:line with matched pattern regex]
    Note: This map is additional context to aid thoroughness.
    Investigate any independent threads you discover beyond this map.
    ```
@@ -417,7 +432,7 @@ The validator has two jobs:
 
 **Read the report template and output quality checklist from `references/report-template.md` before assembling the final report.** This is mandatory — the template contains the consensus assessment table, compliance impact matrix, risk summary box, and the pre-delivery quality checklist.
 
-Only findings that survived Steps 3.5-3.7 appear in the final output. If all findings were REFUTED, produce a False Positive Report (see template).
+Only findings that survived Steps 3.5-3.7 appear in the final output. If all findings were REFUTED, produce a False Positive Report (see template). The SURFACE MAP from Step 1.5 and the `VERBATIM_REPORT_TEXT` from Step 1 are also carried forward to this step — both are emitted directly into the report without modification.
 
 The report must include these sections (templates in reference file):
 1. **Consensus Assessment Table** — CVSS, EPSS, KEV, ICD 203 Confidence/Exploitability, validation status
@@ -428,6 +443,9 @@ The report must include these sections (templates in reference file):
 6. **Rust Toolchain Verification** — if applicable
 7. **Disputed Findings** — full evidence trail for human review (never silently dropped)
 8. **Risk Summary Box** — includes HUMAN REVIEW REQUIRED warning
+9. **Advisory Submission** — verbatim report text from Step 1 capture, in a blockquote (copy from `VERBATIM_REPORT_TEXT`, never regenerate)
+10. **Identified Variants** — confirmed findings from analysis located in code paths outside the originally reported file, tagged with the shared CWE/anti-pattern; if none, state "No independent variants identified"
+11. **Potential Attack Surface (Pattern Matched)** — anti-pattern matches from Step 1.5 SURFACE MAP (deterministic Grep results, not agent findings); copy from the stored SURFACE MAP
 
 ## Step 4: Validate Proposed Fixes (Optional)
 
@@ -463,3 +481,4 @@ These rules are repeated here at the end of the skill to counteract positional a
 6. **Do NOT begin the next step while agents are still running.** After dispatching agents (Step 2, Step 3.5, Step 3.7), wait for ALL of them to return before comparing results, drawing conclusions, or starting the next step. This applies to every dispatch boundary in the workflow. Partial results create framing bias.
 7. **Dispatch Codex Bash with `run_in_background: true` in the first message, then Claude Agent calls in the second.** Codex runs concurrently via background notification. Do NOT use `sleep` or `TaskOutput` polling — wait for the automatic notification. Do NOT use `run_in_background` on Agent calls. Each step dispatches only its own agents.
 8. **Retry failed agents before declaring them unavailable.** A single Bash failure does not mean Codex is unavailable — it may be agent error or ephemeral. Apply the retry policy (3 total attempts) before falling back to degraded mode.
+9. **Emit verbatim report text by copying, not regenerating.** The Advisory Submission section in Step 3.8 must contain the exact text captured in Step 1. Copy from `VERBATIM_REPORT_TEXT` — do not paraphrase, summarize, or reconstruct from memory. LLM recall degrades over long contexts.

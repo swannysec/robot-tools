@@ -118,6 +118,35 @@ If any findings were marked DISPUTED in Steps 3.6 or 3.7 (deterministic validati
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## Advisory Submission
+
+Copy the `VERBATIM_REPORT_TEXT` artifact captured in Step 1. Do NOT regenerate, paraphrase, or summarize — this is the reporter's exact words.
+
+**Source:** [GHSA / user-pasted / bug bounty / email / other]
+
+> [Paste VERBATIM_REPORT_TEXT here — the reporter's original description, PoC steps, and impact statement exactly as submitted]
+
+## Identified Variants
+
+Confirmed findings from analysis located in code paths outside the originally reported file. These share the same CWE/anti-pattern as the primary vulnerability but exist in independent code. Only findings that survived Steps 3.5-3.7 appear here.
+
+| Finding ID | File | CWE | Verdict | Validation |
+|-----------|------|-----|---------|------------|
+| [ID] | [path:line] | [CWE-XX] | [CONFIRMED] | [TOOL-CONFIRMED] |
+
+If no independent variants were found: "No independent variants identified during this analysis. See the Potential Attack Surface section below for pattern-matched locations that may warrant manual review."
+
+## Potential Attack Surface (Pattern Matched)
+
+Locations identified by naive pattern matching (Grep regex derived from the vulnerability mechanism) during pre-analysis (Step 1.5 SURFACE MAP). These have not been through agent analysis or adversarial verification — they indicate where the same code pattern exists, not whether it is exploitable.
+
+**Pattern searched:** `[regex used]`
+**Matches:**
+- `path/to/file.rs:123` — [brief context from Grep output]
+- `path/to/other.rs:456` — [brief context]
+
+If no anti-pattern matches were found outside the reported file: "No additional pattern matches identified beyond the reported location."
+
 ## Appendix: Environment Context Blocks
 
 Include both versions of the environment context block used during this analysis so reviewers can verify the Freshness field was correctly excluded from Step 2 agents:
@@ -165,7 +194,8 @@ Before delivering final report, verify:
 - [ ] CWE classified or marked UNCERTAIN
 - [ ] Environment context captured (runtime, network, framework, auth, deployment stage)
 - [ ] Pre-dispatch preparation completed (target resolved to local path with fresh pull, reference cache verified)
-- [ ] Surface map enumerated (callsites, sibling files, escaping functions) and included in agent prompts
+- [ ] Surface map enumerated (callsites, sibling files, escaping functions, codebase-wide anti-pattern matches) and included in agent prompts
+- [ ] Verbatim report text captured as `VERBATIM_REPORT_TEXT` before any analysis began
 
 **Step 2 — Analysis:**
 - [ ] Prompts loaded from `references/step-2-agent-prompts.md` (not from memory)
@@ -219,6 +249,9 @@ Before delivering final report, verify:
 - [ ] Every finding cites specific evidence (file:line, header, or doc URL)
 - [ ] Unverified claims marked "NOT VERIFIED" with reason
 - [ ] Any agent failures clearly flagged in report summary with attempt counts
+- [ ] Advisory Submission section contains verbatim report text (copied from Step 1, not regenerated)
+- [ ] Identified Variants section lists confirmed findings outside the reported file, or states none found
+- [ ] Potential Attack Surface (Pattern Matched) section contains anti-pattern matches from SURFACE MAP (copied, not regenerated)
 
 **Step 4 — Fix Validation (if applicable):**
 - [ ] If fixes applied: /codex:adversarial-review run against working tree

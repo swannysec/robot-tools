@@ -65,6 +65,29 @@ The `-t` flag passes the secret value directly, bypassing the interactive prompt
 
 **Critical gotcha: Global secrets only take effect at sandbox creation time.** If you change a global secret, you must recreate the sandbox for it to take effect. Simply stopping and restarting the sandbox is NOT enough. The secret values are baked into the sandbox's proxy configuration when the sandbox is first created.
 
+### Changing a Secret on an Existing Sandbox
+
+To change a per-sandbox secret (e.g., swapping a broad GitHub token for a
+narrower project-scoped one):
+
+```bash
+sbx stop my-sandbox                                    # stop the sandbox
+sbx secret set my-sandbox github -t "$(op read -n 'op://Dev/GitHub/narrow-token')"
+sbx run my-sandbox                                     # restart — picks up new secret
+```
+
+To change a global secret, you must **recreate** (not just restart):
+
+```bash
+sbx secret set -g github -t "$(op read -n 'op://Dev/GitHub/new-token')"
+sbx rm my-sandbox                                      # delete existing
+sbx run claude --name my-sandbox ~/project             # recreate with new global
+```
+
+**When to use per-sandbox vs re-set global:**
+- **Per-sandbox override**: One project needs a different token (narrower scope, different account). Other sandboxes keep the global.
+- **Re-set global**: The old token was rotated/revoked. All sandboxes need the new value. Re-run your setup script, then recreate sandboxes.
+
 ## OAuth vs API Key Flows
 
 ### Anthropic

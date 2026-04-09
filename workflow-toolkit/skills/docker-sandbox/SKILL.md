@@ -340,6 +340,34 @@ subcommand, read [references/cli-reference.md](references/cli-reference.md).**
 
 ---
 
+## Project Documentation
+
+When helping a user set up Docker Sandboxes for a project, **document the
+configuration in the project itself**. Create or update a project-level doc
+(e.g., `docs/sandbox-setup.md` or a section in the project's `CONTRIBUTING.md`)
+covering:
+
+1. **Which agent and template** the project uses (`sbx run claude`, custom
+   template, memory/docker-size overrides)
+2. **Required secrets** — provider names and scoping (global vs per-sandbox),
+   with `op://` reference paths if the team uses 1Password
+3. **Network policy** — any hosts that must be explicitly allowed beyond the
+   default policy (e.g., private registries, internal APIs)
+4. **Port forwarding** — any services the sandbox exposes and their expected
+   mappings
+5. **Branch mode convention** — whether the project uses `--branch` and what
+   `.gitignore` entries are needed (`.sbx/`)
+6. **Bulk setup script** — if the project warrants one, include an
+   `sbx-secrets-setup.sh` (using `op read` references, not plaintext keys)
+   so new contributors can provision secrets in one command
+7. **Post-session checklist** — remind contributors to check `.git/hooks/`,
+   `git diff`, and CI config changes after each sandbox session
+
+This documentation ensures any team member (or future Claude instance) can
+reproduce the sandbox environment without tribal knowledge.
+
+---
+
 ## Rancher Desktop Compatibility
 
 Docker Desktop is **not** required. The `sbx` CLI works standalone — install via

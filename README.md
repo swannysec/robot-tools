@@ -52,6 +52,7 @@ Development workflow automation and productivity tools.
 - `plugin-qa` - Validate plugin manifests, READMEs, versions, and cross-references; guided release prep with version bumping
 - `gh-aw-helper` - GitHub Agentic Workflows guide — setup, authoring, triggers, safe I/O, security, MCP tools, patterns, troubleshooting
 - `anti-laziness-guard` - Three-layer Stop hook detecting and blocking work-skipping rationalizations (regex + Haiku intent detection + optional deep verification)
+- `docker-sandbox` - Docker Sandboxes (sbx CLI) — run AI coding agents in isolated microVMs with credential proxying, network policies, custom templates, and 1Password integration
 
 **Agents:**
 - `code-reviewer` - Staff-level Rust code review specialist

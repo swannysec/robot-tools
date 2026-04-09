@@ -349,18 +349,34 @@ covering:
 
 1. **Which agent and template** the project uses (`sbx run claude`, custom
    template, memory/docker-size overrides)
-2. **Required secrets** — provider names and scoping (global vs per-sandbox),
-   with `op://` reference paths if the team uses 1Password
+2. **Credential management** — full usage instructions for setting up secrets:
+   - List every provider the project needs (e.g., `anthropic`, `github`) and
+     whether each should be global (`-g`) or per-sandbox scoped
+   - **With 1Password (`op`)**: provide exact `op://` reference paths and the
+     corresponding `sbx secret set` commands:
+     ```
+     sbx secret set -g anthropic -t "$(op read -n 'op://Vault/Anthropic/credential')"
+     sbx secret set my-sandbox github -t "$(op read -n 'op://Vault/GitHub/narrow-token')"
+     ```
+   - **Without 1Password**: provide the interactive commands and note which
+     tokens/keys are needed (without including actual values):
+     ```
+     sbx secret set -g anthropic       # paste your Anthropic API key when prompted
+     sbx secret set -g github -t "$(gh auth token)"
+     ```
+   - Document any per-sandbox overrides (e.g., a narrower-scoped GitHub token
+     for a specific project) and the change workflow: stop → set → restart
+   - Note the creation-time gotcha: global secrets require sandbox recreation,
+     not just restart
+   - If the project warrants it, include a bulk setup script
+     (`sbx-secrets-setup.sh`) that contributors can run in one command
 3. **Network policy** — any hosts that must be explicitly allowed beyond the
    default policy (e.g., private registries, internal APIs)
 4. **Port forwarding** — any services the sandbox exposes and their expected
    mappings
 5. **Branch mode convention** — whether the project uses `--branch` and what
    `.gitignore` entries are needed (`.sbx/`)
-6. **Bulk setup script** — if the project warrants one, include an
-   `sbx-secrets-setup.sh` (using `op read` references, not plaintext keys)
-   so new contributors can provision secrets in one command
-7. **Post-session checklist** — remind contributors to check `.git/hooks/`,
+6. **Post-session checklist** — remind contributors to check `.git/hooks/`,
    `git diff`, and CI config changes after each sandbox session
 
 This documentation ensures any team member (or future Claude instance) can

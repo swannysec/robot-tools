@@ -136,7 +136,7 @@ Key details:
 - `/etc/sandbox-persistent.sh` survives sandbox stop/restart cycles
 - Variables set here are available to all processes in the sandbox
 - This is the only mechanism for custom env vars -- `sbx secret` only covers the built-in providers listed in the provider reference table
-- For sensitive custom values, combine with the 1Password `op read` pattern described below to avoid writing plaintext values in shell history
+- **Security caveat:** Values written to `/etc/sandbox-persistent.sh` are stored in plaintext inside the VM filesystem. This is appropriate for non-sensitive config (API endpoints, feature flags) but should NOT be used for high-value secrets like API keys or tokens. Use `sbx secret set` (backed by the OS keychain and credential proxy) for anything sensitive.
 
 ## 1Password CLI Integration
 
@@ -165,7 +165,9 @@ sbx secret set -g github -t "$(op read -n 'op://Vault/GitHub Token/token')"
 # Set Google/Gemini API key from 1Password
 sbx secret set -g google -t "$(op read -n 'op://Vault/Google API Key/credential')"
 
-# Set AWS credentials from 1Password
+# Set AWS credentials from 1Password (colon-delimited key:secret format)
+# If either op read fails, set -euo pipefail in a script will catch it.
+# In an interactive shell, verify both values resolved before running.
 sbx secret set -g aws -t "$(op read -n 'op://Vault/AWS/access-key-id'):$(op read -n 'op://Vault/AWS/secret-access-key')"
 ```
 
@@ -208,6 +210,11 @@ echo "All secrets loaded. Recreate sandboxes to pick up changes."
 
 Adjust the `op://` paths to match your vault and item names.
 
+**Do not commit this script to a repository.** The `op://` paths reveal your
+vault structure and item names, which is an enumeration aid if the repo is
+compromised. Store the script outside the repo, in a gitignored path, or in
+1Password itself as a secure note.
+
 ### `op run` for Environment Injection (Alternative)
 
 If you need to run `sbx` commands in an environment where specific env vars are populated from 1Password:
@@ -224,6 +231,9 @@ ANTHROPIC_API_KEY=op://Dev/Anthropic/credential
 ```
 
 This pattern is less common with `sbx` because `sbx secret set` is the preferred way to manage credentials. Use `op run` only when you need env vars that `sbx secret` does not cover.
+
+**Gitignore `sbx.env`** — it contains `op://` vault paths that reveal your
+secret structure. Add `sbx.env` to `.gitignore`.
 
 ### Security Benefits of `op` + `sbx`
 

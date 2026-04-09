@@ -322,14 +322,14 @@ the user needs agent-specific guidance.
 
 | Command | Purpose | Key Flags |
 |---------|---------|-----------|
-| `sbx run` | Create + attach | `--branch`, `-m`, `--name`, `-t` |
+| `sbx run` | Create + attach | `--branch`, `-m <SIZE>`, `--name`, `-t` |
 | `sbx create` | Create (background) | `--branch`, `-m`, `--name`, `-t`, `-q` |
 | `sbx exec` | Run command inside | `-it`, `-d`, `-e`, `-u`, `-w` |
 | `sbx ls` | List sandboxes | `--json`, `-q` |
 | `sbx stop` | Pause (state preserved) | — |
 | `sbx rm` | Permanent delete | `--all`, `-f` |
 | `sbx reset` | Nuclear reset | `--preserve-secrets`, `-f` |
-| `sbx save` | Snapshot as template | `-o` (tar output) |
+| `sbx save` | Snapshot to host Docker | `-o` (tar output instead) |
 | `sbx ports` | Port forwarding | `--publish`, `--unpublish`, `--json` |
 | `sbx policy` | Network policy mgmt | `allow`, `deny`, `log`, `ls`, `reset`, `rm` |
 | `sbx secret` | Credential mgmt | `set`, `ls`, `rm`, `-g`, `-t` |

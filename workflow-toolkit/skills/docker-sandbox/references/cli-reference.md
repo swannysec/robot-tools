@@ -29,14 +29,16 @@ sbx run [OPTIONS] <AGENT|SANDBOX_NAME> [WORKSPACE...]
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--branch <NAME\|auto>` | Create a git worktree for the sandbox. `auto` generates a branch name. | None |
-| `-m <MB>` | Memory allocated to the sandbox in megabytes. | `4096` |
-| `--name <NAME>` | Explicit sandbox name. If omitted, a name is generated. | Auto-generated |
-| `-t <IMAGE>` / `--template <IMAGE>` | Custom template image. Must be a fully qualified registry path. | Default sandbox image |
-| `--docker-size <MB>` | Disk allocation for the Docker daemon inside the sandbox. | `8192` |
+| `-m <SIZE>` | Memory limit in binary units (e.g., `1024m`, `8g`). | 50% of host memory, max 32 GiB |
+| `--name <NAME>` | Explicit sandbox name. If omitted, a name is generated. | `<agent>-<workdir>` |
+| `-t <IMAGE>` / `--template <IMAGE>` | Custom template image. Must be a fully qualified registry path. | Agent-specific default image |
 
 ### Agents
 
 Available agent values: `claude`, `codex`, `copilot`, `gemini`, `shell`.
+
+Other agents exist (`docker-agent`, `kiro`, `opencode`) but are not covered by
+this skill — see official docs.
 
 ### Workspace Arguments
 
@@ -58,8 +60,8 @@ sbx run my-sandbox
 # Start a Claude sandbox with the current directory as workspace
 sbx run claude ~/projects/myapp
 
-# Start with more memory and a custom name
-sbx run claude -m 8192 --name my-feature ~/projects/myapp
+# Start with 8 GiB memory and a custom name
+sbx run claude -m 8g --name my-feature ~/projects/myapp
 
 # Create a worktree branch automatically
 sbx run claude --branch auto ~/projects/myapp
@@ -260,19 +262,20 @@ sbx save [OPTIONS] <SANDBOX> <IMAGE:TAG>
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-o <FILE>` | Save as a tar file instead of pushing to a registry. | Push to registry |
+| `-o <FILE>` / `--output <FILE>` | Save as a tar file instead of loading into host Docker. | Load into host Docker |
 
+- By default, the image is loaded into the host's Docker daemon (requires Docker to be running).
+- Use `--output` to save as a tar file instead (works without host Docker).
 - Captures the full sandbox state, including all installed packages and modifications.
-- The sandbox should be stopped before saving for a consistent snapshot.
 
 ### Examples
 
 ```bash
-# Save sandbox as a registry image
-sbx save my-sandbox docker.io/myorg/custom-env:v1
+# Save sandbox as an image loaded into host Docker
+sbx save my-sandbox myimage:v1.0
 
-# Save as a local tar file
-sbx save -o ./my-template.tar my-sandbox docker.io/myorg/custom-env:v1
+# Save as a local tar file (no host Docker required)
+sbx save -o ./my-template.tar my-sandbox myimage:v1.0
 ```
 
 ## sbx ports
@@ -287,9 +290,14 @@ sbx ports [OPTIONS] <SANDBOX>
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--publish <HOST:SANDBOX>` | Add a port mapping from host to sandbox. | None |
-| `--unpublish <HOST:SANDBOX>` | Remove a port mapping. | None |
+| `--publish <SPEC>` | Add a port mapping. Repeatable. | None |
+| `--unpublish <SPEC>` | Remove a port mapping. Repeatable. | None |
 | `--json` | Output in JSON format. | Off |
+
+Port spec format: `[[HOST_IP:]HOST_PORT:]SANDBOX_PORT[/PROTOCOL]`
+- If `HOST_PORT` is omitted, an ephemeral port is allocated automatically.
+- `HOST_IP` defaults to `127.0.0.1`.
+- `PROTOCOL` defaults to `tcp`. Supported: `tcp`, `tcp4`, `tcp6`, `udp`, `udp4`, `udp6`.
 
 ### Key Behaviors
 
@@ -438,11 +446,23 @@ sbx secret rm <PROVIDER>
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-g` / `--global` | Apply the secret to all sandboxes. | Off (per-sandbox) |
-| `-t <TOKEN>` / `--token <TOKEN>` | Pass the secret value directly instead of prompting. Useful for piping. | Interactive prompt |
+| `-t <TOKEN>` / `--token <TOKEN>` | Pass the secret value directly instead of prompting. Useful for piping. Note: visible in shell history. | Interactive prompt |
+| `-f` / `--force` | Overwrite an existing secret when `--token` is used. | Off |
+| `--oauth` | Start OAuth flow and store OAuth tokens. Currently only supported for `openai` with global scope. | Off |
+
+Secrets can also be set via stdin piping (avoids shell history exposure):
+
+```bash
+echo "$ANTHROPIC_API_KEY" | sbx secret set -g anthropic
+```
 
 ### Providers
 
-`anthropic`, `openai`, `github`, `google`, `aws`
+`anthropic`, `aws`, `cursor`, `github`, `google`, `groq`, `mistral`, `nebius`,
+`openai`, `xai`
+
+This skill covers `anthropic`, `aws`, `github`, `google`, and `openai`. For
+other providers, refer to the official docs.
 
 ### Key Behaviors
 

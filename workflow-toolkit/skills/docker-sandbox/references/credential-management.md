@@ -36,6 +36,9 @@ Flow:
 | Google | `google` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | API key or interactive sign-in |
 | AWS | `aws` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Key pair |
 
+Additional providers (`cursor`, `groq`, `mistral`, `nebius`, `xai`) are
+supported by `sbx secret set` but not covered in this skill. See official docs.
+
 ## Setting Secrets
 
 ```bash

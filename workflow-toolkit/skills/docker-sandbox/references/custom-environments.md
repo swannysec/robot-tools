@@ -104,21 +104,24 @@ Requirements:
 Use `sbx save` to snapshot the current state of a running sandbox as a new template image. This captures all filesystem changes, installed packages, and configuration modifications made since the sandbox started.
 
 ```bash
-# Snapshot current sandbox state and push to a registry
-sbx save my-sandbox myregistry.io/my-org/my-snapshot:v1.0
+# Snapshot current sandbox state — loads into host Docker daemon
+sbx save my-sandbox myimage:v1.0
 
-# Save as a tar file instead of pushing to a registry
+# Save as a tar file instead (works without host Docker running)
 sbx save -o snapshot.tar my-sandbox myimage:v1.0
 
 # Later, use the saved snapshot as a template
-sbx run claude --template myregistry.io/my-org/my-snapshot:v1.0 ~/project
+sbx run claude --template myimage:v1.0 ~/project
 ```
+
+By default, `sbx save` loads the image into the host's Docker daemon (requires
+Docker to be running). Use `--output` to save as a tar file instead.
 
 When to use `sbx save`:
 
 - After manually installing and configuring tools inside a shell sandbox, save the state so you can reuse it without repeating the setup.
 - When iterating on an environment: start a sandbox, install tools, test them, then save once everything works.
-- The tar output (`-o`) is useful for local testing, sharing with teammates, or archiving before pushing to a registry.
+- The tar output (`-o`) is useful for local testing, sharing with teammates, or environments without host Docker.
 
 The saved image includes everything in the sandbox filesystem. Workspace files mounted from the host are NOT included in the snapshot -- only changes to the sandbox's own filesystem (installed packages, config files, etc.) are captured.
 
@@ -154,11 +157,11 @@ sbx exec -it my-sandbox docker system df
 Control how much RAM is allocated to a sandbox VM:
 
 ```bash
-# Default memory is 4096 MB
+# Default memory is 50% of host RAM, max 32 GiB
 sbx run claude ~/project
 
-# Increase memory for large projects or memory-intensive tools
-sbx run claude -m 8192 ~/project
+# Explicitly set memory for large projects
+sbx run claude -m 8g ~/project
 
 # Check current memory inside a running sandbox
 sbx exec -it my-sandbox free -h
@@ -166,9 +169,9 @@ sbx exec -it my-sandbox free -h
 
 Guidelines for memory sizing:
 
-- **4096 MB (default)** -- Sufficient for most agent tasks: code editing, running tests, linting, small builds.
-- **8192 MB** -- Recommended for projects with large build systems, heavy test suites, or multiple concurrent processes.
-- **16384 MB** -- For builds that require significant memory (e.g., compiling large Rust/C++ projects, running memory-intensive data processing).
+- **Default (50% of host RAM, max 32 GiB)** -- Sufficient for most agent tasks: code editing, running tests, linting, small builds.
+- **`-m 8g`** -- Explicit 8 GiB. Useful for projects with large build systems, heavy test suites, or multiple concurrent processes.
+- **`-m 16g`** -- For builds that require significant memory (e.g., compiling large Rust/C++ projects, running memory-intensive data processing).
 
 If the agent reports out-of-memory errors or processes are killed unexpectedly, increase the memory allocation.
 

@@ -31,6 +31,7 @@ Development workflow automation, review orchestration, and productivity tools fo
 | `plugin-qa` | Validates plugin manifests, README cross-references, SKILL.md frontmatter, version sync, and keyword coverage. Two modes: validate (check and report) and release-prep (validate + version bump workflow). |
 | `gh-aw-helper` | GitHub Agentic Workflows — write AI-powered automation in natural-language markdown that compiles to secure GitHub Actions. Covers setup, workflow authoring, triggers, safe I/O, security, MCP tools, 14 operational patterns, engine configuration, and troubleshooting. |
 | `anti-laziness-guard` | Three-layer Stop hook that detects and blocks work-skipping rationalizations. Layer 1: regex detection of known laziness phrases. Layer 2: Haiku-evaluated intent detection for premature victory and silent omission. Layer 3: optional agent-based deep verification against task lists and plan files. |
+| `docker-sandbox` | Docker Sandboxes (sbx CLI) — run AI coding agents in isolated microVM environments with credential proxying, network policy enforcement, and custom templates. Covers Claude Code, Codex, Copilot, and Gemini agents. Compatible with Rancher Desktop (Docker Desktop not required). |
 
 ### Agents
 
@@ -108,6 +109,15 @@ Skills activate automatically via trigger phrases:
 **anti-laziness-guard** (passive — activates automatically via hooks, no slash command needed):
 - `"anti-laziness"`, `"laziness guard"`, `"stop hook"`
 - `"work skipping"`, `"skip detection"`, `"agent laziness"`, `"premature stop"`
+
+**docker-sandbox**:
+- `"docker sandbox"`, `"docker sandboxes"`, `"sbx"`, `"sbx cli"`
+- `"sbx run"`, `"sbx create"`, `"sandbox agent"`, `"sandbox microvm"`
+- `"sbx login"`, `"sbx secret"`, `"sbx policy"`, `"sbx branch"`
+- `"sandbox credential"`, `"sandbox security"`, `"sandbox isolation"`
+- `"custom sandbox template"`, `"sbx save"`, `"sandbox port forwarding"`
+- `"sandbox troubleshooting"`, `"rancher desktop sandbox"`, `"sandbox clock drift"`
+- `"1password sandbox"`, `"op cli sandbox"`
 
 ### Agents
 

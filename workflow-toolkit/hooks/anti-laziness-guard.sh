@@ -45,6 +45,13 @@ if [ -z "$MESSAGE" ]; then
   exit 0
 fi
 
+# Strip fenced code blocks so quoted examples don't trigger detection
+PROSE=$(printf '%s\n' "$MESSAGE" | sed '/^```/,/^```/d')
+# Fallback: if stripping removed everything (unclosed fence), scan full message
+if [ -z "$PROSE" ]; then
+  PROSE="$MESSAGE"
+fi
+
 # --- Tier 1: Very High Confidence (>90%) ---
 # These phrases are almost never legitimate at stop time.
 TIER1_PATTERNS=(
@@ -70,11 +77,11 @@ TIER1_PATTERNS=(
 )
 
 for pattern in "${TIER1_PATTERNS[@]}"; do
-  if printf '%s\n' "$MESSAGE" | grep -iqE "$pattern"; then
+  if printf '%s\n' "$PROSE" | grep -iqE "$pattern"; then
     MATCHED=$(printf '%s\n' "$MESSAGE" | grep -ioE "$pattern" | head -1)
     jq -n --arg matched "$MATCHED" '{
       decision: "block",
-      reason: ("ANTI-LAZINESS GUARD [Tier 1]: Detected work-skipping rationalization: \"\($matched)\". You are not permitted to skip assigned work. If you believe remaining work is genuinely unnecessary, ask the user — do not decide unilaterally. If you cited context constraints, verify with /context before claiming limits.")
+      reason: ("ANTI-LAZINESS GUARD [Tier 1]: Detected work-skipping rationalization: \"\($matched)\". We trust you to be thorough — if this phrase reflects a genuine constraint, explain it to the user and let them decide. If you cited context constraints, verify with /context before claiming limits.")
     }'
     exit 0
   fi
@@ -92,39 +99,39 @@ TIER2_SIMPLE=(
 )
 
 for pattern in "${TIER2_SIMPLE[@]}"; do
-  if printf '%s\n' "$MESSAGE" | grep -iqE "$pattern"; then
+  if printf '%s\n' "$PROSE" | grep -iqE "$pattern"; then
     MATCHED=$(printf '%s\n' "$MESSAGE" | grep -ioE "$pattern" | head -1)
     jq -n --arg matched "$MATCHED" '{
       decision: "block",
-      reason: ("ANTI-LAZINESS GUARD [Tier 2]: Detected work-skipping rationalization: \"\($matched)\". You are not permitted to skip assigned work or decide that assigned tasks are not worth doing. Ask the user if you believe the scope should change.")
+      reason: ("ANTI-LAZINESS GUARD [Tier 2]: Detected work-skipping rationalization: \"\($matched)\". We trust you to be thorough — if you believe the scope should change, explain your reasoning to the user and let them decide.")
     }'
     exit 0
   fi
 done
 
 # "overkill" — only when discussing process/skills/steps, not technical descriptions
-if printf '%s\n' "$MESSAGE" | grep -iqE 'overkill' && printf '%s\n' "$MESSAGE" | grep -iqE 'skill|process|step|stage|review|check'; then
+if printf '%s\n' "$PROSE" | grep -iqE 'overkill' && printf '%s\n' "$PROSE" | grep -iqE 'skill|process|step|stage|review|check'; then
   jq -n '{
     decision: "block",
-    reason: "ANTI-LAZINESS GUARD [Tier 2]: Detected process-bypassing rationalization (\"overkill\"). Follow the assigned process. If you believe it is excessive, ask the user."
+    reason: "ANTI-LAZINESS GUARD [Tier 2]: Detected process-bypassing rationalization (\"overkill\"). The assigned process exists for a reason. We trust you to be thorough — if you believe it is excessive for this case, explain why to the user."
   }'
   exit 0
 fi
 
 # "this is straightforward" — only when used to bypass a mandatory process
-if printf '%s\n' "$MESSAGE" | grep -iqE 'this is straightforward' && printf '%s\n' "$MESSAGE" | grep -iqE 'skip|don.t need|no need|unnecessary'; then
+if printf '%s\n' "$PROSE" | grep -iqE 'this is straightforward' && printf '%s\n' "$PROSE" | grep -iqE 'skip|don.t need|no need|unnecessary'; then
   jq -n '{
     decision: "block",
-    reason: "ANTI-LAZINESS GUARD [Tier 2]: Detected process-bypassing rationalization (\"straightforward\" used to justify skipping steps). Follow the assigned process regardless of perceived simplicity."
+    reason: "ANTI-LAZINESS GUARD [Tier 2]: Detected process-bypassing rationalization (\"straightforward\" used to justify skipping steps). We trust you to be thorough — the assigned process exists regardless of perceived simplicity. Explain to the user if you believe an exception is warranted."
   }'
   exit 0
 fi
 
 # "for now" — only when deferring assigned work (scoped by nearby laziness context)
-if printf '%s\n' "$MESSAGE" | grep -iqE 'for now' && printf '%s\n' "$MESSAGE" | grep -iqE 'skip|remaining|stage|review|step|defer|later|move on'; then
+if printf '%s\n' "$PROSE" | grep -iqE 'for now' && printf '%s\n' "$PROSE" | grep -iqE 'skip|remaining|stage|review|step|defer|later|move on'; then
   jq -n '{
     decision: "block",
-    reason: "ANTI-LAZINESS GUARD [Tier 2]: Detected work deferral (\"for now\" in context of skipping/deferring assigned work). Complete assigned work before stopping."
+    reason: "ANTI-LAZINESS GUARD [Tier 2]: Detected work deferral (\"for now\" in context of skipping/deferring assigned work). We trust you to be thorough — if deferral is genuinely appropriate, explain your reasoning to the user."
   }'
   exit 0
 fi

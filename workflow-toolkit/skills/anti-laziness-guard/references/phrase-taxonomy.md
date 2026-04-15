@@ -62,18 +62,27 @@ These phrases have real dual-use. They appear in both lazy and legitimate contex
 | `good enough` / `sufficient` | Could be genuine quality assessment | Legitimate engineering judgment about coverage or completeness |
 | `follow-up` | Could be genuine suggestion for future work | Legitimately suggesting non-assigned enhancements |
 
-## Tier 4: Intent-Level Detection — PROMPT/AGENT HOOK
+## Tier 4: Internal Contradiction Detection — PROMPT HOOK
 
-These require LLM evaluation because no keyword pattern can reliably distinguish laziness from legitimacy.
+These require Haiku evaluation because no keyword pattern can reliably detect self-contradicting completion claims. Layer 2 evaluates a single criterion: does the message claim completion while containing contradicting evidence of incompleteness?
 
 | Pattern | Detection Method | Example |
 |---------|-----------------|---------|
-| Premature victory | Prompt hook | "Everything is working now!" (nothing was fixed) — Issue #8738 |
-| Positive framing of incomplete work | Prompt hook | "This is a good start" — DoltHub blog |
-| Silent omission | Prompt hook | Summarizing 5 of 10 items without mentioning the other 5 — Issue #1632 |
-| Offering instead of doing | Prompt hook | "Let me know if you'd like me to create the other files" — Issue #1113 |
-| Unchecked tasks in task list | Agent hook (deep check) | Tasks with "pending"/"in_progress" status when agent claims done |
-| Plan steps not addressed | Agent hook (deep check) | Numbered plan steps not cross-referenced in completion summary |
+| Premature victory | Prompt hook | "Everything is working now!" (but lists 3 remaining items) — Issue #8738 |
+| Positive framing of incomplete work | Prompt hook | "This is a good start" (contradicts completion claim) — DoltHub blog |
+
+**Note:** Pure rationalization without internal contradiction (e.g., "The key changes are [partial list]" with no completion claim) is no longer caught at this tier. This is an accepted tradeoff — see ADR-006 addendum.
+
+## Tier 5: Context-Dependent Detection — AGENT HOOK
+
+These patterns require conversation context (transcript access) to distinguish laziness from legitimate behavior. Detected by the Layer 3 agent hook, which auto-activates when plan or task files exist.
+
+| Pattern | Detection Method | Example |
+|---------|-----------------|---------|
+| Silent omission | Agent hook (transcript comparison) | Summarizing 5 of 10 assigned items without mentioning the other 5 — Issue #1632 |
+| Offering instead of doing | Agent hook (transcript comparison) | "Let me know if you'd like me to create the other files" when creation was assigned — Issue #1113 |
+| Unchecked tasks in task list | Agent hook (task file check) | Tasks with "pending"/"in_progress" status when agent claims done |
+| Plan steps not addressed | Agent hook (plan file check) | Numbered plan steps not cross-referenced in completion summary |
 
 ## Sources
 

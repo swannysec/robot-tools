@@ -7,8 +7,8 @@ description: |
   constraints as justification for shortcuts.
 
   Layer 1: Deterministic regex detection of known laziness phrases (Tiers 1-2)
-  Layer 2: Haiku-evaluated intent detection for premature victory and silent omission (Tier 4)
-  Layer 3: Optional agent-based deep verification against task lists and plan files
+  Layer 2: Haiku-evaluated internal contradiction detection (Tier 4)
+  Layer 3: Context-aware agent verification — auto-activates when plans/tasks exist (Tier 5)
 
   This is a passive hook — it activates automatically when the plugin is enabled.
   No slash command needed. The hook fires on every Stop event and only blocks
@@ -48,28 +48,26 @@ See `references/phrase-taxonomy.md` for the complete taxonomy with sources.
 
 ### Layer 2: Prompt Hook (always runs, ~2-3s)
 
-Haiku evaluates the agent's final message for intent-level patterns that regex cannot catch:
+Haiku evaluates the agent's final message for a single criterion: **internal contradiction** — the message claims completion but contains contradicting evidence of incompleteness in the same message.
 
-1. **Premature victory** — declaring success while work remains incomplete
-2. **Offering instead of doing** — "Let me know if you'd like me to..." for assigned work
-3. **Silent omission** — summarizing completed work without mentioning skipped items
-4. **Rationalized shortcuts** — framing incomplete work as "a good start" or "sufficient"
+Biased toward allowing: when in doubt, the evaluator allows the stop. False positives (blocking a legitimate stop) cause more damage than false negatives (missing a lazy stop).
 
 ### Layer 3: Agent Hook (conditional, 10-30s)
 
-Evidence-based deep verification that reads task lists and plan files. **Only activates when the flag file exists:**
+Context-aware deep verification that reads task lists, plan files, and the session transcript. **Auto-activates when structured work exists:**
 
-```bash
-touch .claude/anti-laziness-deep-check
-```
+- Plan files in `.claude/plans/*.md` or `~/.claude/plans/*.md`
+- Task files in `.claude/tasks/**/*.json` or `~/.claude/tasks/**/*.json`
+- Manual flag file: `.claude/anti-laziness-deep-check`
 
 When active, a subagent with Read/Grep/Glob access:
 1. Checks `~/.claude/tasks/` and `.claude/tasks/` for incomplete tasks
 2. Reads plan files in `.claude/plans/` and cross-references against the agent's claims
 3. Searches the transcript for TodoWrite entries with pending/in_progress status
-4. Blocks if it finds incomplete work that the agent didn't acknowledge
+4. Checks for **offering instead of doing** — agent offers to do assigned work instead of completing it (with carve-outs for completed-then-offering, backlog items, credential questions, and CLAUDE.md-directed confirmations)
+5. Checks for **silent omission** — agent summarizes completed work without mentioning assigned items it didn't do
 
-Remove the flag file to deactivate: `rm .claude/anti-laziness-deep-check`
+**Context budget:** The subagent reads selectively — only user messages from the transcript (not assistant messages, tool results, or progress events). This keeps evaluation within Haiku's 200k token context window even for long sessions.
 
 ## Infinite Loop Prevention
 
@@ -79,7 +77,9 @@ The command hook checks `stop_hook_active` — if the agent was already blocked 
 
 **Enable/disable the entire hook:** Enable or disable the workflow-toolkit plugin in Claude Code settings.
 
-**Enable deep verification (Layer 3):**
+**Layer 3 auto-activation:** Layer 3 activates automatically when plan or task files exist. No configuration needed for structured work sessions.
+
+**Manual activation (for sessions without plans/tasks):**
 ```bash
 # Before a critical session
 touch .claude/anti-laziness-deep-check
@@ -97,7 +97,10 @@ rm .claude/anti-laziness-deep-check
 | 1 | >90% | BLOCK | Regex (command hook) |
 | 2 | 75-90% | BLOCK | Regex with context scoping (command hook) |
 | 3 | 50-75% | Documented only | Not enforced — see `references/phrase-taxonomy.md` |
-| 4 | Varies | BLOCK | Haiku evaluation (prompt hook) + optional agent verification |
+| 4 | Varies | BLOCK | Haiku evaluation — internal contradiction only (prompt hook) |
+| 5 | Varies | BLOCK | Context-aware agent verification — offering, omission, task/plan checks (agent hook) |
+
+**Coverage model:** Layers 1+2 are intentionally conservative — near-zero false positives, may miss subtle patterns like pure rationalization without internal contradiction. Layer 3 auto-activates during structured work sessions (plan or task files present) and provides deeper, context-aware coverage including patterns that require transcript access.
 
 ## Background
 

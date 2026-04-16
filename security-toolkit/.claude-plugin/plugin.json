@@ -1,6 +1,6 @@
 {
   "name": "security-toolkit",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "description": "Security investigation and analysis tools",
   "author": {
     "name": "swannysec",
@@ -29,6 +29,13 @@
     "adversarial-verification",
     "cwe",
     "debiasing",
-    "icd-203"
+    "icd-203",
+    "vanta",
+    "compliance",
+    "audit-readiness",
+    "vanta-api",
+    "vulnerability-sla",
+    "personnel-compliance",
+    "compliance-posture"
   ]
 }

@@ -13,6 +13,7 @@ Security investigation and analysis tools for GitHub secret scanning and securit
 | `secret-scanning-investigator` | Investigate GitHub secret scanning alerts with evidence-based analysis. Trace provenance of leaked secrets, assess risk, and generate structured security reports. Includes batch processing and parallel sub-agent execution. |
 | `security-vuln-analyzer` | Multi-agent security vulnerability analysis with adversarial verification and ICD 203 analytic standards. Orchestrates 5 parallel finder agents (Security Sentinel, Threat Modeling Expert, Backend Security Coder, Comprehensive Security Reviewer, Codex Adversarial Analyst) with confirmation bias mitigation, CWE-specific verification procedures, and guided context gathering. Multi-phase synthesis with ICD 203 confidence/exploitability assessment, cross-model adversarial verification (Claude + Codex with 4-gate review), and deterministic validation. Includes 8 reference files. |
 | `gha-hardening` | GitHub Actions security hardening and configuration best practices. Covers workflow permissions, secrets, OIDC, attack patterns (injection, pwn requests, supply chain), detection tools (zizmor, scorecard, poutine, actionlint, harden-runner), runner security, and incident response. |
+| `vanta` | Vanta compliance platform operations — posture analysis, audit readiness, vulnerability management, personnel compliance, and flexible reporting. Complements the official vanta-mcp-plugin with analysis workflows, direct API operations, and reporting. |
 
 ## Installation
 
@@ -52,6 +53,12 @@ Skills activate automatically via trigger phrases:
 - `"workflow security"`, `"actions hardening"`, `"secure github actions"`
 - `"pull_request_target"`, `"script injection actions"`, `"sha pinning actions"`
 - `"zizmor"`, `"scorecard checks"`, `"harden-runner"`, `"self-hosted runner security"`
+
+**vanta**:
+- `"vanta"`, `"vanta compliance"`, `"vanta audit"`
+- `"compliance posture"`, `"audit readiness"`, `"compliance gap"`
+- `"vanta tests"`, `"vanta controls"`, `"vanta vulnerabilities"`
+- `"vulnerability sla"`, `"compliance report"`, `"vanta api"`
 
 ### Example Commands
 

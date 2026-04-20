@@ -1,6 +1,6 @@
 {
   "name": "security-toolkit",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Security investigation and analysis tools",
   "author": {
     "name": "swannysec",
@@ -36,6 +36,16 @@
     "vanta-api",
     "vulnerability-sla",
     "personnel-compliance",
-    "compliance-posture"
+    "compliance-posture",
+    "vercel-forensics",
+    "vercel",
+    "incident-response",
+    "forensics",
+    "evidence-collection",
+    "chain-of-custody",
+    "oauth-compromise",
+    "env-var-exposure",
+    "rotation-worklist",
+    "audit-log-triage"
   ]
 }

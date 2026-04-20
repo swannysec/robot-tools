@@ -49,7 +49,7 @@ RUN_STATUS=0
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
-PASSTHRU_ARGS=""            # space-joined re-quoted args for preflight pass-through
+PASSTHRU_ARGS=()            # bash array for preflight + sub-script pass-through
 
 usage() {
   cat <<'USAGE'
@@ -116,25 +116,24 @@ fi
 # source of truth for slug validation inside preflight.
 # ---------------------------------------------------------------------------
 build_passthru_args() {
-  # Emit a whitespace-safe set of args via printf with %q is not bash-3.2 safe,
-  # so we use explicit quoting in a space-separated string. Slugs already
-  # pass the ^[A-Za-z0-9._-]{1,64}$ regex in preflight, so they contain no
-  # whitespace or shell metacharacters.
-  PASSTHRU_ARGS=""
+  # Bash 3.2 supports arrays; use one here to preserve arg boundaries and
+  # avoid the word-split trap if a slug regex is ever loosened to allow
+  # whitespace. Each element is a single argv slot.
+  PASSTHRU_ARGS=()
   if [ -n "$TEAM_SLUG" ]; then
-    PASSTHRU_ARGS="$PASSTHRU_ARGS --team $TEAM_SLUG"
+    PASSTHRU_ARGS+=(--team "$TEAM_SLUG")
   fi
   if [ -n "$GITHUB_ORG" ]; then
-    PASSTHRU_ARGS="$PASSTHRU_ARGS --github-org $GITHUB_ORG"
+    PASSTHRU_ARGS+=(--github-org "$GITHUB_ORG")
   fi
   if [ -n "$GITHUB_ENTERPRISE" ]; then
-    PASSTHRU_ARGS="$PASSTHRU_ARGS --github-enterprise $GITHUB_ENTERPRISE"
+    PASSTHRU_ARGS+=(--github-enterprise "$GITHUB_ENTERPRISE")
   fi
   if [ "$LOG_REQUESTS" -eq 1 ]; then
-    PASSTHRU_ARGS="$PASSTHRU_ARGS --log-requests"
+    PASSTHRU_ARGS+=(--log-requests)
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
-    PASSTHRU_ARGS="$PASSTHRU_ARGS --dry-run"
+    PASSTHRU_ARGS+=(--dry-run)
   fi
 }
 build_passthru_args
@@ -310,8 +309,9 @@ banner "PHASE 0: Preflight"
 # operator via a tee to /dev/tty.
 PREFLIGHT_OUT="$(mktemp -t vf-preflight.XXXXXX)"
 
-# shellcheck disable=SC2086
-if "$SCRIPT_DIR/preflight.sh" $PASSTHRU_ARGS 2>&1 | tee "$PREFLIGHT_OUT"; then
+# bash-3.2 + set -u: an empty array expansion raises "unbound variable".
+# The `${name[@]+…}` guard sidesteps it — emit the array only if defined.
+if "$SCRIPT_DIR/preflight.sh" ${PASSTHRU_ARGS[@]+"${PASSTHRU_ARGS[@]}"} 2>&1 | tee "$PREFLIGHT_OUT"; then
   :
 else
   echo ""

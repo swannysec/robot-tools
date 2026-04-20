@@ -105,22 +105,31 @@ def _to_epoch_seconds(value: Any) -> Optional[float]:
     """Coerce ms-epoch int/str OR ISO-8601 string to seconds-since-epoch.
 
     Returns None if parsing fails.
+
+    Unit heuristic: numeric values below 1e12 are assumed to be
+    seconds-since-epoch (GitHub audit-log `created_at` sometimes appears
+    as seconds rather than ms, especially for older entries); values at
+    or above 1e12 are ms-epoch (current time in ms is ~1.7e12). Timestamps
+    before ~2001 in ms-epoch are below 1e12, but no Vercel/GitHub event
+    predates the platforms, so this cutoff is safe.
     """
     if value is None:
         return None
-    # Numeric (int or float) → assume milliseconds-since-epoch.
+    # Numeric (int or float) — autodetect seconds vs ms.
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value) / 1000.0
+        v = float(value)
+        return v if v < 1e12 else v / 1000.0
     if isinstance(value, str):
         s = value.strip()
         if not s:
             return None
-        # All-digit string → ms-epoch.
+        # All-digit string — same autodetect.
         if s.isdigit():
             try:
-                return float(s) / 1000.0
+                v = float(s)
             except ValueError:
                 return None
+            return v if v < 1e12 else v / 1000.0
         # Try ISO-8601. Accept trailing "Z".
         iso = s.replace("Z", "+00:00") if s.endswith("Z") else s
         try:

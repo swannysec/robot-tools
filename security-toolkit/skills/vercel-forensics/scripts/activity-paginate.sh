@@ -183,6 +183,20 @@ PAGINATION_LOG="${OUT_DIR}/activity-pagination.log"
 REQUEST_LOG="${OUT_DIR}/activity-requests.log"
 PARTIAL_FLAG="${OUT_DIR}/activity.partial"
 
+# Validate RESUME_FROM cursor charset before any use — Vercel activity
+# cursors are opaque ms-epoch-ish strings. Reject anything outside a
+# safe set to prevent an operator who pastes a multi-line cursor (or
+# an attacker with shell-env access) from corrupting the request URL.
+if [ -n "${RESUME_FROM:-}" ]; then
+  case "${RESUME_FROM}" in
+    *[!A-Za-z0-9_=.:-]*)
+      echo "activity-paginate.sh: RESUME_FROM contains disallowed characters; refusing." >&2
+      echo "  expected charset: [A-Za-z0-9_=.:-]" >&2
+      exit 2
+      ;;
+  esac
+fi
+
 # Truncate outputs on fresh runs; preserve on RESUME_FROM so we accumulate.
 if [ -z "${RESUME_FROM:-}" ]; then
   : > "${OUT_JSONL}"

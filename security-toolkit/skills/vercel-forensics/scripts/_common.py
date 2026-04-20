@@ -29,6 +29,7 @@ __all__ = [
     "validate_url", "project_fields", "atomic_write",
     "get_token", "token_hash", "rate_limit_sleep", "log_request",
     "acquire_lock", "release_lock", "redact_value",
+    "strip_bidi_controls", "display_safe",
 ]
 
 @dataclass
@@ -376,9 +377,22 @@ def rate_limit_sleep(response: Any) -> float:
     return sleep_for
 
 # Compiled once. Each entry is (compiled regex, replacement str OR callable).
+#
+# Length-bucketing: where a rule's replacement incorporates the matched
+# length, bucket it to short/med/long instead of emitting the exact
+# character count. The exact count was a low-severity side-channel
+# (OT10 / SEC-012) — entropy of the secret was not leaked, but the
+# length itself narrows dictionary searches for non-high-entropy tokens.
+def _len_bucket(n: int) -> str:
+    if n < 20:
+        return "short"
+    if n < 60:
+        return "med"
+    return "long"
+
 _REDACTION_RULES: list[tuple[re.Pattern[str], Any]] = [
     (re.compile(r"(https?://discord\.com/api/webhooks/\d+/)([A-Za-z0-9_\-]+)"),
-     lambda m: f"{m.group(1)}[REDACTED-{len(m.group(2))}char-discord]"),
+     lambda m: f"{m.group(1)}[REDACTED-{_len_bucket(len(m.group(2)))}-discord]"),
     (re.compile(r"https?://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+"),
      "[REDACTED-slack-webhook]"),
     (re.compile(r"(https?://)([^/:@\s]+):([^/@\s]+)@"),
@@ -388,7 +402,7 @@ _REDACTION_RULES: list[tuple[re.Pattern[str], Any]] = [
         r"authorization|sig|sv|X-Amz-Signature|X-Amz-Credential)=)"
         r"([^&#\s]+)",
         re.IGNORECASE,
-     ), lambda m: f"{m.group(1)}[REDACTED-{len(m.group(2))}char-qs]"),
+     ), lambda m: f"{m.group(1)}[REDACTED-{_len_bucket(len(m.group(2)))}-qs]"),
     (re.compile(r"\b(ghp_|github_pat_|gho_|ghu_|ghs_)[A-Za-z0-9_]{20,255}\b"),
      lambda m: f"{m.group(1)}[REDACTED-ghpat]"),
     (re.compile(r"\b(sk_live_|rk_live_|whsec_)[A-Za-z0-9]{16,}\b"),
@@ -403,6 +417,33 @@ _REDACTION_RULES: list[tuple[re.Pattern[str], Any]] = [
         r"192\.168(?:\.\d{1,3}){2}|"
         r"172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})\b"
      ), "[REDACTED-rfc1918]"),
+    # Expanded provider catalogue (v1 follow-up — known-residuals.md §11).
+    # Lengths are quantized to short/med/long buckets to avoid leaking
+    # the exact secret length (§10 residual, OT10).
+    # AWS access-key IDs (+STS session keys).
+    (re.compile(r"\b(AKIA|ASIA)[0-9A-Z]{16}\b"),
+     lambda m: f"[REDACTED-{m.group(1).lower()}-aws-akid]"),
+    # Anthropic keys FIRST — both `sk-ant-...` and `sk-proj-...` overlap
+    # on prefix `sk-`, so order the most-specific rule first.
+    (re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}\b"),
+     "[REDACTED-anthropic]"),
+    # OpenAI project + user keys.
+    (re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_\-]{20,}\b"),
+     "[REDACTED-openai]"),
+    # Google API keys (Firebase, Maps, etc.). Official length is 39 chars
+    # total (AIza + 35), but allow ±5 to accommodate future expansions /
+    # non-canonical variants.
+    (re.compile(r"\bAIza[0-9A-Za-z_\-]{30,45}\b"),
+     "[REDACTED-gcp-api-key]"),
+    # SendGrid.
+    (re.compile(r"\bSG\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\b"),
+     "[REDACTED-sendgrid]"),
+    # npm.
+    (re.compile(r"\bnpm_[A-Za-z0-9]{36}\b"),
+     "[REDACTED-npm]"),
+    # Slack bot / user / workspace tokens (xoxb/xoxp/xoxa/xoxs/xoxr).
+    (re.compile(r"\bxox[bpaosr]-[A-Za-z0-9\-]{10,}\b"),
+     "[REDACTED-slack-token]"),
 ]
 
 def redact_value(s: str) -> str:
@@ -413,6 +454,46 @@ def redact_value(s: str) -> str:
     for pattern, repl in _REDACTION_RULES:
         out = pattern.sub(repl, out)
     return out
+
+# Unicode code points that reorder rendered output or paper over homoglyphs
+# without affecting byte content. An attacker-controlled integration name,
+# project name, or GitHub actor login that renders `example.com` but stores
+# `examp‮moc.elp` (RLO + reversed) can mis-attribute findings in a markdown
+# report without tripping any textual equality check. Strip them before
+# rendering into any human-facing narrative. The CSV emitter already did
+# this (rotation-worklist.py::_strip_unicode_controls) — this exposes the
+# same defense to triage.py / per-actor-profile.py / build-log-scan.py.
+_BIDI_AND_ZWJ_CODEPOINTS = frozenset({
+    0x200B, 0x200C, 0x200D, 0x200E, 0x200F,  # ZWSP, ZWNJ, ZWJ, LRM, RLM
+    0x2066, 0x2067, 0x2068, 0x2069,           # isolate formatting
+    0x202A, 0x202B, 0x202C, 0x202D, 0x202E,  # LRE/RLE/PDF/LRO/RLO
+    0xFEFF,                                   # ZWNBSP / BOM
+})
+
+def strip_bidi_controls(s: str) -> str:
+    """Remove bidi-format and zero-width code points. Preserve the rest."""
+    if not s:
+        return s
+    if not any(ord(ch) in _BIDI_AND_ZWJ_CODEPOINTS for ch in s):
+        return s
+    return "".join(ch for ch in s if ord(ch) not in _BIDI_AND_ZWJ_CODEPOINTS)
+
+def display_safe(s: str) -> str:
+    """Render-safe transform for markdown output.
+
+    - Strips bidi / zero-width formatting (see above).
+    - Collapses embedded newlines + tabs to a single space so a single
+      attacker-controlled field cannot fracture a markdown table row.
+    Does NOT apply secret redaction — callers that also need redaction
+    should compose with redact_value explicitly (the two transforms are
+    independent and can run in either order).
+    """
+    if not s:
+        return s
+    s = strip_bidi_controls(s)
+    if "\n" in s or "\t" in s or "\r" in s:
+        s = s.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    return s
 
 def log_request(url: str, method: str, token_source: str = "?") -> None:
     """Emit a redacted request summary to stderr. No disk, no headers.
@@ -454,7 +535,13 @@ def acquire_lock(token_hash_hex: str) -> bool:
     return True
 
 def release_lock(token_hash_hex: str) -> None:
-    """Release the fcntl.flock acquired by acquire_lock."""
+    """Release the fcntl.flock acquired by acquire_lock and remove the sentinel file.
+
+    The lockfile name encodes sha256(token)[:16], which is a confirm/deny
+    oracle on a guessed token (see `known-residuals.md` §10 / SEC-019).
+    Unlinking on release shrinks the window from "forever" to "during
+    active skill run". Defense in depth.
+    """
     fd = _lock_fds.pop(token_hash_hex, None)
     if fd is None:
         return
@@ -464,6 +551,10 @@ def release_lock(token_hash_hex: str) -> None:
         pass
     try:
         os.close(fd)
+    except OSError:
+        pass
+    try:
+        os.unlink(_lock_path(token_hash_hex))
     except OSError:
         pass
 

@@ -57,7 +57,7 @@ import sys
 from collections import Counter
 from typing import Any, Iterable, Optional
 
-from _common import atomic_write
+from _common import atomic_write, display_safe
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -314,8 +314,9 @@ class ActorState:
 
     def __init__(self, key: str) -> None:
         self.key = key
-        self.email = key if "@" in key else ""
-        self.uid = "" if "@" in key else key
+        is_email = _looks_like_email(key)
+        self.email = key if is_email else ""
+        self.uid = "" if is_email else key
         self.display_names: set[str] = set()
         self.event_types_in: Counter[str] = Counter()
         self.event_types_out: Counter[str] = Counter()
@@ -342,6 +343,17 @@ def _actor_key(email: str, uid: str) -> str:
     if uid:
         return uid.strip()
     return ""
+
+
+# Strict-ish email shape: at least one non-@/non-space char, single @,
+# non-@/non-space + dot + non-@/non-space. Replaces the naive
+# ``"@" in key`` check that treated Vercel synthetic IDs like
+# ``uid_xyz@deleted`` or ``org/repo@abc`` as emails (CA-011).
+_EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _looks_like_email(s: str) -> bool:
+    return bool(_EMAIL_SHAPE.match(s))
 
 
 def _get_or_make(
@@ -396,7 +408,8 @@ def _build_actors_from_timeline(
         key = actor.strip()
         if not key:
             continue
-        state = _get_or_make(actors, email=key if "@" in key else "", uid=key if "@" not in key else "")
+        is_email = _looks_like_email(key)
+        state = _get_or_make(actors, email=key if is_email else "", uid=key if not is_email else "")
         if state is None:
             continue
 
@@ -720,9 +733,9 @@ def _render_markdown(
             x.get("key") or "",
         ),
     )[:50]:
-        bpk = ", ".join(a.get("backup_owner_projects") or []) or "-"
+        bpk = display_safe(", ".join(a.get("backup_owner_projects") or []) or "-")
         lines.append(
-            f"| `{a['key']}` | `{a.get('email') or '-'}` | "
+            f"| `{display_safe(a['key'])}` | `{display_safe(a.get('email') or '-')}` | "
             f"{a.get('primary_owner_env_count', 0)} | {bpk} |"
         )
     lines.append("")
@@ -759,7 +772,8 @@ def _render_markdown(
                     f"new creator.uids: {len(an['novel_deployment_creator_uids'])}"
                 )
             lines.append(
-                f"| `{a['key']}` | {flag_str} | " + "; ".join(detail_bits) + " |"
+                f"| `{display_safe(a['key'])}` | {display_safe(flag_str)} | "
+                + "; ".join(display_safe(b) for b in detail_bits) + " |"
             )
         lines.append("")
 
@@ -779,9 +793,9 @@ def _render_markdown(
             src_div = len(p.get("sources") or {})
             in_src = ", ".join(sorted((p.get("in_window_sources") or {}).keys())) or "-"
             lines.append(
-                f"| `{name}` | {p.get('total_deployments', 0)} | "
+                f"| `{display_safe(name)}` | {p.get('total_deployments', 0)} | "
                 f"{p.get('unique_creator_uids', 0)} | {src_div} | "
-                f"{p.get('in_window_unique_creator_uids', 0)} | {in_src} |"
+                f"{p.get('in_window_unique_creator_uids', 0)} | {display_safe(in_src)} |"
             )
         lines.append("")
 

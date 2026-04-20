@@ -38,7 +38,7 @@ from typing import Any, Iterable
 
 # _common lives next to this script.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import atomic_write  # noqa: E402
+from _common import atomic_write, display_safe  # noqa: E402
 
 # --- Env-var class taxonomy (metapod; see analysis-methodology.md §3) --------
 #
@@ -295,8 +295,8 @@ def _security_slices(case_dir: str, out: list[str]) -> None:
         out.append("|---|---|---|---|")
         for ev in exfil[:100]:
             out.append(
-                f"| {ev.get('createdAt', '?')} | `{ev.get('type', '?')}` "
-                f"| {ev.get('userId', '?')} | {ev.get('principalId', '?')} |"
+                f"| {ev.get('createdAt', '?')} | `{display_safe(str(ev.get('type', '?')))}` "
+                f"| {display_safe(str(ev.get('userId', '?')))} | {display_safe(str(ev.get('principalId', '?')))} |"
             )
         if len(exfil) > 100:
             out.append(f"- _truncated at 100 rows ({len(exfil)} total)._")
@@ -336,7 +336,7 @@ def _security_slices(case_dir: str, out: list[str]) -> None:
         out.append("|---|---|---|")
         for ev in churn[:100]:
             out.append(
-                f"| {ev.get('createdAt', '?')} | `{ev.get('type', '?')}` | {ev.get('userId', '?')} |"
+                f"| {ev.get('createdAt', '?')} | `{display_safe(str(ev.get('type', '?')))}` | {display_safe(str(ev.get('userId', '?')))} |"
             )
         if len(churn) > 100:
             out.append(f"- _truncated at 100 rows ({len(churn)} total)._")
@@ -370,8 +370,8 @@ def _security_slices(case_dir: str, out: list[str]) -> None:
         out.append("|---|---|---|---|")
         for ev in gh_hits[:100]:
             out.append(
-                f"| {ev.get('@timestamp', '?')} | `{ev.get('action', '?')}` "
-                f"| {ev.get('actor', '?')} | {ev.get('repo', '?')} |"
+                f"| {ev.get('@timestamp', '?')} | `{display_safe(str(ev.get('action', '?')))}` "
+                f"| {display_safe(str(ev.get('actor', '?')))} | {display_safe(str(ev.get('repo', '?')))} |"
             )
         if len(gh_hits) > 100:
             out.append(f"- _truncated at 100 rows ({len(gh_hits)} total)._")

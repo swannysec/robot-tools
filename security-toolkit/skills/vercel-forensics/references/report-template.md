@@ -146,7 +146,43 @@ For each P0 entry, recommend downstream execution:
 - `subinium/vercel-incident-toolkit` → Flow C (guided rotation)
 - `codyhxyz/metapod-harden` → `/rotate-vercel-env <KEY>`
 
-The structured input for both tools is `05-ROTATION-WORKLIST.csv` (garyhtou schema). Hand it to the operator alongside the audit report.
+The structured input for both tools is `05-ROTATION-WORKLIST.csv` (garyhtou schema, 23 columns). Hand it to the operator alongside the audit report.
+
+#### 23-column schema (authoritative: `scripts/rotation-worklist.py::COLUMNS`)
+
+| # | Column | Source | Notes |
+|---|---|---|---|
+| 1 | `team_name` | Vercel team object | human-readable |
+| 2 | `team_slug` | Vercel team object | stable identifier |
+| 3 | `project_name` | `/v9/projects/:pid` | may contain unicode; `_safe_cell` bidi-scrubs |
+| 4 | `project_id` | `/v9/projects/:pid` | `^prj_[A-Za-z0-9]+$` validated in preflight |
+| 5 | `env_id` | `/v9/projects/:pid/env` | env-var record id |
+| 6 | `configuration_id` | integration link (when present) | pointer to `/v1/integrations/configurations/:cid` |
+| 7 | `key` | `/v9/projects/:pid/env[].key` | env-var name — attacker-controlled; formula-injection neutralized |
+| 8 | `type` | `env[].type` | `encrypted` \| `plain` \| `system` \| `sensitive` |
+| 9 | `targets` | `env[].target` joined by `\|` | `production` / `preview` / `development` |
+| 10 | `git_branch` | `env[].gitBranch` | optional, preview scope |
+| 11 | `class` | derived via `classify_key()` | DB-cred \| OAuth-secret \| Provider-API-key \| Webhook-signing \| Vercel-managed \| Public \| Other |
+| 12 | `provider` | derived via `infer_provider()` | STRIPE \| OPENAI \| ANTHROPIC \| AWS \| GCP \| SUPABASE \| etc. (or blank) |
+| 13 | `rotate_priority` | derived via `rotate_priority()` | P0 \| P1 \| P2 |
+| 14 | `recommendation` | derived via `recommendation()` | free-text operator guidance |
+| 15 | `primary_owner_name` | `env[].lastUpdatedByDisplayName` | display name |
+| 16 | `primary_owner_email` | members lookup on `lastUpdatedBy` uid | |
+| 17 | `backup_owner_name` | `actors.json` most-frequent-90d deployer | bot-filtered |
+| 18 | `backup_owner_email` | members lookup on backup owner | |
+| 19 | `backup_deploy_count_90d` | `actors.json` | `0` when unresolved |
+| 20 | `last_updated_at` | `env[].updatedAt` ISO-8601 | |
+| 21 | `last_updated_days_ago` | now − `updatedAt` / 86400 | integer days |
+| 22 | `created_at` | `env[].createdAt` ISO-8601 | |
+| 23 | `vercel_url` | `https://vercel.com/:team/:project/settings/environment-variables` | dashboard shortcut |
+
+**Header row**: first line is the `CONFIDENTIAL` comment (leading `#`), then a blank, then the 23-column header, then data rows. Rows are sorted by `provider`/`team_slug`/`project_name`/`key`.
+
+**Guarantees:**
+- Never emits env-var **values** — the API contract (L4, §SKILL.md) ensures plain GETs do not return them, and `_common.py::ALLOWED_PATHS` rejects `?decrypt=` / `?reveal=` that could be used to fetch them.
+- Formula-injection neutralized: cells beginning with `= + - @ \t \r` get a single-quote prefix.
+- Bidi/zero-width control code points stripped from `project_name` and `key`.
+- Cells containing `\t` / `\n` are RFC-4180-quoted by Python's `csv` module; intended consumer is a spreadsheet or an RFC-4180 parser (not naive `awk`/`cut`).
 
 ### Section 8 — Caveats + unknowns
 

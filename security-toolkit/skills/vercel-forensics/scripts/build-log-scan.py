@@ -40,7 +40,7 @@ import sys
 from collections import defaultdict
 from typing import Any, Iterable
 
-from _common import atomic_write
+from _common import atomic_write, display_safe
 
 
 # ---------------------------------------------------------------------------

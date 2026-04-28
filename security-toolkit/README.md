@@ -14,6 +14,7 @@ Security investigation and analysis tools for GitHub secret scanning and securit
 | `security-vuln-analyzer` | Multi-agent security vulnerability analysis with adversarial verification and ICD 203 analytic standards. Orchestrates 5 parallel finder agents (Security Sentinel, Threat Modeling Expert, Backend Security Coder, Comprehensive Security Reviewer, Codex Adversarial Analyst) with confirmation bias mitigation, CWE-specific verification procedures, and guided context gathering. Multi-phase synthesis with ICD 203 confidence/exploitability assessment, cross-model adversarial verification (Claude + Codex with 4-gate review), and deterministic validation. Includes 8 reference files. |
 | `gha-hardening` | GitHub Actions security hardening and configuration best practices. Covers workflow permissions, secrets, OIDC, attack patterns (injection, pwn requests, supply chain), detection tools (zizmor, scorecard, poutine, actionlint, harden-runner), runner security, and incident response. |
 | `vanta` | Vanta compliance platform operations — posture analysis, audit readiness, vulnerability management, personnel compliance, and flexible reporting. Complements the official vanta-mcp-plugin with analysis workflows, direct API operations, and reporting. |
+| `vercel-forensics` | Preservation-first forensic evidence collection and analysis for Vercel incidents (OAuth supply-chain compromise, env-var exposure, audit-log triage). Read-only by construction: per-path `ALLOWED_PATHS` map, ingress field projection, GET-only verb gate, software WORM (SHA-256 manifest + `chmod -R a-w`). Emits 8-section findings report, fused Vercel + GitHub timeline, per-actor profiles, build-log IOC scan, and a rotation-worklist CSV for handoff to subinium/metapod. Engineering-triage grade — not court-admissible. |
 
 ## Installation
 
@@ -59,6 +60,13 @@ Skills activate automatically via trigger phrases:
 - `"compliance posture"`, `"audit readiness"`, `"compliance gap"`
 - `"vanta tests"`, `"vanta controls"`, `"vanta vulnerabilities"`
 - `"vulnerability sla"`, `"compliance report"`, `"vanta api"`
+
+**vercel-forensics**:
+- `"vercel incident"`, `"vercel forensics"`, `"vercel breach"`
+- `"vercel oauth"`, `"vercel supply chain"`, `"vercel compromise"`
+- `"vercel env exposure"`, `"vercel env leak"`, `"vercel env rotation"`
+- `"vercel audit log"`, `"vercel activity log"`, `"vercel triage"`
+- `"rotation worklist"`, `"audit log triage"`, `"preservation first forensics"`
 
 ### Example Commands
 

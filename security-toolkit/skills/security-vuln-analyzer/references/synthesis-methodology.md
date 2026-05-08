@@ -45,6 +45,8 @@ Cluster findings by vulnerability, not by agent:
 - **Merge rule**: when agents report the same vulnerability under different IDs, merge into a single finding. Keep the richest evidence set. Record all contributing agent IDs (e.g., "SENTINEL-2, BACKEND-1, CODEX-3").
 - **Distinguish**: same root cause (merge) vs. related but distinct vulnerabilities (keep separate). Two SQL injection findings at different endpoints are distinct. Two descriptions of the same injection at the same endpoint are duplicates.
 
+Preserve the Invariant + Adversarial Test Contract verbatim during deduplication — do not paraphrase, do not select one and discard others. If two findings cluster as duplicates and have differing contracts, do NOT auto-merge: emit both contracts and flag DISPUTED for Step 3.5 verification.
+
 ## Evidence Quality Rubric
 
 Rate each deduplicated finding using the ICD 203 Confidence scale above:
@@ -69,6 +71,8 @@ When agents disagree on severity or validity:
 4. If still tied: flag as DISPUTED, route to adversarial verification
 5. NEVER resolve conflicts by averaging severity scores
 6. NEVER dismiss a finding solely because it's a singleton (only one agent reported it)
+
+Preserve the Invariant + Adversarial Test Contract verbatim — do not paraphrase. The contract is exempt from automatic resolution. If two findings disagree on the contract, escalate to Step 3.5 verification rather than auto-merging — the higher-confidence contract does NOT win by default; the verifier constructs adversarial inputs and the contract that survives bypass construction wins.
 
 ## Escalation Protocol
 

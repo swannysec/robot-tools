@@ -8,6 +8,7 @@ STRIDE-per-interaction analysis, attack tree construction, control library, defe
 - [Attack Tree Model](#attack-tree-model)
 - [Control Library](#control-library)
 - [Risk Calibration Data](#risk-calibration-data)
+- [Primitive Class Enumeration](#primitive-class-enumeration)
 
 ## STRIDE-per-Interaction Mapping
 
@@ -114,3 +115,55 @@ Calibrate likelihood estimates against real-world scan data:
 | **High Likelihood** | Medium | High | Critical | Critical |
 | **Medium Likelihood** | Low | Medium | High | Critical |
 | **Low Likelihood** | Low | Low | Medium | High |
+
+## Primitive Class Enumeration
+
+For the attacker's goal, enumerate the full equivalence class of inputs that achieves it, not exemplars within one class.
+
+This rule is the antidote to the most common variant-miss: identifying *one* primitive class as "the attack vector," enumerating exemplars within that class, and missing the equivalent classes that achieve the same goal through different mechanisms. The attacker's primitive class includes every input that leads to the same observable outcome — not just the family the analysis happened to start with.
+
+### Domain examples
+
+Apply across any vulnerability class with multiple equivalent input primitives:
+
+**Sanitization / filtering**
+- Character categories: whitespace, format characters, control characters, combining marks
+- Encoding variants: URL encoding, HTML entity encoding, Unicode escape sequences, double-encoding, mixed-encoding
+- Case variants: upper / lower / title / full-width / Turkic-i / Greek final-sigma
+
+**Injection**
+- Payload delivery vectors: query string, headers, cookies, request body, multipart fields, websocket frames
+- Serialization formats: JSON, XML, YAML, form-encoded, msgpack, protobuf
+- Context-specific syntax: SQL dialect variants, shell quoting styles, template engines (Jinja, ERB, Handlebars)
+
+**Authorization**
+- Attribute substitution paths: user ID, session token, role claim, group membership, tenant ID
+- Bypass primitives: TOCTOU, race, redirect, CSRF, alternate endpoint, parameter tampering
+
+**Deserialization**
+- Gadget chains within and across known sink libraries
+- Format alternatives that share a parser (e.g., XML/SOAP variants, YAML/JSON parsers, native binary serializers in dynamic languages)
+- Polymorphism abuse (e.g., `__class__`, type-coercing magic methods, custom reduce-style hooks)
+
+**Logic**
+- Ordering primitives: out-of-order step submission, skipping intermediate states
+- State-transition variants: re-entering states the design assumed terminal
+- Concurrency interleavings: parallel requests racing for the same resource
+- Retry / replay: idempotency token reuse, message replay against single-use endpoints
+
+### Checklist
+
+Apply at threat-modeling time, before recommending a fix:
+
+1. **State the attacker's goal** in one sentence — the observable outcome the attacker wants, not implementation jargon.
+2. **Identify the primitive class** needed to achieve that goal — the named family of inputs, not a specific exemplar.
+3. **Enumerate the full class** — every member, drawn from the canonical source (stdlib, language spec, library inventory). Do not stop at exemplars.
+4. **For each member, state whether it is in scope of the proposed fix.** Members outside the fix scope are bypass candidates and must be tracked as such.
+
+### Where this is applied downstream
+
+- **Step 1.5 SURFACE MAP construction** in `SKILL.md` references this section; the attack surface enumeration includes all primitive class members, not exemplars of one family.
+- **FINDER 2 (Threat Modeler)** in `step-2-agent-prompts.md` emits a Primitive Class Enumeration as a finding artifact for any vulnerability with multiple variants.
+- **FINDER 3 (Backend Coder)** consumes the enumeration to draft the Invariant + Adversarial Test Contract; each enumerated member is tested against the fix.
+- **FINDER 5 (Codex) Phase 2 variant probe** uses the enumeration to construct candidate bypass inputs.
+- **Class Coverage Check** in `deterministic-validation.md` runs the enumeration deterministically (no LLM judgment) against the fix's filter to produce a list of missed members.

@@ -73,6 +73,27 @@ Merge agent recommendations into single implementation. Prioritize by severity +
 |-----------|---------|-------|-------|------|----------|------------|
 | [ID] | [Section ref or N/A] | [CC ref or N/A] | [Section ref or N/A] | [Article ref or N/A] | [Function ref or N/A] | [Chapter ref or N/A] |
 
+## Invariant + Adversarial Test Contract
+
+For every confirmed finding with a recommended fix, emit the FINDER 3 contract VERBATIM — no paraphrase, no truncation, no field renaming. The contract is the single source of truth for fix verification and is consumed downstream by the `--verify-fix` mode and by issue-tracker templates.
+
+If FINDER 3 produced multiple contracts (one per finding), emit one section per contract, headed by the finding ID:
+
+### [Finding ID] — [Finding Title]
+
+```
+INVARIANT: <verbatim from FINDER 3>
+ADVERSARIAL INPUT CLASSES (≥3, drawn from Primitive Class Enumeration):
+  - <input class 1>: <expected output>
+  - <input class 2>: <expected output>
+  - <input class 3>: <expected output>
+IMPLEMENTATION PITFALLS (≥1): <verbatim from FINDER 3>
+```
+
+If a finding's recommended fix has no contract (FINDER 3 omitted it for a non-fix-bearing finding), state "No contract — finding is informational, no fix recommended" inline. Do NOT fabricate or paraphrase contracts post-hoc.
+
+If two findings share an INVARIANT but disagree on ADVERSARIAL INPUT CLASSES, emit both contracts and flag DISPUTED — do not auto-merge. The fix-verification mode treats DISPUTED contracts as failure-to-converge requiring human review.
+
 ## Rust Toolchain Verification
 
 If the target is a Rust codebase, include these post-fix verification commands:

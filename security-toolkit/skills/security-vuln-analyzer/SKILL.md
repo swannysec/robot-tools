@@ -15,6 +15,11 @@ triggers:
   - "analyze security"
   - "fix security"
   - "vulnerability analysis"
+  - "verify fix"
+  - "fix verification"
+  - "post-fix verification"
+  - "is this fixed"
+  - "closure verification"
 ---
 
 # Security Vulnerability Analyzer
@@ -231,6 +236,7 @@ Before dispatching any agents, resolve all shared resources so agents never dupl
 
 3. **Enumerate the attack surface.**
    Using deterministic tools only (Grep, Glob), build a SURFACE MAP of files and patterns related to the vulnerability. This gives agents awareness of the full attack surface without constraining their exploration — agents should still pursue independent threads they discover.
+   - **Primitive Class Enumeration (conceptual prerequisite):** When the vulnerability has multiple primitive variants achievable through different input classes (sanitization/encoding, injection vector, authorization bypass primitive, deserialization gadget family, logic-ordering primitive), apply the Primitive Class Enumeration checklist from `references/threat-modeling-methodology.md` *first*. Stating the full equivalence class informs which siblings, callsites, and anti-patterns the deterministic Grep/Glob steps below must search for. Do not stop at exemplars.
    - **Callsites:** Grep for all usages of the vulnerable function or pattern identified in Step 1 (e.g., `build_no_quote`, `shellexpand`, the specific sink). Record every file:line.
    - **Sibling files:** If the vulnerability is in a language-specific file (e.g., `python.rs` task definitions), Glob for all sibling files matching the same structural pattern (e.g., `go.rs`, `typescript.rs`, `ruby.rs` in the same directory). These are likely instantiations of the same vulnerability class.
    - **Escaping/sanitization functions:** Grep for all escaping or sanitization functions in the affected module (e.g., `regex::escape`, `shlex::quote`, `shell_escape`). Different escaping functions protect against different metacharacter sets — mismatched escaping is a common vulnerability pattern.
@@ -467,6 +473,44 @@ If needs-attention findings overlap with issues already accepted in the synthesi
 
 **Before delivering the report, run through the Output Quality Checklist in `references/report-template.md`.** The checklist verifies that all steps were executed correctly, all reference files were read, and all required fields are present.
 
+## Fix-Verification Mode (`--verify-fix`)
+
+A specialization of this skill triggered by `--verify-fix --tracker <URL> --fix <PR-or-commit>` — bypass construction against shipped fixes. **Mandatory before any vulnerability issue moves to closed/done state. Not severity-gated.**
+
+The full mode contract, workflow, and Closure Verdict format live in `references/fix-verification-mode.md`. Read that file when invoked in this mode.
+
+### When triggered
+
+- User invokes the skill with `--verify-fix` flag
+- User invokes via one of these triggers: "verify fix", "fix verification", "post-fix verification", "is this fixed", "closure verification"
+- An issue tracker references a vulnerability fix and asks for closure verification
+
+### Verify-Fix Rotation Table
+
+Verification uses rotated finder prompts (different focus from initial-analysis prompts) to avoid the same blind spots producing the same misses.
+
+| Finder Role | Initial Analysis Focus | Verify-Fix Focus |
+|---|---|---|
+| FINDER 1 (Sentinel) | CWE+CVSS+EPSS scoring, 4-bucket scan | **Test Coverage Auditor** — for each primitive class enumerated, confirm regression test exists |
+| FINDER 2 (Threat Modeler) | STRIDE, attack trees, defense-in-depth | **Bypass Constructor** — produce inputs the fix is supposed to handle, trace each output |
+| FINDER 3 (Backend Coder) | Test-first remediation, fix authoring | **PR Attribution Auditor** — verify cited fix PR contains the relevant code change, flag DiD or unrelated PRs |
+| FINDER 4 (Auditor) | Priority + compliance | **Regression Auditor** — flag adjacent security control weakening |
+| FINDER 5 (Codex) | Independent assessment + variant probe | **Independent Bypass Constructor** — different model attempts independent bypasses |
+
+### Closure gate
+
+**A vulnerability issue cannot move to closed/done state until a `--verify-fix` run completes with `YES` or `CONDITIONAL YES`.** Not severity-gated.
+
+The Closure Verdict is recorded in the issue body or comments alongside the fix-verification report. See `references/fix-verification-mode.md` for verdict format.
+
+### Supporting references
+
+The fix-verification mode draws on three supporting reference files:
+
+- `references/premature-fix-confirmation.md` — failure-pattern reference cataloging single-class enumeration, recommendation-match vs attack-closure, PR attribution drift, and reporter-discovers-bypass patterns
+- `references/evidence-validation-techniques.md` — six techniques for validating AI-generated security findings, including the Adversarial Bypass Construction methodology that grounds bypass-focused verification
+- `references/confirmation-bias-in-security-review.md` — empirical grounding for the bias-toward-confirmation that fix-verification mode counters
+
 ---
 
 ## Runtime Reinforcement — Critical Rules
@@ -482,3 +526,4 @@ These rules are repeated here at the end of the skill to counteract positional a
 7. **Dispatch Codex Bash with `run_in_background: true` in the first message, then Claude Agent calls in the second.** Codex runs concurrently via background notification. Do NOT use `sleep` or `TaskOutput` polling — wait for the automatic notification. Do NOT use `run_in_background` on Agent calls. Each step dispatches only its own agents.
 8. **Retry failed agents before declaring them unavailable.** A single Bash failure does not mean Codex is unavailable — it may be agent error or ephemeral. Apply the retry policy (3 total attempts) before falling back to degraded mode.
 9. **Emit verbatim report text by copying, not regenerating.** The Advisory Submission section in Step 3.8 must contain the exact text captured in Step 1. Copy from `VERBATIM_REPORT_TEXT` — do not paraphrase, summarize, or reconstruct from memory. LLM recall degrades over long contexts.
+10. **The verify-fix is mandatory before closure.** No vulnerability issue closes without a `--verify-fix` run with verdict YES or CONDITIONAL YES. See § Fix-Verification Mode.

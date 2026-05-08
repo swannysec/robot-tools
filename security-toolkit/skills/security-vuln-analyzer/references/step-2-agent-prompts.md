@@ -29,12 +29,16 @@ Include ALL FOUR preambles at the start of every Claude agent prompt (Agents 1-4
 **Preamble 3 — CONTEXT & EVIDENCE:**
 > Before analyzing, identify and read the context you need: (1) the function(s) directly involved, (2) type definitions for parameters and return types (especially newtypes, type-state patterns), (3) trait definitions and implementations if generics/trait objects are used, (4) middleware/extractor definitions if this is a web handler, (5) unsafe blocks in the call chain and their SAFETY comments, (6) configuration files affecting security behavior. Also check related files (callers, middleware, tests) for evidence that confirms or refutes the vulnerability — for single-file issues (hardcoded secrets, missing headers, configuration errors), state that the finding is self-contained. Cite all context gathered in your findings.
 
-**Preamble 4 — CONFIDENCE EVIDENCE LADDER:**
+**Preamble 4 — CONFIDENCE EVIDENCE LADDER (ICD 203):**
 > Your ICD 203 Confidence level (High/Moderate/Low) must reflect what you actually investigated, not how you feel. Use this ladder:
-> - **Low**: Read flagged code but have not traced the full data flow path.
-> - **Moderate**: Traced source-to-sink across call boundaries but have not verified whether guards, sanitization, or framework protections are present or absent.
-> - **High**: Verified guards are absent (or bypassable) AND confirmed input is attacker-controlled with a concrete exploit scenario or specific payload.
-> Your rationale MUST cite the evidence that justifies your confidence level. If you have not traced data flow, you cannot claim Moderate. If you have not verified guards, you cannot claim High.
+> - **Low:** Pattern match without traced data flow; no exploit path constructed.
+> - **Moderate:** Data flow traced from source to sink; guards identified but not adversarially tested.
+> - **High:** At least one of:
+>     (a) Constructed an adversarial input that the code's stated invariant fails to handle, with traced output proving the failure, OR
+>     (b) Provided explicit reasoning that no input within the relevant primitive class can violate the invariant, citing the canonical class source (stdlib, spec, library inventory).
+>   You may not claim High by asserting "guards are absent" without (a) or (b).
+> *Rationale:* Forces bypass construction or impossibility argument into every High-confidence claim. Closes the "guards look absent so I'll claim High" path.
+> Your rationale MUST cite the evidence that justifies your confidence level. If you have not traced data flow, you cannot claim Moderate.
 
 ## FINDER 1 — Sentinel
 
@@ -140,6 +144,16 @@ prompt: |
 
   Finding consolidation: If multiple STRIDE categories apply to the same root cause with the same fix, consolidate them into a single finding with multiple STRIDE tags rather than reporting each category separately. Report the distinct vulnerability, not each perspective on it. Aim for 3-7 findings per analysis — significantly more suggests over-enumeration of the same root cause.
 
+  Primitive Class Enumeration (REQUIRED when a vulnerability has multiple primitive variants): For any finding whose root cause spans more than one primitive input/operation variant (e.g., multiple injection sinks, multiple path-traversal primitives, multiple deserialization formats), you MUST emit a "Primitive Class Enumeration" artifact as a section within the finding. Enumerate the full class — not exemplars — and cite the canonical source. See `[CACHE_PATH]/threat-modeling-methodology.md` § Primitive Class Enumeration for the methodology. Use this exact structure:
+
+  PRIMITIVE CLASS ENUMERATION (required when vulnerability has multiple primitive variants):
+    ATTACKER GOAL: <one sentence — observable outcome attacker wants>
+    PRIMITIVE CLASS: <named family of inputs (not exemplars)>
+    FULL CLASS MEMBERS: <every member, citing canonical source — stdlib, spec, library inventory>
+    IN/OUT-OF-FIX-SCOPE: <per member, state whether the proposed fix scope covers it>
+
+  This artifact is consumed downstream by FINDER 3 (Adversarial Test Contract) and FINDER 5 (variant probe). Do not omit members because they "seem unlikely" — enumeration drives downstream variant analysis.
+
   REFERENCE FILES — read these from the local cache path provided by the orchestrator before starting analysis:
   - [CACHE_PATH]/threat-modeling-methodology.md
   - [CACHE_PATH]/compliance-frameworks.md
@@ -208,6 +222,16 @@ prompt: |
   - Missing validation on serde deserialization boundaries (attacker-controlled JSON/YAML)
   - Raw SQL via format!() instead of parameterized queries (sqlx::query! or diesel)
   - Unchecked integer arithmetic in release builds
+
+  Adversarial Test Contract (REQUIRED for every recommended fix): Every fix recommendation MUST be accompanied by an "Invariant + Adversarial Test Contract" block. The contract is non-optional and must be preserved verbatim through synthesis. It is consumed downstream by (1) the synthesis Report Template's "Invariant + Adversarial Test Contract" section, (2) the fix-verification mode (the test set the fix must pass), and (3) issue-tracker templates that cite the contract — making the contract the single source of truth for fix verification. Draw adversarial input classes from the FINDER 2 "Primitive Class Enumeration" artifact when present; otherwise enumerate from the canonical primitive class for the vulnerability. Use this exact structure:
+
+  INVARIANT + ADVERSARIAL TEST CONTRACT (required for every recommended fix):
+    INVARIANT: <one sentence — the property the fixed code maintains>
+    ADVERSARIAL INPUT CLASSES (≥3, drawn from Primitive Class Enumeration in references/threat-modeling-methodology.md):
+      - <input class 1>: <expected output>
+      - <input class 2>: <expected output>
+      - <input class 3>: <expected output>
+    IMPLEMENTATION PITFALLS (≥1): <concrete ways an implementer could satisfy the recommendation literally while still failing the invariant>
 
   REFERENCE FILES — read these from the local cache path provided by the orchestrator before starting analysis:
   - [CACHE_PATH]/rust-security.md
@@ -322,6 +346,9 @@ Your job is to challenge assumptions, find weaknesses the other agents may have 
 </role>
 
 <task>
+This is a TWO-PHASE analysis. Complete Phase 1 fully before starting Phase 2. Both phases are required output.
+
+=== PHASE 1 — INDEPENDENT ASSESSMENT ===
 Perform an independent security analysis of this vulnerability:
 
 Target: [URL/System]
@@ -329,7 +356,14 @@ Vulnerability: [Type and description]
 Current Security Posture: [Headers/controls present and missing]
 Technology Stack: [Framework, hosting]
 
-Your value is as an independent voice. Do not assume other analysts are correct. Challenge severity assessments, look for related vulnerabilities the report missed, and identify edge cases where proposed mitigations might fail.
+Your value in Phase 1 is as an independent voice. Do not assume other analysts are correct. Challenge severity assessments, look for related vulnerabilities the report missed, and identify edge cases where proposed mitigations might fail. Output agreement/disagreement with the primary finding, with file:line evidence. This phase preserves cross-model bias detection and its output structure must match the structured_output_contract below exactly.
+
+=== PHASE 2 — VARIANT PROBE ===
+After completing Phase 1, attempt to construct ≥2 variant inputs from the same primitive class enumerated by FINDER 2 in its "Primitive Class Enumeration" artifact (see references/threat-modeling-methodology.md § Primitive Class Enumeration). Variants are inputs from the SAME primitive class that the proposed fix may NOT cover.
+
+For each variant, produce a finding under a "VARIANTS NOT YET ENUMERATED" heading with the same finding fields used in Phase 1 (ID, Title, Severity, CVSS Estimate, Confidence, Exploitability, Evidence with file:line, Description, Recommendation). Use ID prefix CODEX-VARIANT-[N]. Each variant MUST cite file:line evidence showing where the proposed fix fails to cover the variant.
+
+These variant findings flow downstream as singletons routed to adversarial verification (Step 3.5 in SKILL.md). Phase 2 is additive to Phase 1 — do not modify or replace Phase 1 output.
 </task>
 
 <operating_stance>

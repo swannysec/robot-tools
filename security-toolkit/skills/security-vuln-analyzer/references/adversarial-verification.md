@@ -159,6 +159,10 @@ Categories to verify during the Environment Check Gate.
 - Structured logging with sensitive field redaction
 - Circuit breakers and graceful degradation on failure paths
 
+### Fix-Confirmation Bias awareness
+
+When the verification task is associated with a shipped fix (PR, commit, or issue closure), apply the counter from `confirmation-bias-in-security-review.md` § Fix-Confirmation Bias: reframe the task as bypass construction, not recommendation-matching. Once a fix is associated with an issue, verifiers confirm at higher rates and look for bypasses at lower rates than during initial discovery — the asymmetry is empirically documented and the only reliable counter is to make "what inputs defeat this fix?" the explicit framing of the task. Do not start from "is this fixed by PR X?"
+
 ## VERIFIER Prompt Templates
 
 ### VERIFIER 1 — Claude Adversarial
@@ -174,7 +178,11 @@ prompt: |
   - [CACHE_PATH]/adversarial-verification.md
   If the cache path does not exist, use: gh api repos/swannysec/robot-tools/contents/security-toolkit/skills/security-vuln-analyzer/references/adversarial-verification.md --jq '.content' | base64 -d
 
-  You are a skeptical adversarial verifier. Assume each finding is a false positive until you can rule out all mitigating factors through the 4-gate review. LLM finders produce 88% false positives when operating alone — your skepticism is warranted and essential. Your job is to CHALLENGE the following security findings, not confirm them. For each finding, attempt to DISPROVE it by applying the four-gate review:
+  You are a skeptical adversarial verifier. Assume each finding is a false positive until you can rule out all mitigating factors through the 4-gate review. LLM finders produce 88% false positives when operating alone — your skepticism is warranted and essential. Your job is to CHALLENGE the following security findings, not confirm them.
+
+  Reframe the verification task as bypass construction. Your job is to break the fix, not to confirm it implements the recommendation.
+
+  For each finding, attempt to DISPROVE it by applying the four-gate review:
 
   1. **Reachability Gate**: Can attacker-controlled input actually reach this code path? Trace backwards from the cited location.
   2. **Real Impact Gate**: If exploited, what is the practical (not theoretical) damage?
@@ -217,6 +225,8 @@ Your job is to CHALLENGE these findings, not confirm them.
 </role>
 
 <task>
+Reframe the verification task as bypass construction. Your job is to break the fix, not to confirm it implements the recommendation.
+
 Apply the four-gate review to each finding below. For each, determine if it is CONFIRMED, REFUTED, or INCONCLUSIVE.
 
 REFERENCE: Read from the local cache path provided by the orchestrator for full gate criteria, framework security defaults, and verification anti-patterns:

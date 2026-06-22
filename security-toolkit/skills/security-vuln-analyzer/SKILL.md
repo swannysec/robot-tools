@@ -475,7 +475,7 @@ If needs-attention findings overlap with issues already accepted in the synthesi
 
 ## Fix-Verification Mode (`--verify-fix`)
 
-A specialization of this skill triggered by `--verify-fix --tracker <URL> --fix <PR-or-commit>` — bypass construction against shipped fixes. **Mandatory before any vulnerability issue moves to closed/done state. Not severity-gated.**
+A specialization of this skill triggered by `--verify-fix --tracker <URL|path> --fix <PR-or-commit>` — bypass construction against shipped fixes. **Mandatory before any vulnerability issue moves to closed/done state. Not severity-gated.**
 
 The full mode contract, workflow, and Closure Verdict format live in `references/fix-verification-mode.md`. Read that file when invoked in this mode.
 

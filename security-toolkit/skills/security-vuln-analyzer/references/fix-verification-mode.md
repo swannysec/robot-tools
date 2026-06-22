@@ -18,7 +18,7 @@ Do NOT use this mode for initial vulnerability discovery — that's the default 
 ## Invocation contract
 
 Required arguments:
-- `--tracker <URL>` — Issue/advisory/GHSA URL that tracks the vulnerability. REQUIRED. Without this, a fresh session has no context for what was being fixed. Examples: GHSA URL, Linear issue URL, Bugzilla URL, internal ticket URL.
+- `--tracker <URL|path>` — Issue/advisory/GHSA that tracks the vulnerability. REQUIRED. Accepts either a URL (fetched) or a local file path / `file://` URL (read from disk). The local-file form is for offline advisories, pasted reports, and acceptance fixtures. Without this, a fresh session has no context for what was being fixed. Examples: GHSA URL, Linear issue URL, Bugzilla URL, internal ticket URL, or a local `advisory.md` file.
 - `--fix <PR-or-commit>` — The fix being verified. REQUIRED. PR URL or commit SHA. Multiple values allowed if the fix spans PRs (comma-separated or repeated flag).
 
 Optional arguments:
@@ -26,9 +26,9 @@ Optional arguments:
 
 ## Workflow
 
-1. **Fetch issue body from `--tracker`.** Capture: original vulnerability description, recommended fix, and (if R1.2 was applied at original analysis time) the Invariant + Adversarial Test Contract.
+1. **Obtain the issue body from `--tracker`.** If `--tracker` is a URL, fetch it (`gh api` for GHSA/GitHub, WebFetch otherwise). If it is a local file path or `file://` URL, read the file from disk. Either way, capture: original vulnerability description, recommended fix, and (if R1.2 was applied at original analysis time) the Invariant + Adversarial Test Contract.
 
-2. **Fetch the fix diff(s) from `--fix`.** For each cited PR or commit, retrieve the diff. If multiple, retrieve all.
+2. **Fetch the fix diff(s) from `--fix`.** For each cited PR or commit, retrieve the diff (for a PR URL use `gh`; for a local commit SHA, run from the repository checkout and use `git show <SHA>`). If multiple, retrieve all.
 
 3. **Build a SURFACE MAP focused on the fix locus + the Invariant.** This parallels Step 1.5 in the default workflow but scoped to the fix's blast radius rather than the whole vulnerability surface. Apply Primitive Class Enumeration from `threat-modeling-methodology.md` to the Invariant — what input classes must the fix handle?
 

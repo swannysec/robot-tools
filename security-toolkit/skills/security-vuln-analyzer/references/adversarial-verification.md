@@ -218,7 +218,9 @@ CODEX_COMPANION=$(find ~/.claude/plugins/cache/openai-codex -name "codex-compani
 if [ -z "$CODEX_COMPANION" ]; then
   printf 'CODEX ADVERSARIAL VERIFIER UNAVAILABLE: codex plugin not installed.\n'
 else
-  node "$CODEX_COMPANION" task --effort high "$(cat <<'CODEX_VERIFY'
+  # Model pinned to the current Codex flagship (gpt-5.5). Update as Codex advances;
+  # verify the accepted string with `codex exec --help` and ~/.codex/config.toml.
+  node "$CODEX_COMPANION" task --effort high --model gpt-5.5 "$(cat <<'CODEX_VERIFY'
 <role>
 You are Codex performing adversarial verification of security findings.
 Your job is to CHALLENGE these findings, not confirm them.

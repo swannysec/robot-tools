@@ -1,6 +1,6 @@
 {
   "name": "security-toolkit",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Security investigation and analysis tools",
   "author": {
     "name": "swannysec",
@@ -27,6 +27,7 @@
     "rust-security",
     "threat-modeling",
     "adversarial-verification",
+    "develop-fixes",
     "cwe",
     "debiasing",
     "icd-203",

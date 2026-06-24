@@ -10,6 +10,7 @@ Report assembly templates and pre-delivery verification checklist. The orchestra
 - [Attack Tree Summary](#attack-tree-summary)
 - [Consolidated Fix Recommendation](#consolidated-fix-recommendation)
 - [Compliance Impact Matrix](#compliance-impact-matrix)
+- [Candidate Patch (develop-fixes)](#candidate-patch-develop-fixes)
 - [Rust Toolchain Verification](#rust-toolchain-verification)
 - [Disputed Findings](#disputed-findings)
 - [Risk Summary Box](#risk-summary-box)
@@ -75,7 +76,7 @@ Merge agent recommendations into single implementation. Prioritize by severity +
 
 ## Invariant + Adversarial Test Contract
 
-For every confirmed finding with a recommended fix, emit the FINDER 3 contract VERBATIM — no paraphrase, no truncation, no field renaming. The contract is the single source of truth for fix verification and is consumed downstream by the `--verify-fix` mode and by issue-tracker templates.
+For every confirmed finding with a recommended fix, emit the FINDER 3 contract VERBATIM — no paraphrase, no truncation, no field renaming. The contract is the single source of truth for fix verification and is consumed downstream by the `--verify-fix` mode, by issue-tracker templates, and by the `--develop-fix` mode (which authors one frozen regression test per adversarial input class, verbatim).
 
 If FINDER 3 produced multiple contracts (one per finding), emit one section per contract, headed by the finding ID:
 
@@ -93,6 +94,23 @@ IMPLEMENTATION PITFALLS (≥1): <verbatim from FINDER 3>
 If a finding's recommended fix has no contract (FINDER 3 omitted it for a non-fix-bearing finding), state "No contract — finding is informational, no fix recommended" inline. Do NOT fabricate or paraphrase contracts post-hoc.
 
 If two findings share an INVARIANT but disagree on ADVERSARIAL INPUT CLASSES, emit both contracts and flag DISPUTED — do not auto-merge. The fix-verification mode treats DISPUTED contracts as failure-to-converge requiring human review.
+
+## Candidate Patch (develop-fixes)
+
+Emitted only when the report is produced by a `--develop-fix` run (not by initial analysis). It records the candidate patch + its provenance trail, built from the contract above. **Full schema → `develop-fixes-mode.md` § Candidate-patch + provenance schema.** Minimum fields:
+
+```
+CANDIDATE PATCH — finding <ID>, contract <version>
+  Author model: <model>   Verifier models: <Opus 4.8 + gpt-5.5 | Claude-only (cross-model unavailable)>
+  Branch: <name>   Frozen tests: <ids/hashes>   Retry count: <n of N≤3>
+  Per test: <input-class> → <expected> → <actual> → <pass/fail>  (unpatched: fail / patched: pass)
+  Sink-coverage: <llvm-cov region count | Miri/CodeQL trace | trybuild compile-fail>
+  Gates: security exploit-fail-to-pass <pass/fail> · regression full-suite <pass/fail> · deeper-verify <tool:result> · mutation-kill <pass/fail>
+  Landing: repo <public/private> → <draft PR | bundle + GHSA private fork>   (no vuln details on public surfaces)
+  Status: CANDIDATE PATCH — human merge required; --verify-fix verdict: <YES | CONDITIONAL YES | NO | pending>
+```
+
+The candidate patch is **not** an autonomous production closure — a human approves the merge, and the mandatory `--verify-fix` gate must return YES / CONDITIONAL YES first.
 
 ## Rust Toolchain Verification
 

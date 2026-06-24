@@ -1,7 +1,7 @@
 ---
 name: security-vuln-analyzer
 description: |
-  Multi-agent security vulnerability analysis with adversarial verification and ICD 203 analytic standards. Orchestrates 5 parallel finder agents, cross-model adversarial verification (Claude + Codex), and deterministic validation to analyze vulnerability reports with CWE-specific procedures, confirmation bias mitigation, and structured evidence quality assessment. Use when receiving vulnerability reports, security disclosures, bug bounty submissions, or when needing to assess and remediate security issues.
+  Multi-agent security vulnerability analysis with adversarial verification and ICD 203 analytic standards. Orchestrates 5 parallel finder agents, cross-model adversarial verification (Claude + Codex), and deterministic validation to analyze vulnerability reports with CWE-specific procedures, confirmation bias mitigation, and structured evidence quality assessment. Includes a `--develop-fix` mode (Rust-first v1) that, after confirming a concrete target, authors validated regression tests + a minimum fix on a branch and emits a human-gated **candidate patch** — it never confirms its own fix; the mandatory `--verify-fix` gate and a human merge do. Use when receiving vulnerability reports, security disclosures, or bug bounty submissions, when assessing security issues, or when authoring a candidate fix for a confirmed finding.
 triggers:
   - "vulnerability report"
   - "security issue"
@@ -20,6 +20,12 @@ triggers:
   - "post-fix verification"
   - "is this fixed"
   - "closure verification"
+  - "develop fix"
+  - "develop the fix"
+  - "build the fix"
+  - "author the fix"
+  - "remediate finding"
+  - "remediate this finding"
 ---
 
 # Security Vulnerability Analyzer
@@ -511,6 +517,42 @@ The fix-verification mode draws on three supporting reference files:
 - `references/evidence-validation-techniques.md` — six techniques for validating AI-generated security findings, including the Adversarial Bypass Construction methodology that grounds bypass-focused verification
 - `references/confirmation-bias-in-security-review.md` — empirical grounding for the bias-toward-confirmation that fix-verification mode counters
 
+## Develop-Fixes Mode (`--develop-fix`)
+
+A specialization of this skill that **authors and lands a candidate fix** for a confirmed finding, then routes mandatorily to `--verify-fix`. It slots in *front of* fix-verification: develop-fixes writes the fix and its oracle; `--verify-fix` confirms it. **The author never confirms its own fix.** Output is a **candidate patch** with a provenance trail — a human approves the merge, always. **v1 is Rust-first.**
+
+The full mode contract, 8-step flow, test-validity guards, sandbox, dual-verifier policy, and visibility-gated landing live in `references/develop-fixes-mode.md`. Read that file when invoked in this mode.
+
+### When triggered
+
+- User invokes the skill with `--develop-fix --finding <id> --analysis <path|report> [--tracker <URL|path>]`, OR
+- Natural language naming a concrete target: "develop/build/author the fix for finding N", "remediate this finding."
+
+**Confirm before authoring — always.** Because authoring and landing code is high-consequence, ANY invocation (flag or NL) must FIRST confirm the concrete target — a specific finding + its *converged* Invariant + Adversarial Test Contract — and that it will author tests + a minimal fix + land on a branch, before acting. Never auto-author as a side effect of an ambiguous analysis phrase: a bare "fix security" with no concrete target is an *analysis* request, not an authoring instruction. A DISPUTED / non-converged Contract → refuse to author, escalate to a human.
+
+### Flow skeleton
+
+1. Load the finding + its converged Contract (contract-convergence gate; refuse if DISPUTED).
+2. Author regression tests with the three validity guards — fail-on-unpatched + reach-the-sink (sink-coverage) + freeze-before-authoring.
+3. Implement the minimum fix on a branch (root-cause-first; **single strong author, no author mesh**).
+4. Run the gates in a two-phase-network sandbox: **security (exploit-fail-to-pass)** + **co-equal regression**.
+5. Bounded iteration **N≤3**, carrying the prior failed patch + gate output forward; then escalate to a human.
+6. Emit a **candidate patch** + provenance trail; persist the validated tests as durable regression anchors.
+7. **Mandatory** handoff to the independent `--verify-fix` gate (cold artifact, no author trace, disproof-biased) — non-skippable.
+8. **Human review before merge** — always; the human also routes disclosure.
+
+### Verifier policy
+
+Two independent verifiers — **Opus 4.8 + gpt-5.5** — judge the candidate on a cold artifact; disagreement is settled by **deterministically executing the frozen tests** against the patch. Never more than two verifiers. The gpt-5.5 leg sends code to OpenAI (data-classification caveat); degrade to Claude-only with a loud warning.
+
+### Landing is visibility-gated
+
+Branches are the work substrate; opening a PR is an explicit, visibility-gated terminal step. Private (or post-disclosure) repos may push to a draft PR. **For a public repo with an undisclosed vulnerability, never auto-push or open a normal PR** — use a local branch + evidence bundle and route through a GHSA temporary private fork (reuse the existing advisory if the vuln arrived via one); **never write the vulnerability description, PoC, or Contract into any public-visible surface**. The `Merge pull request` and triage→draft `Accept` steps are web-UI-only, so develop-fixes' own gates are the sole enforcement before merge. See `references/develop-fixes-mode.md` § Landing.
+
+### Scope
+
+One finding → one branch → one Contract → one verification gate. Batch only the variants of a single finding (shared Contract). Distinct findings get separate branches.
+
 ---
 
 ## Runtime Reinforcement — Critical Rules
@@ -527,3 +569,8 @@ These rules are repeated here at the end of the skill to counteract positional a
 8. **Retry failed agents before declaring them unavailable.** A single Bash failure does not mean Codex is unavailable — it may be agent error or ephemeral. Apply the retry policy (3 total attempts) before falling back to degraded mode.
 9. **Emit verbatim report text by copying, not regenerating.** The Advisory Submission section in Step 3.8 must contain the exact text captured in Step 1. Copy from `VERBATIM_REPORT_TEXT` — do not paraphrase, summarize, or reconstruct from memory. LLM recall degrades over long contexts.
 10. **The verify-fix is mandatory before closure.** No vulnerability issue closes without a `--verify-fix` run with verdict YES or CONDITIONAL YES. See § Fix-Verification Mode.
+11. **In develop-fixes, the author never confirms its own fix.** Authoring and verification are separate, non-skippable steps: develop-fixes emits a candidate patch; the independent `--verify-fix` gate (cold artifact, no author trace, dual-model Opus 4.8 + gpt-5.5, deterministic test-execution tiebreak) confirms it. A single strong author — no author-side mesh. See § Develop-Fixes Mode.
+12. **Exploit-fail-to-pass is the develop-fixes security gate — not rescan, not "tests pass."** The frozen regression tests must FAIL on the original untouched code and PASS on the patched code; the co-equal regression gate must keep the full suite green. A test that passes before the fix proves nothing.
+13. **Bounded iteration in develop-fixes: N≤3 retries, then STOP and escalate to a human.** Over-refinement increases vulnerabilities — never iterate unbounded; carry the prior failed patch + gate output + Contract forward on each retry.
+14. **Never leak an undisclosed public-repo vulnerability.** develop-fixes landing is visibility-gated: for a public repo with an undisclosed vuln, never auto-push or open a normal PR, and never write the vuln description, PoC, or Contract into any public-visible surface (PR title/body, branch name, commit message). Route via a GHSA temporary private fork. See § Develop-Fixes Mode → Landing.
+15. **A develop-fixes candidate patch is never an autonomous production closure — a human approves the merge, always.** Output is labeled a "candidate patch" with a provenance trail; before authoring, the mode confirms the concrete target (a converged finding + Contract); the human also routes disclosure.

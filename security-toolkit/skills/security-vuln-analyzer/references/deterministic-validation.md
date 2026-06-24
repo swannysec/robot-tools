@@ -79,3 +79,25 @@ Run this check whenever a fix involves filtering or validating against a primiti
    Format the output for direct consumption by the Step 3.5 adversarial verifiers — each missed member is a candidate bypass input for the fix.
 
 This check is one of the validator's deterministic jobs. The validator agent's prompt cites this section when filtering-class fixes are in scope.
+
+## Sink-Coverage Check (develop-fixes)
+
+Invoked by **develop-fixes mode** (`develop-fixes-mode.md`), not by the Step 3.7 validator above. It enforces validity guard (b) — **an authored regression test must demonstrably REACH the finding's `file:line` sink** before the test is frozen. Deterministic — **no LLM judgment**. Primary mechanism: `cargo-llvm-cov` region coverage.
+
+1. **Run coverage with the authored tests** (in the sandbox gate phase). When measuring against the **unpatched baseline**, the exploit test intentionally FAILS, which makes `cargo-llvm-cov` abort before writing the report — pass `--ignore-run-fail` so the report is still emitted:
+   ```bash
+   cargo llvm-cov --ignore-run-fail --json --output-path cov.json test
+   ```
+2. **Decide REACHED/NOT-REACHED by aggregating the count over the sink line:**
+   ```bash
+   cov=$(jq '[ .data[].files[]
+               | select(.filename | endswith("src/auth.rs"))
+               | .segments[] | select(.[0]==TARGET_LINE) | .[2] ] | max' cov.json)
+   # cov == null => sink line never executed/instrumented => NOT-REACHED (FAIL)
+   # cov  >  0   => REACHED (PASS)
+   ```
+3. **Why aggregate:** a `cargo-llvm-cov` segment is a 6-element array `[line, col, count, hasCount, isRegionEntry, isGapRegion]`, and a single source line carries **multiple** segments (a region entry with a count plus region exits whose count is 0). A bare `select(.[0]==LINE) | .[2]` therefore emits a *stream* containing spurious `0`s — you MUST aggregate (`| max`, or "any segment with count > 0"), never test a single emitted value. *(Shape verified against cargo-llvm-cov 0.8.2 / export `llvm.coverage.json.export` v3.0.1.)*
+4. **Fallbacks** (record the method used in the candidate-patch provenance):
+   - **Miri / CodeQL execution trace** through the sink where llvm-cov is unavailable or flaky (e.g. Windows-gnu).
+   - **`trybuild` compile-fail** when the fix makes the bad call *unconstructable* (type-state / newtype): the sink can no longer be reached at runtime, so assert the previous misuse no longer compiles.
+5. **Output:** `REACHED` (with the observed count) or `NOT-REACHED` (FAIL — the test does not exercise the sink and must be rewritten before freezing).

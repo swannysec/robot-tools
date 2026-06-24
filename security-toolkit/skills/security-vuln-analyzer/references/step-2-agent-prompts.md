@@ -223,7 +223,7 @@ prompt: |
   - Raw SQL via format!() instead of parameterized queries (sqlx::query! or diesel)
   - Unchecked integer arithmetic in release builds
 
-  Adversarial Test Contract (REQUIRED for every recommended fix): Every fix recommendation MUST be accompanied by an "Invariant + Adversarial Test Contract" block. The contract is non-optional and must be preserved verbatim through synthesis. It is consumed downstream by (1) the synthesis Report Template's "Invariant + Adversarial Test Contract" section, (2) the fix-verification mode (the test set the fix must pass), and (3) issue-tracker templates that cite the contract — making the contract the single source of truth for fix verification. Draw adversarial input classes from the FINDER 2 "Primitive Class Enumeration" artifact when present; otherwise enumerate from the canonical primitive class for the vulnerability. Use this exact structure:
+  Adversarial Test Contract (REQUIRED for every recommended fix): Every fix recommendation MUST be accompanied by an "Invariant + Adversarial Test Contract" block. The contract is non-optional and must be preserved verbatim through synthesis. It is consumed downstream by (1) the synthesis Report Template's "Invariant + Adversarial Test Contract" section, (2) the fix-verification mode (the test set the fix must pass), (3) issue-tracker templates that cite the contract, and (4) the develop-fixes mode (the test-authoring source — each adversarial input class becomes a frozen regression test) — making the contract the single source of truth for fix verification and authoring. Draw adversarial input classes from the FINDER 2 "Primitive Class Enumeration" artifact when present; otherwise enumerate from the canonical primitive class for the vulnerability. Use this exact structure:
 
   INVARIANT + ADVERSARIAL TEST CONTRACT (required for every recommended fix):
     INVARIANT: <one sentence — the property the fixed code maintains>
@@ -341,6 +341,10 @@ if [ -z "$CODEX_COMPANION" ]; then
 else
   # Model pinned to the current Codex flagship (gpt-5.5). Update as Codex advances;
   # verify the accepted string with `codex exec --help` and ~/.codex/config.toml.
+  # STDIN: this runs under run_in_background (open-pipe stdin). The companion wraps
+  # `codex exec`, which concatenates stdin to the prompt and BLOCKS on "Reading
+  # additional input from stdin..." when stdin is not closed. The trailing `< /dev/null`
+  # below gives it immediate EOF — keep it for any non-interactive/background invocation.
   node "$CODEX_COMPANION" task --effort high --model gpt-5.5 "$(cat <<'CODEX_PROMPT'
 <role>
 You are Codex performing an independent adversarial security vulnerability assessment.
@@ -439,7 +443,7 @@ After the initial assessment, check for:
 - Supply chain implications (are dependencies affected?)
 </dig_deeper_nudge>
 CODEX_PROMPT
-)"
+)" < /dev/null
 fi
 ```
 

@@ -341,6 +341,10 @@ if [ -z "$CODEX_COMPANION" ]; then
 else
   # Model pinned to the current Codex flagship (gpt-5.5). Update as Codex advances;
   # verify the accepted string with `codex exec --help` and ~/.codex/config.toml.
+  # STDIN: this runs under run_in_background (open-pipe stdin). The companion wraps
+  # `codex exec`, which concatenates stdin to the prompt and BLOCKS on "Reading
+  # additional input from stdin..." when stdin is not closed. The trailing `< /dev/null`
+  # below gives it immediate EOF — keep it for any non-interactive/background invocation.
   node "$CODEX_COMPANION" task --effort high --model gpt-5.5 "$(cat <<'CODEX_PROMPT'
 <role>
 You are Codex performing an independent adversarial security vulnerability assessment.
@@ -439,7 +443,7 @@ After the initial assessment, check for:
 - Supply chain implications (are dependencies affected?)
 </dig_deeper_nudge>
 CODEX_PROMPT
-)"
+)" < /dev/null
 fi
 ```
 

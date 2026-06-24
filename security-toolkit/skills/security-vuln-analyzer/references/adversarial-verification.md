@@ -220,6 +220,10 @@ if [ -z "$CODEX_COMPANION" ]; then
 else
   # Model pinned to the current Codex flagship (gpt-5.5). Update as Codex advances;
   # verify the accepted string with `codex exec --help` and ~/.codex/config.toml.
+  # STDIN: this runs under run_in_background (open-pipe stdin). The companion wraps
+  # `codex exec`, which concatenates stdin to the prompt and BLOCKS on "Reading
+  # additional input from stdin..." when stdin is not closed. The trailing `< /dev/null`
+  # below gives it immediate EOF — keep it for any non-interactive/background invocation.
   node "$CODEX_COMPANION" task --effort high --model gpt-5.5 "$(cat <<'CODEX_VERIFY'
 <role>
 You are Codex performing adversarial verification of security findings.
@@ -274,7 +278,7 @@ If you cannot determine a gate result, return INCONCLUSIVE for that gate.
 Check the provided context pack for sanitization, validation, framework protections, and type constraints that the original finders may have missed. For single-file issues, verify the evidence is self-contained.
 </context_and_evidence>
 CODEX_VERIFY
-)"
+)" < /dev/null
 fi
 ```
 

@@ -73,6 +73,18 @@ When active, a subagent with Read/Grep/Glob access:
 
 The command hook checks `stop_hook_active` — if the agent was already blocked by a stop hook and is trying to stop again, it is allowed through. This prevents the hook from blocking indefinitely.
 
+## Background-Work Gate
+
+All three layers allow the stop when the orchestrator is waiting on a still-running subagent it launched. Claude Code re-invokes the agent when background work completes, so blocking a "waiting" stop is both wrong — the awaited work is not the main agent's to do yet — and the direct cause of wasteful in-turn `sleep`/`wait` polling loops (the agent waits *inside* the turn because the guard won't let it end).
+
+- **Layer 1 (command):** checks the sibling `subagents/` directory derived from `transcript_path` for an `agent-*.jsonl` written in the last 3 minutes whose last line is not a completed assistant turn.
+- **Layer 3 (agent):** runs the same structural check before resolving the in-scope file set.
+- **Layer 2 (prompt):** allows when the final message indicates the agent is awaiting delegated results (it only receives the message text, so it relies on that signal).
+
+Detection covers **subagents** (the common fan-out case). A backgrounded `bash` shell that signals completion out-of-band is not directly detected by Layer 1's structural check; Layer 2's prose signal is the backstop there.
+
+**Guidance for agents:** if you have fanned work out to subagents or launched a background job that will signal its own completion, **stop and let the harness re-invoke you** — do not run a `sleep`/`wait` loop to keep the turn alive. Reserve intentional in-turn waiting for work that genuinely cannot be resumed after a stop. Light administrative steps (pure transcription, reading context for the next step, fetching an unrelated piece of data) remain fine while you wait.
+
 ## Configuration
 
 **Enable/disable the entire hook:** Enable or disable the workflow-toolkit plugin in Claude Code settings.

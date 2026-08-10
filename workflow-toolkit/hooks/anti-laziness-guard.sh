@@ -35,6 +35,34 @@ if [ "$STOP_HOOK_ACTIVE" = "true" ]; then
   exit 0
 fi
 
+# --- Background-work gate ---
+# If the orchestrator is stopping while a subagent it launched is still
+# running, allow the stop. The harness re-invokes the agent when the subagent
+# completes, so blocking here is both wrong (that work is not the main agent's
+# to do yet) and the direct cause of in-turn sleep/wait loops. Signal: a
+# subagent transcript in the sibling subagents/ dir that was written recently
+# and whose last line is not a completed assistant turn.
+TRANSCRIPT=$(printf '%s' "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null) || TRANSCRIPT=""
+if [ -n "$TRANSCRIPT" ]; then
+  SUBAGENT_DIR="${TRANSCRIPT%.jsonl}/subagents"
+  if [ -d "$SUBAGENT_DIR" ]; then
+    NOW=$(date +%s)
+    for sub in "$SUBAGENT_DIR"/agent-*.jsonl; do
+      [ -f "$sub" ] || continue
+      # Freshness: ignore stale/dead subagent transcripts (not written recently).
+      MT=$(stat -f %m "$sub" 2>/dev/null || stat -c %Y "$sub" 2>/dev/null || echo 0)
+      [ $((NOW - MT)) -gt 180 ] && continue
+      # Running iff the last line is not a completed assistant turn
+      # (type "assistant" with a non-null .message.stop_reason).
+      STATE=$(tail -n 1 "$sub" 2>/dev/null | jq -r 'if (.type == "assistant" and (.message.stop_reason != null)) then "done" else "running" end' 2>/dev/null) || STATE="running"
+      if [ "$STATE" = "running" ]; then
+        printf '%s\n' '{}'
+        exit 0
+      fi
+    done
+  fi
+fi
+
 # Extract the agent's final message; fail closed on parse error
 MESSAGE=$(printf '%s' "$INPUT" | jq -r '.last_assistant_message // ""' 2>/dev/null) || {
   printf '%s\n' '{"decision":"block","reason":"ANTI-LAZINESS GUARD: Failed to parse input JSON. Blocking stop as a precaution."}'
@@ -56,11 +84,11 @@ fi
 # These phrases are almost never legitimate at stop time.
 TIER1_PATTERNS=(
   'skip the remaining'
-  'skip the[[:space:]].*review'
-  'skip the[[:space:]].*test'
-  'skip the[[:space:]].*stage'
-  'skip the[[:space:]].*phase'
-  'skip the[[:space:]].*step'
+  'skip the[[:space:]][^.]{0,40}review'
+  'skip the[[:space:]][^.]{0,40}test'
+  'skip the[[:space:]][^.]{0,40}stage'
+  'skip the[[:space:]][^.]{0,40}phase'
+  'skip the[[:space:]][^.]{0,40}step'
   'skip external research'
   'in the interest of time'
   'for brevity'

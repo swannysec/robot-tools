@@ -1,0 +1,4 @@
+interface:
+  display_name: "Triggers Forbidden"
+  short_description: "Invalid fixture with trigger metadata"
+  default_prompt: "Use $triggers-forbidden to test validation."

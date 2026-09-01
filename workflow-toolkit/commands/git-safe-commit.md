@@ -2,7 +2,7 @@
 description: Safe commit workflow - runs build, tests, and checks before allowing commit
 arguments:
   - name: message
-    description: Commit message (format "type: description")
+    description: 'Commit message (format "type: description")'
     required: true
 ---
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenAI Stale"
+  short_description: "Invalid fixture with stale invocation metadata"
+  default_prompt: "Use $renamed-skill to exercise this fixture."

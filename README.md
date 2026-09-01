@@ -1,6 +1,6 @@
 # Robot Tools
 
-A comprehensive collection of Claude Code plugins for research, security, code analysis, and workflow automation.
+A comprehensive collection of Claude Code plugins for research, security, code analysis, and workflow automation. Selected self-contained skills also support local Codex in the ChatGPT/Codex desktop app; ChatGPT on the web is outside this support scope.
 
 ## Plugins
 
@@ -11,7 +11,7 @@ AI/ML research and verification tools for software development.
 - `ai-dev-research` - Expert technical research on AI topics
 - `ai-twitter-radar` - Discover AI trends and news from Twitter/X using Bird CLI
 - `research-verification` - Pre-flight verification checklist for research tasks
-- `kcap` - Capture and distill knowledge from URLs into structured markdown notes
+- `kcap` - Capture and distill URLs with portable Claude Code and Codex desktop runtimes
 - `starduster` - Catalog GitHub starred repos into a structured Obsidian vault
 
 [View Documentation](./research-toolkit/README.md)
@@ -51,7 +51,7 @@ Development workflow automation and productivity tools.
 - `phased-review` - Multi-stage implementation review with parallel sub-agents, test gates, and scope modes
 - `safe-skill-install` - Supply chain security scanning for skill installations via Cisco skill-scanner
 - `session-retrospective` - Extract learnings from Claude Code sessions
-- `plugin-qa` - Validate plugin manifests, READMEs, versions, and cross-references; guided release prep with version bumping
+- `plugin-qa` - Validate plugins and standalone Portable Skill Profile v1 packages; guided release prep with version bumping
 - `gh-aw-helper` - GitHub Agentic Workflows guide — setup, authoring, triggers, safe I/O, security, MCP tools, patterns, troubleshooting
 - `anti-laziness-guard` - Three-layer Stop hook detecting and blocking work-skipping rationalizations (regex + Haiku intent detection + optional deep verification)
 - `docker-sandbox` - Docker Sandboxes (sbx CLI) — run AI coding agents in isolated microVMs with credential proxying, network policies, custom templates, and 1Password integration
@@ -91,9 +91,31 @@ cd robot-tools
 cc --plugin-dir ./<plugin-name>
 ```
 
+### Portable skill installation
+
+Skills marked with `agents/openai.yaml` conform to [Portable Skill Profile v1](./workflow-toolkit/skills/plugin-qa/references/portable-skill-profile.md). Copy the complete canonical skill directory unchanged into a host's skill directory:
+
+- Claude Code project: `.claude/skills/<skill-name>`
+- Codex desktop user: `$CODEX_HOME/skills/<skill-name>` (normally `~/.codex/skills/<skill-name>`)
+
+An optional distributor may use another host-recognized shared skill root, such as
+`.agents/skills`, when it verifies that destination against the active desktop build.
+
+`research-toolkit/skills/kcap` is the first portable skill. It works without hplumb; hplumb may distribute the same package but is never a runtime dependency.
+
+Run the noninteractive proof-of-concept acceptance suite with:
+
+```bash
+uv run --with pyyaml tests/run_dual_runtime_acceptance.py --all --live --hplumb-verify
+```
+
+The runner uses temporary skill roots, projects, configuration, state, and output
+directories. A requested live or hplumb check that cannot run is reported as
+`INCOMPLETE` and returns nonzero; it is never treated as a passing release gate.
+
 ## Requirements
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
+- Claude Code CLI for plugin use, or local Codex in the ChatGPT/Codex desktop app for portable skills
 - Additional requirements vary by plugin (see individual plugin documentation)
 
 ## Structure
@@ -110,12 +132,13 @@ robot-tools/
 ├── code-analysis-toolkit/         # Code analysis tools
 │   ├── plugin.json
 │   └── skills/
-└── workflow-toolkit/              # Workflow automation tools
-    ├── plugin.json
-    ├── commands/
-    ├── skills/
-    ├── agents/
-    └── hooks/
+├── workflow-toolkit/              # Workflow automation tools
+│   ├── plugin.json
+│   ├── commands/
+│   ├── skills/
+│   ├── agents/
+│   └── hooks/
+└── tests/                         # Cross-host portable-skill acceptance
 ```
 
 ## License

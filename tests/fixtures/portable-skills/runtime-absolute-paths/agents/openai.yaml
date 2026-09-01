@@ -1,0 +1,4 @@
+interface:
+  display_name: "Absolute Runtime Paths"
+  short_description: "Reject absolute runtime dependency paths"
+  default_prompt: "Use $runtime-absolute-paths to test package boundaries."

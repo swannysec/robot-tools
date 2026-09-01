@@ -1,0 +1,4 @@
+interface:
+  display_name: "Portable Example"
+  short_description: "Exercise the portable-skill profile"
+  default_prompt: "Use $valid to exercise the portable-skill profile."

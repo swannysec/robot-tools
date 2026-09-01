@@ -28,7 +28,7 @@ Development workflow automation, review orchestration, and productivity tools fo
 | `phased-review` | Multi-stage implementation review with parallel sub-agents, severity-based autonomous fixes, and gated test verification. Runs code quality, architecture, simplicity, documentation, and security reviews in sequence. Supports scope modes: full, code-only, security, simplicity, docs. |
 | `safe-skill-install` | Supply chain security scanning for skill installations. Wraps Cisco skill-scanner to vet skills before installation with static + behavioral analysis. Supports MANUAL (default), AUTO-INSTALL, and SECURE modes. **Note:** AUTO-INSTALL mode is off by default — scanner evasion is possible for non-Python files where only static YARA patterns apply. Use SECURE mode for high-security environments. |
 | `session-retrospective` | Iterative reflection skill for extracting actionable learnings from Claude Code sessions. Produces agent-ready context documents for future implementation. |
-| `plugin-qa` | Validates plugin manifests, README cross-references, SKILL.md frontmatter, version sync, and keyword coverage. Two modes: validate (check and report) and release-prep (validate + version bump workflow). |
+| `plugin-qa` | Validates plugin manifests, README cross-references, SKILL.md frontmatter, version sync, and keyword coverage. It also defines Portable Skill Profile v1 and validates a standalone skill path without requiring this marketplace checkout. |
 | `gh-aw-helper` | GitHub Agentic Workflows — write AI-powered automation in natural-language markdown that compiles to secure GitHub Actions. Covers setup, workflow authoring, triggers, safe I/O, security, MCP tools, 14 operational patterns, engine configuration, and troubleshooting. |
 | `anti-laziness-guard` | Three-layer Stop hook that detects and blocks work-skipping rationalizations. Layer 1: regex detection of known laziness phrases. Layer 2: Haiku-evaluated intent detection for premature victory and silent omission. Layer 3: optional agent-based deep verification against task lists and plan files. |
 | `docker-sandbox` | Docker Sandboxes (sbx CLI) — run AI coding agents in isolated microVM environments with credential proxying, network policy enforcement, and custom templates. Covers Claude Code, Codex, Copilot, and Gemini agents. Compatible with Rancher Desktop (Docker Desktop not required). |
@@ -100,6 +100,14 @@ Skills activate automatically via trigger phrases:
 **plugin-qa**:
 - `"plugin qa"`, `"validate plugins"`, `"lint plugins"`
 - `"prepare release"`, `"bump version"`, `"release prep"`
+
+Portable packages marked by `agents/openai.yaml` can be checked directly:
+
+```bash
+uv run --with pyyaml skills/plugin-qa/scripts/validate-portable-skill.py <skill-dir> [--json]
+```
+
+The normative cross-host contract, capability matrix, and migration checklist are in [Portable Skill Profile v1](./skills/plugin-qa/references/portable-skill-profile.md). Hplumb is an optional distribution verification target, not a requirement for a conforming skill.
 
 **gh-aw-helper**:
 - `"gh-aw"`, `"gh aw"`, `"agentic workflow"`, `"agentic workflows"`

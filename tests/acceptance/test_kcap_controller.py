@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -35,19 +36,9 @@ STANDARD_SYNTHESIS = {
     "chapters": [],
     "thread": [],
 }
-OAUTH_AUTH_BYTES = (
-    json.dumps(
-        {
-            "auth_mode": "chatgpt",
-            "tokens": {
-                "access_token": "fixture-access-token",
-                "id_token": "fixture-id-token",
-                "refresh_token": "fixture-refresh-token",
-            },
-        },
-        separators=(",", ":"),
-    ).encode("utf-8")
-    + b"\n"
+SYNTHETIC_ACCOUNT_DOCUMENT = (
+    b'{"auth_mode":"chatgpt","tokens":{"access_token":"synthetic-access",'
+    b'"id_token":"synthetic-identity","refresh_token":"synthetic-refresh"}}\n'
 )
 
 
@@ -91,6 +82,11 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
         path = self.bin_dir / name
         path.write_text(source, encoding="utf-8")
         path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+
+    def _write_private_fixture(self, path: Path, content: bytes) -> None:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
 
     def _write_fixtures(self) -> None:
         # This prevents URL validation from asking the host resolver.  8.8.8.8 is
@@ -147,6 +143,9 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
             "codex",
             "#!/bin/sh\n"
             "printf '%s\\n' \"$*\" >> '" + str(self.root / "codex-command.log") + "'\n"
+            "if [ \"$1\" = \"features\" ] && [ -f '" + str(self.root / "codex-auth-mutation.flag") + "' ]; then\n"
+            "  printf '%s\\n' 'mutated-during-synthesis' > '" + str(self.root / "codex-auth-mutation" / "auth.json") + "'\n"
+            "fi\n"
             "if true; then\n"
             "  auth_type=none\n"
             "  if [ -L \"${CODEX_HOME:-}/auth.json\" ]; then auth_type=link; fi\n"
@@ -371,7 +370,7 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
         for directory in (outer_home, outer_sqlite_home, outer_tmpdir):
             directory.mkdir()
         auth = outer_home / "auth.json"
-        auth.write_bytes(OAUTH_AUTH_BYTES)
+        self._write_private_fixture(auth, SYNTHETIC_ACCOUNT_DOCUMENT)
         before = (auth.read_bytes(), auth.stat())
         environment_log = self.root / "codex-environment.log"
         command_log = self.root / "codex-command.log"
@@ -431,10 +430,78 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
         self.assertEqual(auth.read_bytes(), before[0])
         self.assertEqual((after.st_dev, after.st_ino, after.st_mode, after.st_mtime_ns), (before[1].st_dev, before[1].st_ino, before[1].st_mode, before[1].st_mtime_ns))
 
+    def test_codex_oauth_source_change_during_synthesis_fails_without_attestation(self) -> None:
+        source_home = self.root / "codex-auth-mutation"
+        source_home.mkdir()
+        source = source_home / "auth.json"
+        self._write_private_fixture(source, SYNTHETIC_ACCOUNT_DOCUMENT)
+        (self.root / "codex-auth-mutation.flag").write_text("mutate\n", encoding="utf-8")
+        report_path = self.project / "kcap-codex-app-server-report.json"
+
+        process, payload = self._capture(
+            "codex",
+            expected_returncode=1,
+            RESEARCH_TOOLKIT_CODEX_AUTH="oauth",
+            CODEX_HOME=str(source_home),
+            RESEARCH_TOOLKIT_ACCEPTANCE_REPORT=str(report_path),
+        )
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"]["code"], "codex_auth_error")
+        self.assertFalse(report_path.exists())
+        self.assertNotIn(SYNTHETIC_ACCOUNT_DOCUMENT.decode("utf-8").strip(), process.stdout + process.stderr)
+
+    def test_codex_oauth_source_change_does_not_replace_direct_synthesis_output(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("kcap_auth_publish_order", KCAP_CLI)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        work_dir = Path(tempfile.mkdtemp(prefix="kcap-")).resolve()
+        self.addCleanup(shutil.rmtree, work_dir, True)
+        content_file = work_dir / "content.txt"
+        content_file.write_text(" ".join(["transcript"] * 80), encoding="utf-8")
+        output_file = work_dir / "synthesis.json"
+        sentinel = b"preexisting-synthesis-must-survive\n"
+        output_file.write_bytes(sentinel)
+        source_home = self.root / "codex-auth-mutation"
+        source_home.mkdir()
+        self._write_private_fixture(source_home / "auth.json", SYNTHETIC_ACCOUNT_DOCUMENT)
+        (self.root / "codex-auth-mutation.flag").write_text("mutate\n", encoding="utf-8")
+        args = module.argparse.Namespace(
+            content_file=str(content_file),
+            metadata_file=None,
+            mode="standard",
+            profile="fast",
+            codex_bin=str(self.bin_dir / "codex"),
+            dry_run=False,
+            timeout=30,
+            content_type="video",
+            url=YOUTUBE_URL,
+            focus=None,
+            output_file=str(output_file),
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "CODEX_HOME": str(source_home),
+                "RESEARCH_TOOLKIT_CODEX_AUTH": "oauth",
+                "PATH": os.environ.get("PATH", os.defpath),
+            },
+            clear=True,
+        ):
+            with self.assertRaises(module.KcapError) as failure:
+                module.codex_synthesize(args)
+
+        self.assertEqual(failure.exception.code, "codex_auth_error")
+        self.assertEqual(output_file.read_bytes(), sentinel)
+
     def test_codex_capture_writes_only_bounded_acceptance_provenance_when_requested(self) -> None:
         oauth_home = self.root / "provenance-oauth-home"
         oauth_home.mkdir()
-        (oauth_home / "auth.json").write_bytes(OAUTH_AUTH_BYTES)
+        self._write_private_fixture(oauth_home / "auth.json", SYNTHETIC_ACCOUNT_DOCUMENT)
         report_path = self.project / "kcap-codex-app-server-report.json"
 
         process, payload = self._capture(
@@ -482,7 +549,7 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
     def test_codex_auth_selection_is_explicit_and_fails_closed(self) -> None:
         oauth_home = self.root / "oauth-home"
         oauth_home.mkdir()
-        (oauth_home / "auth.json").write_bytes(OAUTH_AUTH_BYTES)
+        self._write_private_fixture(oauth_home / "auth.json", SYNTHETIC_ACCOUNT_DOCUMENT)
 
         cases = (
             ("auto", str(self.root / "missing-oauth-home"), None, 1),
@@ -534,6 +601,117 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
             (target_before[1].st_dev, target_before[1].st_ino, target_before[1].st_mode, target_before[1].st_mtime_ns),
         )
 
+    def test_codex_oauth_snapshot_rejects_a_path_swap_at_open(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("kcap_auth_source_swap", KCAP_CLI)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        source = self.root / "oauth-source-swap.json"
+        target = self.root / "oauth-source-swap-target.json"
+        self._write_private_fixture(source, b"original-source\n")
+        self._write_private_fixture(target, b"replacement-target\n")
+        real_open = os.open
+        swapped = False
+
+        def swap_before_open(path: object, flags: int, mode: int = 0o777, **kwargs: object) -> int:
+            nonlocal swapped
+            if Path(path) == source and not swapped:
+                source.unlink()
+                source.symlink_to(target)
+                swapped = True
+            return real_open(path, flags, mode, **kwargs)
+
+        with patch.object(module.os, "open", side_effect=swap_before_open):
+            with self.assertRaises(module.KcapError) as failure:
+                module.codex_auth_snapshot(source)
+
+        self.assertTrue(swapped)
+        self.assertEqual(failure.exception.code, "codex_auth_error")
+
+    def test_codex_child_auth_file_is_created_private_without_post_creation_chmod(self) -> None:
+        """A permissive caller umask must never briefly expose the OAuth copy."""
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("kcap_auth_create_mode", KCAP_CLI)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        work_dir = self.root / "auth-create-mode"
+        work_dir.mkdir()
+        original_chmod = Path.chmod
+        observed_modes: list[int] = []
+
+        def observe_auth_chmod(path: Path, mode: int, *, follow_symlinks: bool = True) -> None:
+            if path.name == "auth.json":
+                observed_modes.append(stat.S_IMODE(path.stat().st_mode))
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            original_chmod(path, mode, follow_symlinks=follow_symlinks)
+
+        prior_umask = os.umask(0)
+        try:
+            with patch.object(Path, "chmod", new=observe_auth_chmod):
+                environment = module.codex_child_environment(work_dir, auth_content=b"opaque-auth-snapshot\n")
+        finally:
+            os.umask(prior_umask)
+
+        self.assertEqual(observed_modes, [])
+        self.assertEqual(stat.S_IMODE((Path(environment["CODEX_HOME"]) / "auth.json").stat().st_mode), 0o600)
+
+    def test_codex_child_auth_copy_rejects_a_symlink_before_copying_target(self) -> None:
+        """Direct callers cannot bypass the source validation performed by auth selection."""
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("kcap_auth_copy_source", KCAP_CLI)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        work_dir = self.root / "auth-copy-source"
+        work_dir.mkdir()
+        target = self.root / "child-copy-target.json"
+        target.write_bytes(b"opaque-symlink-target\n")
+        source = self.root / "child-copy-source.json"
+        source.symlink_to(target)
+
+        with patch.object(module.shutil, "copyfile", side_effect=AssertionError("unsafe source was copied")) as copyfile:
+            with self.assertRaises(module.KcapError) as failure:
+                module.codex_child_environment(work_dir, auth_source=source)
+
+        self.assertEqual(failure.exception.code, "codex_auth_error")
+        copyfile.assert_not_called()
+
+    def test_private_writer_never_removes_a_preexisting_destination(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("kcap_private_writer_collision", KCAP_CLI)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        destination = self.root / "preexisting-private-file"
+        destination.write_bytes(b"preexisting-content\n")
+
+        with self.assertRaises(FileExistsError):
+            module.write_private_bytes(destination, b"replacement-content\n")
+
+        self.assertEqual(destination.read_bytes(), b"preexisting-content\n")
+
+    def test_codex_child_environment_rejects_api_credentials(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("kcap_child_api_credential", KCAP_CLI)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        work_dir = self.root / "api-credential-child-environment"
+        work_dir.mkdir()
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "must-not-enter-child"}, clear=True):
+            with self.assertRaises(module.KcapError) as failure:
+                module.codex_child_environment(work_dir, include_api_credential=True)
+
+        self.assertEqual(failure.exception.code, "codex_auth_error")
+
     def test_codex_oauth_rejects_api_key_shaped_auth_file(self) -> None:
         oauth_home = self.root / "api-key-shaped-oauth-home"
         oauth_home.mkdir()
@@ -558,7 +736,7 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
         api_key = "API_KEY_MUST_NOT_PERSIST"
         oauth_home = self.root / "oauth-present-for-api-key-mode"
         oauth_home.mkdir()
-        (oauth_home / "auth.json").write_bytes(OAUTH_AUTH_BYTES)
+        self._write_private_fixture(oauth_home / "auth.json", SYNTHETIC_ACCOUNT_DOCUMENT)
         environment_log = self.root / "codex-environment.log"
         command_log = self.root / "codex-command.log"
 

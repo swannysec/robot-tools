@@ -349,6 +349,28 @@ class KcapPolicyAcceptanceTests(unittest.TestCase):
         self.assertIn("[safe][docs]", cleaned)
         self.assertIn("[docs]: https://example.com/docs", cleaned)
 
+    def test_markdown_sanitizer_removes_script_body_with_malformed_closing_tag(self) -> None:
+        value = "before<script>ACTIVE_SCRIPT_MUST_NOT_SURVIVE()</script\t\n bar>after"
+
+        cleaned = self.kcap.clean_markdown(value)
+
+        self.assertNotIn("ACTIVE_SCRIPT_MUST_NOT_SURVIVE", cleaned)
+        self.assertEqual(cleaned, "beforeafter")
+
+    def test_markdown_sanitizer_removes_commonmark_active_fence_variants(self) -> None:
+        cases = (
+            "before\n~~~dataviewjs\nACTIVE_TILDE_FENCE()\n~~~\nafter",
+            "before\n``` dataview\nACTIVE_SPACED_FENCE()\n```\nafter",
+            "before\n   ```` templater options\nACTIVE_INDENTED_FENCE()\n   ````\nafter",
+        )
+
+        for value in cases:
+            with self.subTest(value=value):
+                cleaned = self.kcap.clean_markdown(value)
+                self.assertNotIn("ACTIVE_", cleaned)
+                self.assertIn("before", cleaned)
+                self.assertIn("after", cleaned)
+
     def test_safe_error_details_are_optional_and_legacy_errors_keep_their_shape(self) -> None:
         legacy_error = self.kcap.KcapError("invalid_url", "invalid")
         detailed_error = self.kcap.KcapError(

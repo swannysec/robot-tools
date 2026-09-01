@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import datetime as dt
 import html
 import ipaddress
@@ -66,13 +67,17 @@ SUBFOLDER_PATTERN = re.compile(r"^[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$")
 CONTROL_PATTERN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 TEMPLATER_PATTERN = re.compile(r"<%.*?%>", re.DOTALL)
 DATAVIEW_PATTERN = re.compile(r"\[[A-Za-z0-9_. -]+::.*?\]", re.DOTALL)
-SCRIPT_PATTERN = re.compile(r"<script\b[^>]*>.*?</script\s*>", re.IGNORECASE | re.DOTALL)
+SCRIPT_PATTERN = re.compile(r"<script\b[^>]*>.*?</script\b[^>]*>", re.IGNORECASE | re.DOTALL)
 ACTIVE_BLOCK_PATTERN = re.compile(
-    r"<(?:iframe|object|embed|style|svg|math)\b[^>]*>.*?</(?:iframe|object|embed|style|svg|math)\s*>",
+    r"<(?P<active_tag>iframe|object|embed|style|svg|math)\b[^>]*>"
+    r".*?</(?P=active_tag)\b[^>]*>",
     re.IGNORECASE | re.DOTALL,
 )
 ACTIVE_FENCE_PATTERN = re.compile(
-    r"```(?:dataview|dataviewjs|templater)\b.*?```", re.IGNORECASE | re.DOTALL
+    r"^[ ]{0,3}(?P<active_fence>`|~)(?P=active_fence){2,}"
+    r"[ \t]*(?:dataviewjs|dataview|templater)\b[^\r\n]*(?:\r?\n|\r)"
+    r".*?(?:^[ ]{0,3}(?P=active_fence){3,}[ \t]*(?:\r?$)|\Z)",
+    re.IGNORECASE | re.DOTALL | re.MULTILINE,
 )
 HTML_TAG_PATTERN = re.compile(r"</?[A-Za-z][^>]*>", re.DOTALL)
 OBSIDIAN_EMBED_PATTERN = re.compile(r"!\[\[(.*?)\]\]", re.DOTALL)
@@ -1313,6 +1318,12 @@ def synthesis_inputs(args: argparse.Namespace) -> Tuple[str, Dict[str, Any]]:
 
 def save_synthesis_result(synthesized: Mapping[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
     sanitized = sanitize_synthesis(synthesized, args.mode)
+    return save_sanitized_synthesis_result(sanitized, args)
+
+
+def save_sanitized_synthesis_result(
+    sanitized: Mapping[str, Any], args: argparse.Namespace
+) -> Dict[str, Any]:
     output_path = write_synthesis_file(sanitized, Path(args.output_file))
     return {
         "mode": args.mode,
@@ -1368,35 +1379,95 @@ def codex_auth_source() -> Optional[Path]:
 
 
 def codex_auth_snapshot(source: Path) -> Dict[str, Any]:
+    descriptor = -1
     try:
-        metadata = source.lstat()
+        path_metadata = source.lstat()
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(source, flags)
+        metadata = os.fstat(descriptor)
         if (
             not stat.S_ISREG(metadata.st_mode)
             or stat.S_ISLNK(metadata.st_mode)
             or metadata.st_uid != os.geteuid()
         ):
             fail("codex_auth_error", "Codex OAuth authentication source is unsafe")
-        content = source.read_bytes()
+        if (path_metadata.st_dev, path_metadata.st_ino) != (metadata.st_dev, metadata.st_ino):
+            fail("codex_auth_error", "Codex OAuth authentication source is unsafe")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            content = handle.read()
+            final_metadata = os.fstat(handle.fileno())
+        if auth_metadata(metadata) != auth_metadata(final_metadata):
+            fail("codex_auth_error", "Codex OAuth authentication changed while it was read")
+        metadata = final_metadata
+    except KcapError:
+        raise
     except (OSError, UnicodeError):
         fail("codex_auth_error", "Could not read Codex OAuth authentication")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     return {
         "content": content,
-        "metadata": (
-            metadata.st_dev,
-            metadata.st_ino,
-            metadata.st_uid,
-            metadata.st_mode,
-            metadata.st_size,
-            metadata.st_mtime_ns,
-            metadata.st_ctime_ns,
-        ),
+        "metadata": auth_metadata(metadata),
     }
+
+
+def auth_metadata(metadata: os.stat_result) -> Tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_uid,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
 
 
 def verify_codex_auth_snapshot(source: Path, snapshot: Mapping[str, Any]) -> None:
     current = codex_auth_snapshot(source)
     if current["content"] != snapshot["content"] or current["metadata"] != snapshot["metadata"]:
         fail("codex_auth_error", "Codex OAuth authentication changed during synthesis")
+
+
+@contextlib.contextmanager
+def verify_codex_auth_during_synthesis(
+    source: Optional[Path], snapshot: Optional[Mapping[str, Any]]
+) -> Iterable[None]:
+    try:
+        yield
+    finally:
+        if source is not None and snapshot is not None:
+            verify_codex_auth_snapshot(source, snapshot)
+
+
+def write_private_bytes(path: Path, content: bytes) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = -1
+    created = False
+    try:
+        descriptor = os.open(path, flags, 0o600)
+        created = True
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if created:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def codex_binary_source(codex_bin: str) -> str:
@@ -1482,6 +1553,10 @@ def codex_child_environment(
     include_api_credential: bool = False,
     auth_content: Optional[bytes] = None,
 ) -> Dict[str, str]:
+    if auth_source is not None:
+        fail("codex_auth_error", "Codex OAuth authentication must be snapshotted before child creation")
+    if include_api_credential:
+        fail("codex_auth_error", "Codex API credentials must use the private App Server login request")
     environment = {name: os.environ[name] for name in ("LANG", "LC_ALL", "LC_CTYPE", "TZ") if name in os.environ}
     environment["PATH"] = os.environ.get("PATH", os.defpath)
     child_paths = {
@@ -1493,18 +1568,12 @@ def codex_child_environment(
     for child_path in child_paths.values():
         child_path.mkdir(mode=0o700)
         child_path.chmod(0o700)
-    if auth_source is not None:
+    if auth_content is not None:
         destination = child_paths["CODEX_HOME"] / "auth.json"
         try:
-            if auth_content is None:
-                shutil.copyfile(auth_source, destination)
-            else:
-                destination.write_bytes(auth_content)
-            destination.chmod(0o600)
-        except OSError as exc:
-            fail("codex_auth_error", "Could not copy Codex authentication: {}".format(exc))
-    elif include_api_credential and "OPENAI_API_KEY" in os.environ:
-        environment["OPENAI_API_KEY"] = os.environ["OPENAI_API_KEY"]
+            write_private_bytes(destination, auth_content)
+        except OSError:
+            fail("codex_auth_error", "Could not create private Codex authentication")
     environment.update({name: str(path) for name, path in child_paths.items()})
     return environment
 
@@ -1995,13 +2064,14 @@ def codex_synthesize(args: argparse.Namespace) -> Dict[str, Any]:
     auth_snapshot = codex_auth_snapshot(auth_source) if auth_source is not None else None
     acceptance_report = getattr(args, "acceptance_report", None)
     private_auth_copy: Optional[Path] = None
-    synthesis_result: Optional[Dict[str, Any]] = None
+    sanitized_synthesis: Optional[Dict[str, Any]] = None
     codex_version: Optional[str] = None
-    with tempfile.TemporaryDirectory(prefix="kcap-codex-") as temporary:
+    with verify_codex_auth_during_synthesis(auth_source, auth_snapshot), tempfile.TemporaryDirectory(
+        prefix="kcap-codex-"
+    ) as temporary:
         work_dir = Path(temporary)
         child_environment = codex_child_environment(
             work_dir,
-            auth_source=auth_source,
             include_api_credential=False,
             auth_content=auth_snapshot["content"] if auth_snapshot is not None else None,
         )
@@ -2010,10 +2080,9 @@ def codex_synthesize(args: argparse.Namespace) -> Dict[str, Any]:
             verify_codex_auth_snapshot(auth_source, auth_snapshot)
         config_path = Path(child_environment["CODEX_HOME"]) / "config.toml"
         try:
-            config_path.write_text(codex_app_server_config(auth_mode), encoding="utf-8")
-            config_path.chmod(0o600)
-        except OSError as exc:
-            fail("codex_capability_error", "Could not create the private Codex App Server config: {}".format(exc))
+            write_private_bytes(config_path, codex_app_server_config(auth_mode).encode("utf-8"))
+        except OSError:
+            fail("codex_capability_error", "Could not create the private Codex App Server config")
         features = supported_codex_features(codex_bin, child_environment)
         disabled = codex_features_to_disable(features)
         if args.dry_run:
@@ -2052,15 +2121,16 @@ def codex_synthesize(args: argparse.Namespace) -> Dict[str, Any]:
                     disabled_features=disabled,
                 )
                 synthesized = broker.synthesize(current_prompt, schema)
-                synthesis_result = save_synthesis_result(synthesized, args)
+                sanitized_synthesis = sanitize_synthesis(synthesized, args.mode)
                 break
             except KcapError as exc:
                 last_error = exc
                 if exc.code not in {"invalid_synthesis", "codex_output_error"}:
                     raise
-        if synthesis_result is None:
+        if sanitized_synthesis is None:
             assert last_error is not None
             raise last_error
+    synthesis_result = save_sanitized_synthesis_result(sanitized_synthesis, args)
     if acceptance_report is not None:
         if private_auth_copy is not None and private_auth_copy.exists():
             fail("codex_auth_error", "Private Codex authentication was not removed")

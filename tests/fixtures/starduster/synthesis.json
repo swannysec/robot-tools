@@ -1,0 +1,62 @@
+[
+  {
+    "full_name": "acme/alpha",
+    "html_url": "https://github.com/acme/alpha",
+    "category": "Developer Tools",
+    "normalized_topics": ["python", "shared-topic"],
+    "summary": "Alpha is the primary deterministic fixture. It exercises rendered notes without relying on network data. Its high star count establishes hub ordering.",
+    "key_features": ["Deterministic fixture inputs", "Hub ordering by star count", "Portable controller coverage"],
+    "similar_to": [],
+    "use_case": "Use it to test deterministic Starduster rendering.",
+    "maturity": "mature",
+    "author_display": "Acme"
+  },
+  {
+    "full_name": "acme/beta",
+    "html_url": "https://github.com/acme/beta",
+    "category": "Developer Tools",
+    "normalized_topics": ["python", "shared-topic"],
+    "summary": "Beta is the second deterministic fixture. It shares an author and topics with Alpha. Its star count keeps ordering observable.",
+    "key_features": ["Shared author threshold", "Shared topic threshold", "Stable markdown output"],
+    "similar_to": [],
+    "use_case": "Use it to test author and topic hubs.",
+    "maturity": "active",
+    "author_display": "Acme"
+  },
+  {
+    "full_name": "dev/gamma",
+    "html_url": "https://github.com/dev/gamma",
+    "category": "AI & Machine Learning",
+    "normalized_topics": ["machine-learning", "shared-topic"],
+    "summary": "Gamma is a machine learning fixture. It completes the shared topic threshold. Its ordering remains deterministic across reruns.",
+    "key_features": ["Machine learning category", "Shared topic threshold", "Deterministic sorting"],
+    "similar_to": [],
+    "use_case": "Use it to test category and topic hubs.",
+    "maturity": "active",
+    "author_display": "Dev Organization"
+  },
+  {
+    "full_name": "dev/delta",
+    "html_url": "https://github.com/dev/delta",
+    "category": "AI & Machine Learning",
+    "normalized_topics": ["machine-learning"],
+    "summary": "Delta is a second machine learning fixture. It completes the author hub threshold. It has fewer stars than Gamma.",
+    "key_features": ["Second author repository", "Machine learning category", "Stable fixture"],
+    "similar_to": [],
+    "use_case": "Use it to test author hub thresholds.",
+    "maturity": "active",
+    "author_display": "Dev Organization"
+  },
+  {
+    "full_name": "solo/epsilon",
+    "html_url": "https://github.com/solo/epsilon",
+    "category": "CLI & Terminal Tools",
+    "normalized_topics": ["command-line"],
+    "summary": "Epsilon is a single-author command-line fixture. It must not create an author hub. It keeps below all dynamic hub thresholds.",
+    "key_features": ["Single author control", "Command line category", "Threshold control"],
+    "similar_to": [],
+    "use_case": "Use it to test threshold controls.",
+    "maturity": "experimental",
+    "author_display": "Solo"
+  }
+]

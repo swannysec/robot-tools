@@ -31,7 +31,8 @@ robot-tools/
 │       ├── ai-dev-research/SKILL.md
 │       ├── ai-twitter-radar/SKILL.md
 │       ├── kcap/SKILL.md
-│       └── research-verification/SKILL.md
+│       ├── research-verification/SKILL.md
+│       └── starduster/SKILL.md
 ├── security-toolkit/
 │   ├── .claude-plugin/plugin.json
 │   ├── README.md

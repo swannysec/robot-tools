@@ -11,8 +11,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from typing import Any, Callable
 
@@ -139,6 +141,37 @@ class LiveHostProvenanceTests(unittest.TestCase):
             ),
             override,
         )
+
+    def test_live_release_proof_rejects_a_non_bundled_codex_binary(self) -> None:
+        require_bundled = getattr(acceptance_runner, "require_bundled_desktop_codex_for_live", None)
+        self.assertTrue(callable(require_bundled), "missing signed Desktop live-proof seam")
+        with self.assertRaises(acceptance_runner.SkipCase):
+            require_bundled(self.workspace / "external-codex")
+
+    def test_live_release_proof_accepts_the_bundled_codex_binary(self) -> None:
+        require_bundled = getattr(acceptance_runner, "require_bundled_desktop_codex_for_live", None)
+        self.assertTrue(callable(require_bundled), "missing signed Desktop live-proof seam")
+        bundled = self.workspace / "ChatGPT.app" / "Contents" / "Resources" / "codex"
+        bundled.parent.mkdir(parents=True)
+        bundled.write_text("fixture", encoding="utf-8")
+        with patch.object(acceptance_runner, "BUNDLED_CODEX_BINARY", bundled):
+            self.assertEqual(require_bundled(bundled), bundled)
+
+    def test_live_github_token_validation_keeps_authentication_out_of_reports(self) -> None:
+        validate = getattr(acceptance_runner, "validated_live_github_token", None)
+        self.assertTrue(callable(validate), "missing live GitHub authentication seam")
+        token = "gho_fixture_live_token"
+
+        self.assertEqual(
+            validate(subprocess.CompletedProcess(["gh", "auth", "token"], 0, token + "\n", "")),
+            token,
+        )
+        with self.assertRaises(acceptance_runner.SkipCase):
+            validate(subprocess.CompletedProcess(["gh", "auth", "token"], 1, "", "not authenticated"))
+        for invalid in ("", "token with spaces", "x" * 4097):
+            with self.subTest(invalid_length=len(invalid)):
+                with self.assertRaises(AssertionError):
+                    validate(subprocess.CompletedProcess(["gh", "auth", "token"], 0, invalid, ""))
 
     def test_parses_described_and_description_free_codex_catalog_entries(self) -> None:
         catalog_root = self.workspace / "catalog" / "skills"
@@ -383,6 +416,7 @@ class LiveHostProvenanceTests(unittest.TestCase):
         (source / "commands").mkdir(parents=True)
         (cache / "commands").mkdir(parents=True)
         (source / "commands" / "workflow.md").write_text("workflow\n", encoding="utf-8")
+        (source / ".DS_Store").write_bytes(b"ignored macOS metadata")
         (cache / "commands" / "workflow.md").write_text("workflow\n", encoding="utf-8")
         (cache / "metadata.json").write_text("{}\n", encoding="utf-8")
         manifest = tree_byte_manifest(source)
@@ -444,6 +478,70 @@ class LiveHostProvenanceTests(unittest.TestCase):
         self.assertEqual(environment["CODEX_HOME"], str(codex_home))
         self.assertEqual(environment["CODEX_SQLITE_HOME"], str(sqlite_home))
         self.assertEqual(environment["TMPDIR"], str(project))
+
+    def test_starduster_claude_live_environment_preserves_managed_login_home(self) -> None:
+        build_environment = getattr(acceptance_runner, "starduster_claude_live_environment", None)
+        self.assertTrue(callable(build_environment), "missing Starduster Claude live environment seam")
+        project = self.workspace / "live-starduster-claude"
+        config = project / "research-toolkit.json"
+
+        environment = build_environment(project, config, "fixture-github-token")
+
+        self.assertNotIn("HOME", environment)
+        self.assertEqual(environment["TMPDIR"], str(project))
+        self.assertEqual(environment["GH_TOKEN"], "fixture-github-token")
+        self.assertEqual(environment["RESEARCH_TOOLKIT_RUNTIME"], "claude")
+
+    def test_starduster_claude_bash_event_requires_an_explicit_long_timeout(self) -> None:
+        extract = getattr(acceptance_runner, "starduster_claude_bash_evidence", None)
+        self.assertTrue(callable(extract), "missing Starduster Claude Bash evidence seam")
+        command = "python3 /temporary/starduster/scripts/starduster.py sync --limit 5"
+        event = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Bash",
+                        "input": {"command": command, "timeout": 600000},
+                    }
+                ]
+            },
+        }
+
+        self.assertEqual(extract([event]), {"command": command, "timeout_ms": 600000})
+
+        event["message"]["content"][0]["input"].pop("timeout")
+        with self.assertRaisesRegex(AssertionError, "timeout"):
+            extract([event])
+
+    def test_starduster_controller_path_is_narrow_and_deterministic(self) -> None:
+        build_path = getattr(acceptance_runner, "starduster_controller_path", None)
+        self.assertTrue(callable(build_path), "missing Starduster controller PATH seam")
+
+        value = build_path(
+            Path("/trusted/python/bin/python3"),
+            Path("/trusted/github/bin/gh"),
+        )
+
+        self.assertEqual(
+            value.split(os.pathsep),
+            ["/trusted/python/bin", "/trusted/github/bin", "/usr/bin", "/bin"],
+        )
+        self.assertNotIn("/attacker/bin", value)
+
+    def test_safe_controller_error_code_rejects_non_contract_stderr(self) -> None:
+        extract = getattr(acceptance_runner, "safe_controller_error_code", None)
+        self.assertTrue(callable(extract), "missing safe controller error parser")
+
+        self.assertEqual(
+            extract('{"error":{"code":"missing_dependency","message":"Required dependency is unavailable"},"ok":false}\n'),
+            "missing_dependency",
+        )
+        self.assertIsNone(extract("raw model output"))
+        self.assertIsNone(
+            extract('{"error":{"code":"bad code","message":"unsafe"},"ok":false}\n')
+        )
 
     def test_accepts_exact_command_event_for_the_temporary_capture(self) -> None:
         capture = self._write_valid_capture()
@@ -635,15 +733,24 @@ class CodexAppServerProvenanceTests(unittest.TestCase):
             "prohibited_event_count": 0,
         }
 
-    def _verify_report(self, report: dict[str, object]) -> dict[str, object]:
+    def _verify_report(
+        self,
+        report: dict[str, object],
+        *,
+        expected_auth_mode: str = "oauth",
+        expected_synthesis_batches: int | None = None,
+    ) -> dict[str, object]:
         verify = self._seam("verify_codex_app_server_provenance_report")
-        return verify(
-            report,
-            expected_binary=BUNDLED_CODEX_BINARY,
-            expected_capture_command=self.capture_command,
-            expected_catalog_path=self.skill_dir / "SKILL.md",
-            expected_output_root=self.output_root,
-        )
+        kwargs: dict[str, object] = {
+            "expected_binary": BUNDLED_CODEX_BINARY,
+            "expected_capture_command": self.capture_command,
+            "expected_catalog_path": self.skill_dir / "SKILL.md",
+            "expected_output_root": self.output_root,
+            "expected_auth_mode": expected_auth_mode,
+        }
+        if expected_synthesis_batches is not None:
+            kwargs["expected_synthesis_batches"] = expected_synthesis_batches
+        return verify(report, **kwargs)
 
 
     @unittest.skipUnless(
@@ -771,6 +878,73 @@ class CodexAppServerProvenanceTests(unittest.TestCase):
             with self.subTest(report=report):
                 with self.assertRaisesRegex(AssertionError, "capture|command|OAuth|authentication|cleanup"):
                     self._verify_report(report)
+
+    @unittest.skipUnless(
+        runner_seam_available("verify_codex_app_server_provenance_report"),
+        "requires Codex App Server provenance report verifier",
+    )
+    def test_accepts_api_key_evidence_without_oauth_claims(self) -> None:
+        report = self._valid_report()
+        report["auth"] = {
+            "mode": "api_key",
+            "ephemeral_login": True,
+            "persistent_credentials": False,
+        }
+
+        details = self._verify_report(report, expected_auth_mode="api_key")
+
+        self.assertEqual(details["runtime"], "codex-app-server")
+
+    @unittest.skipUnless(
+        runner_seam_available("verify_codex_app_server_provenance_report"),
+        "requires Codex App Server provenance report verifier",
+    )
+    def test_rejects_oauth_claims_in_api_key_evidence(self) -> None:
+        report = self._valid_report()
+        report["auth"] = {
+            "mode": "api_key",
+            "source_unchanged": True,
+            "private_copy_removed": True,
+        }
+
+        with self.assertRaisesRegex(AssertionError, "API-key|authentication"):
+            self._verify_report(report, expected_auth_mode="api_key")
+
+    @unittest.skipUnless(
+        runner_seam_available("verify_codex_app_server_provenance_report"),
+        "requires Codex App Server provenance report verifier",
+    )
+    def test_accepts_zero_work_preflight_with_no_code_operations(self) -> None:
+        report = self._valid_report()
+        report["synthesis_batches"] = 0
+        report["code_mode"] = {
+            "allowed_operations": [],
+            "lifecycle": ["thread.start"],
+        }
+
+        details = self._verify_report(report, expected_synthesis_batches=0)
+
+        self.assertEqual(details["runtime"], "codex-app-server")
+
+    @unittest.skipUnless(
+        runner_seam_available("verify_codex_app_server_provenance_report"),
+        "requires Codex App Server provenance report verifier",
+    )
+    def test_rejects_zero_work_report_with_turn_operations_or_wrong_batch_count(self) -> None:
+        invalid_reports = (
+            {
+                **self._valid_report(),
+                "synthesis_batches": 0,
+            },
+            {
+                **self._valid_report(),
+                "synthesis_batches": 2,
+            },
+        )
+        with self.assertRaisesRegex(AssertionError, "zero-work|batch"):
+            self._verify_report(invalid_reports[0], expected_synthesis_batches=0)
+        with self.assertRaisesRegex(AssertionError, "batch"):
+            self._verify_report(invalid_reports[1], expected_synthesis_batches=1)
 
     @unittest.skipUnless(
         runner_seam_available("requested_codex_live_auth_legs"),

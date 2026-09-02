@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Starduster synthesis output",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "full_name",
+      "html_url",
+      "category",
+      "normalized_topics",
+      "summary",
+      "key_features",
+      "similar_to",
+      "use_case",
+      "maturity",
+      "author_display"
+    ],
+    "properties": {
+      "full_name": {"type": "string", "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"},
+      "html_url": {"type": "string", "pattern": "^https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"},
+      "category": {"type": "string", "maxLength": 100},
+      "normalized_topics": {"type": "array", "maxItems": 20, "items": {"type": "string"}, "uniqueItems": true},
+      "summary": {"type": "string", "maxLength": 500},
+      "key_features": {"type": "array", "minItems": 3, "maxItems": 8, "items": {"type": "string", "maxLength": 100}},
+      "similar_to": {"type": "array", "maxItems": 3, "items": {"type": "string"}, "uniqueItems": true},
+      "use_case": {"type": "string", "maxLength": 150},
+      "maturity": {"type": "string", "maxLength": 32},
+      "author_display": {"type": "string", "maxLength": 100}
+    }
+  }
+}

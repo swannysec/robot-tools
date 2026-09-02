@@ -1,0 +1,4 @@
+interface:
+  display_name: "starduster"
+  short_description: "Catalog GitHub stars into an Obsidian vault"
+  default_prompt: "Use $starduster to synchronize my GitHub stars safely."

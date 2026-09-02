@@ -1,11 +1,11 @@
 # Topic Normalization Reference
 
 Reference document for starduster category taxonomy, static topic mapping table,
-normalization rules, and LLM classification fallback.
+normalization rules, and controller classification fallback.
 
 ## Fixed Category List
 
-Exactly one category is assigned per repo. The sub-agent must choose from this list only.
+Exactly one category is assigned per repo. The controller must choose from this list only.
 
 | Category | Description |
 |----------|-------------|
@@ -30,8 +30,8 @@ Exactly one category is assigned per repo. The sub-agent must choose from this l
 ## Static Topic Mapping Table
 
 This table maps common GitHub topics to normalized topic names and their default category.
-The sub-agent should use **exact matching** against this table first before applying
-normalization rules or LLM classification.
+The controller uses **exact matching** against this table first before applying
+normalization rules or controller classification.
 
 | Raw Topic (GitHub) | Normalized Topic | Default Category |
 |---------------------|-----------------|------------------|
@@ -166,19 +166,19 @@ name in the static table. Otherwise, keep the digits.
 
 ---
 
-## LLM Classification Fallback
+## Controller Classification Fallback
 
-For topics that cannot be normalized via the static table or rules, the sub-agent
-should classify them using the following approach:
+For topics that cannot be normalized via the static table or rules, the controller
+uses the following deterministic classification rules:
 
 1. **Read the topic in context** of the repo's description, language, and other topics
 2. **Select the most appropriate category** from the fixed list
 3. **Generate a normalized topic name** following the rules above
 4. **Do NOT invent new categories** — use "Uncategorized" if truly ambiguous
 
-### Classification Prompt (internal to sub-agent)
+### Internal Classification Rules
 
-The sub-agent uses this reasoning pattern for unknown topics:
+For each unknown topic, the controller applies this classification pattern:
 
 ```
 For each unknown topic, consider:

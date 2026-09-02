@@ -12,7 +12,7 @@ AI/ML research and verification tools for software development.
 | `ai-twitter-radar` | Discover trending AI tools, news, and insights from influential developers and AI advocates on Twitter/X using Bird CLI. Read-only skill for research and discovery. |
 | `research-verification` | Pre-flight verification checklist for research tasks. Prevents assumptions from becoming errors when gathering information about external systems, APIs, or configurations. |
 | `kcap` | Capture and distill web articles, public YouTube videos, and Twitter/X posts into structured Markdown notes. The same self-contained package supports Claude Code and local Codex in the ChatGPT/Codex desktop app. |
-| `starduster` | Catalog GitHub starred repos into a structured Obsidian vault with AI-synthesized summaries, normalized topic taxonomy, graph-optimized wikilinks, and Obsidian Bases index files. |
+| `starduster` | Catalog GitHub starred repos into a structured Obsidian vault with AI-synthesized summaries, normalized topic taxonomy, graph-optimized wikilinks, and Obsidian Bases index files. The same self-contained package supports Claude Code and local Codex in the ChatGPT/Codex desktop app. |
 
 ## Installation
 
@@ -31,14 +31,15 @@ cd robot-tools
 cc --plugin-dir ./research-toolkit
 ```
 
-### Direct portable kcap installation
+### Direct portable skill installation
 
-The canonical package is `research-toolkit/skills/kcap`. Copy that complete directory
-unchanged to `.claude/skills/kcap` for a Claude Code project or
-`$CODEX_HOME/skills/kcap` for Codex desktop (normally `~/.codex/skills/kcap`). An
-optional distributor may use another host-recognized shared root after verifying it.
-Direct installation requires neither the plugin checkout nor hplumb. ChatGPT on the
-web is not supported by this profile.
+The canonical packages are `research-toolkit/skills/kcap` and
+`research-toolkit/skills/starduster`. Copy a complete directory unchanged to
+`.claude/skills/<skill-name>` for a Claude Code project or
+`$CODEX_HOME/skills/<skill-name>` for Codex desktop (normally
+`~/.codex/skills/<skill-name>`). An optional distributor may use another
+host-recognized shared root after verifying it. Direct installation requires neither
+the plugin checkout nor hplumb. ChatGPT on the web is not supported by this profile.
 
 ## Usage
 
@@ -70,6 +71,15 @@ kcap uses `~/.config/robot-tools/research-toolkit.json` with `schema_version: 1`
 - `"starred repos catalog"`, `"star catalog"`, `"summarize my stars"`, `"what have I starred"`
 - `"obsidian github stars"`, `"starred repo notes"`
 
+starduster uses the same neutral configuration file and runtime/authentication selectors
+as kcap. Its deterministic `sync` controller fetches stars through the authenticated
+GitHub CLI, returns confirmation instructions when estimated rate use is high, and never
+opens Obsidian. The legacy project configuration remains readable through the `0.6.x`
+compatibility period and emits a migration notice. See [the package configuration
+reference](./skills/starduster/references/configuration.md). Direct controller use
+requires Python 3 with PyYAML and authenticated `gh`; the acceptance suite supplies
+PyYAML explicitly with `uv run --with pyyaml`.
+
 > **kcap vs ai-twitter-radar:** Use kcap to save/distill a specific URL to a structured note. Use ai-twitter-radar to browse, discover, or search AI tweets.
 > **starduster vs kcap:** Use starduster to bulk-catalog your GitHub stars into a vault. Use kcap to capture a single specific URL.
 
@@ -94,9 +104,8 @@ kcap uses `~/.config/robot-tools/research-toolkit.json` with `schema_version: 1`
 
 ## Requirements
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI or local Codex in the ChatGPT/Codex desktop app for kcap
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI or local Codex in the ChatGPT/Codex desktop app for kcap and starduster
 - [GitHub CLI (gh)](https://cli.github.com/) (for starduster — GitHub stars fetching)
-- [jq](https://jqlang.github.io/jq/) (for starduster — JSON data extraction)
 - [Bird CLI](https://github.com/steipete/bird) (for ai-twitter-radar and kcap Twitter capture)
 - `curl` (for kcap's pinned HTTPS article fetch and redirect validation)
 - [trafilatura](https://trafilatura.readthedocs.io/) (for kcap web article extraction)

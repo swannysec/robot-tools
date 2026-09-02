@@ -101,7 +101,9 @@ Skills marked with `agents/openai.yaml` conform to [Portable Skill Profile v1](.
 An optional distributor may use another host-recognized shared skill root, such as
 `.agents/skills`, when it verifies that destination against the active desktop build.
 
-`research-toolkit/skills/kcap` is the first portable skill. It works without hplumb; hplumb may distribute the same package but is never a runtime dependency.
+`research-toolkit/skills/kcap` and `research-toolkit/skills/starduster` are portable
+skills. Both work without hplumb; hplumb may distribute either complete package but is
+never a runtime dependency.
 
 Run the noninteractive proof-of-concept acceptance suite with:
 

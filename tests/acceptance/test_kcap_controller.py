@@ -739,6 +739,7 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
         self._write_private_fixture(oauth_home / "auth.json", SYNTHETIC_ACCOUNT_DOCUMENT)
         environment_log = self.root / "codex-environment.log"
         command_log = self.root / "codex-command.log"
+        report_path = self.project / "kcap-codex-app-server-report.json"
 
         process, payload = self._capture(
             "codex",
@@ -746,23 +747,30 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
             CODEX_HOME=str(oauth_home),
             OPENAI_API_KEY=api_key,
             KCAP_FIXTURE_COMMAND_LOG=str(command_log),
+            RESEARCH_TOOLKIT_ACCEPTANCE_REPORT=str(report_path),
         )
 
         self._assert_success(payload)
         commands = self._codex_command_records(command_log)
-        self.assertEqual(len(commands), 2)
+        self.assertEqual(len(commands), 3)
         self.assertEqual(commands[0], ["features", "list"])
-        self.assertEqual(commands[1][0], "app-server")
-        self.assertIn("--stdio", commands[1])
-        self.assertIn("--strict-config", commands[1])
+        self.assertEqual(commands[1], ["--version"])
+        self.assertEqual(commands[2][0], "app-server")
+        self.assertIn("--stdio", commands[2])
+        self.assertIn("--strict-config", commands[2])
         records = self._codex_environment_records(environment_log)
-        self.assertEqual(len(records), 2)
+        self.assertEqual(len(records), 3)
         self.assertTrue(all(record["auth_type"] == "none" for record in records))
         self.assertTrue(all(record["openai"] == "unset" for record in records))
         self.assertTrue(all(record["anthropic"] == "unset" for record in records))
         self.assertTrue(all(record["aws"] == "unset" for record in records))
         self.assertTrue(all(record["github"] == "unset" for record in records))
         self.assertTrue(all(record["https_proxy"] == "unset" for record in records))
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            report["auth"],
+            {"mode": "api_key", "ephemeral_login": True, "persistent_credentials": False},
+        )
         self.assertNotIn(api_key, process.stdout + process.stderr + json.dumps(payload, sort_keys=True))
         self.assertEqual(self._workspaces(), [])
 

@@ -2152,11 +2152,19 @@ def codex_synthesize(args: argparse.Namespace) -> Dict[str, Any]:
                 "filesystem": {"root": "deny", "tmp": "deny", "slash_tmp": "deny"},
             },
             "environment": {"mode": "empty", "allowed": []},
-            "auth": {
-                "mode": auth_mode,
-                "source_unchanged": True,
-                "private_copy_removed": private_auth_copy is None or not private_auth_copy.exists(),
-            },
+            "auth": (
+                {
+                    "mode": "oauth",
+                    "source_unchanged": True,
+                    "private_copy_removed": private_auth_copy is not None and not private_auth_copy.exists(),
+                }
+                if auth_mode == "oauth"
+                else {
+                    "mode": "api_key",
+                    "ephemeral_login": True,
+                    "persistent_credentials": False,
+                }
+            ),
             "prohibited_event_count": 0,
         }
         write_codex_acceptance_report(Path(str(acceptance_report)), report)

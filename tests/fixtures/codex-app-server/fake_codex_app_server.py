@@ -18,6 +18,9 @@ from pathlib import Path
 SCENARIO = os.environ.get("KCAP_APP_SERVER_FIXTURE_SCENARIO", "success")
 LOG_PATH = Path(os.environ["KCAP_APP_SERVER_FIXTURE_LOG"])
 CLEANUP_PATH = Path(os.environ["KCAP_APP_SERVER_FIXTURE_CLEANUP"])
+PERMISSION_PROFILE = os.environ.get(
+    "KCAP_APP_SERVER_FIXTURE_PERMISSION_PROFILE", "kcap_synthesis"
+)
 SECRET = "APP_SERVER_SECRET_MUST_NOT_LEAK"
 SYNTHESIS_RESULT = json.loads(
     os.environ.get(
@@ -71,7 +74,7 @@ TURN_ID = "turn-fixture"
 
 def thread_start_result(cwd: str) -> dict[str, object]:
     result: dict[str, object] = {
-        "activePermissionProfile": {"extends": None, "id": "kcap_synthesis"},
+        "activePermissionProfile": {"extends": None, "id": PERMISSION_PROFILE},
         "approvalPolicy": "never",
         "approvalsReviewer": "user",
         "cwd": cwd,

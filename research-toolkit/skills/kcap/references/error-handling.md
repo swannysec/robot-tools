@@ -1,102 +1,47 @@
-# Error Handling Reference
+# Error handling
 
-Complete error behavior matrix and recovery procedures for kcap.
+The public `capture` controller emits one safe JSON object to stdout on success.
+Expected validation and runtime failures emit this safe shape to stderr and exit `1`:
 
-## Error Matrix
-
-### Configuration Errors
-
-| Error | Detection | Behavior | User Message |
-|-------|-----------|----------|--------------|
-| Config file missing | `.claude/research-toolkit.local.md` not found | Use defaults, prompt to create | "No kcap config found. Using defaults (output: ~/Documents/kcap). Create .claude/research-toolkit.local.md to customize." |
-| Config file exists, no kcap key | File exists but lacks `kcap:` section | Append defaults to file | "Added kcap defaults to existing config. Edit .claude/research-toolkit.local.md to customize." |
-| Output dir missing | `output_path` directory doesn't exist | `mkdir -p` and continue | "Created output directory: {path}" |
-| Output dir not writable | Write permission check fails | **FAIL** | "Cannot write to {path}. Check permissions or update kcap.output_path in config." |
-| Invalid subfolder | Doesn't match `^[a-zA-Z0-9_-]+(/[a-zA-Z0-9_-]+)*$` | **FAIL** | "Invalid subfolder '{value}'. Use only letters, numbers, hyphens, underscores, and forward slashes." |
-| Invalid synthesis_model | Not `sonnet` or `opus` | Default to `sonnet`, warn | "Unknown synthesis_model '{value}'. Defaulting to sonnet." |
-| Invalid default_mode | Not `standard` or `deep` | Default to `standard`, warn | "Unknown default_mode '{value}'. Defaulting to standard." |
-
-### URL Errors
-
-| Error | Detection | Behavior | User Message |
-|-------|-----------|----------|--------------|
-| Not https:// | Scheme check | **FAIL** | "Only https:// URLs are supported. Got: {scheme}://" |
-| Contains shell metacharacters | Regex check | **FAIL** | "URL contains potentially dangerous characters. Please provide a clean URL." |
-| Resolves to private IP | SSRF check | **FAIL** | "URL resolves to a private/reserved IP address ({ip}). This may be a security risk." |
-| Malformed URL | Parse failure | **FAIL** | "Could not parse URL. Please provide a valid https:// URL." |
-| Empty URL | No URL provided | **FAIL** | "No URL provided. Usage: kcap <url> [focus question]" |
-
-### Extraction Errors
-
-| Error | Detection | Behavior | User Message |
-|-------|-----------|----------|--------------|
-| All tools missing (web) | Neither trafilatura nor html2text found | **FAIL** | "No web extraction tools found. Install: `pip install trafilatura`" |
-| All tools missing (youtube) | Neither youtube-transcript-api nor yt-dlp found | **FAIL** | "No YouTube extraction tools found. Install: `pip install youtube-transcript-api`" |
-| bird not installed (twitter) | bird command not found | **FAIL** | "bird-cli not found. Install: `brew install steipete/formulae/bird`" |
-| Primary tool fails | Non-zero exit or empty output | Try fallback | (silent — falls through to fallback) |
-| All tools fail | Fallback also fails | **FAIL** | "Content extraction failed with all available tools. The URL may be unreachable or require authentication." |
-| Empty content | <50 words extracted | **FAIL** | "Extracted content is too short ({N} words, minimum 50). The page may require JavaScript, authentication, or contain primarily non-text content." |
-| Network timeout | >60 seconds | **FAIL** | "Request timed out after 60 seconds. The server may be slow or unreachable." |
-| Content too large | >15,000 words | Truncate + warn | "Content truncated to first 15,000 of {N} words." |
-| Content too large + deep mode | >15,000 words + deep mode | Warn + confirm | "Content is {N} words. Deep mode on large content may cost ~${estimate}. Proceed?" |
-
-### Synthesis Errors
-
-| Error | Detection | Behavior | User Message |
-|-------|-----------|----------|--------------|
-| Invalid JSON response | JSON parse fails | Extract JSON, retry once | (silent on first attempt) |
-| Invalid JSON after retry | Second attempt also fails | **FAIL** with raw content | "Synthesis produced invalid output. Raw content saved to {temp_path} for manual review." |
-| Missing required fields | Schema validation fails | **FAIL** with raw content | "Synthesis output missing required fields ({fields}). Raw content saved to {temp_path}." |
-| `insufficient_content` error | Sub-agent returns error JSON | **FAIL** | "Content was too short or unclear for meaningful synthesis." |
-| Sub-agent timeout | Task tool timeout | **FAIL** with raw content | "Synthesis timed out. Raw content saved to {temp_path}." |
-| TL;DR too long | >30 words | Truncate to first 30 words + "..." | (silent truncation) |
-| Invalid tags | Tags with spaces/special chars | Strip invalid, keep valid | (silent cleanup) |
-
-### File Writing Errors
-
-| Error | Detection | Behavior | User Message |
-|-------|-----------|----------|--------------|
-| File name collision (same URL) | Duplicate detection finds match | Prompt user | "This URL was already captured on {date}: {file}. Update existing / Create new / Skip?" |
-| File name collision (different URL) | Same slug, different URL | Append `-N` suffix | "File name conflict. Saved as {filename-2}.md" |
-| Write permission error | Write to temp file fails | **FAIL** | "Cannot write to output directory. Check permissions." |
-| Move fails | `mv` from temp to final fails | **FAIL** (temp file preserved) | "Failed to save note. Temp file preserved at {temp_path}." |
-
-### Post-Processing Errors
-
-| Error | Detection | Behavior | User Message |
-|-------|-----------|----------|--------------|
-| Cleanup fails | `rm -rf` of WORK_DIR fails | Warn, succeed capture | "Note saved successfully. Warning: temp files at {WORK_DIR} could not be cleaned up." |
-| Obsidian URI open fails | `open obsidian://` returns error | Silently continue | (file path reported as usual — no mention of Obsidian failure) |
-| Obsidian not configured | No `vault_name` in config | Skip URI generation | (file path only — no Obsidian URI) |
-
-## Recovery Procedures
-
-### Manual Recovery: Raw Content Saved
-
-When synthesis fails, the raw extracted content is saved to a temp file. The user can:
-1. Read the temp file to review raw content
-2. Re-run kcap with the same URL (fresh attempt)
-3. Manually create a note from the raw content
-
-### Config Reset
-
-If config becomes corrupted:
-1. Delete the `kcap:` section from `.claude/research-toolkit.local.md`
-2. Re-run kcap — it will prompt to create defaults
-
-### Temp File Cleanup
-
-If temp files accumulate:
-```bash
-rm -rf ${TMPDIR:-/tmp}/kcap-*
+```json
+{"ok": false, "error": {"code": "invalid_url", "message": "..."}}
 ```
 
-This is safe to run at any time — active captures use unique directory names.
+Invocation or internal contract errors exit `2`. The controller never emits raw external
+content or model prose. It may report a recovery path only after an explicit
+`--preserve-on-failure` choice. Hosts must not treat final host prose as a success signal;
+use the controller result and verified output file instead.
 
-## Error Severity Levels
+## Stable error families
 
-| Level | Meaning | Agent Behavior |
-|-------|---------|---------------|
-| **FAIL** | Cannot continue | Stop, report error, cleanup |
-| **Warn** | Degraded but functional | Report warning, continue |
-| **Silent** | Expected fallback | Continue without user-visible message |
+| Codes | Action |
+|---|---|
+| `invalid_config`, `missing_config`, `missing_config_section`, `unsupported_schema` | Stop and report the neutral configuration path. |
+| `invalid_legacy_config`, `missing_legacy_section` | Stop and provide migration instructions; do not modify the legacy file. |
+| `invalid_runtime`, `unknown_runtime`, `ambiguous_runtime` | Stop and request an explicit runtime override. |
+| `invalid_url`, `dns_error`, `ssrf_blocked`, `network_error` | Stop before processing fetched content. |
+| `missing_extractor`, `extraction_failed`, `insufficient_content`, `content_too_large` | Stop and report the source/tool limitation. |
+| `invalid_synthesis`, `synthesis_error` | Retry once in isolation, then stop. |
+| `confirmation_required` | Inspect safe details. Ask for large-capture consent and rerun with `--confirm-large`, or ask for `suffix`, `replace`, or `skip` and rerun with that `--collision` value. Noninteractive behavior is controller-owned. |
+| `duplicate_ambiguous` | Stop: `replace` found more than one normalized-source match. Report the safe paths and require the user to resolve the ambiguity. |
+| `codex_auth_error` | Stop. The requested OAuth source or API-key login did not meet the selected authentication mode; never fall back from explicit `oauth` or `api_key`. |
+| `codex_capability_error`, `codex_app_server_error`, `codex_app_server_auth_error` | Stop; never relax the App Server capability, authentication, or permission boundary. |
+| `codex_app_server_protocol_error`, `codex_app_server_exit`, `codex_app_server_limit`, `codex_app_server_timeout` | Stop and discard the child result. Prohibited Code Mode activity, a missing lifecycle event, an unsafe event, or an exceeded resource bound is not recoverable. |
+| `claude_isolation_unsupported`, `claude_failed`, `claude_output_error` | Stop; never relax the empty child tool surface. |
+| `output_error`, `invalid_work_dir`, `invalid_acceptance_report`, `process_failed` | Apply the controller's cleanup policy and report only the safe write, process, or acceptance-contract failure. |
+
+Missing optional extractors are not automatically installed. The controller never opens
+Obsidian or another app. Cleanup warnings do not invalidate a note whose atomic move
+completed, but a recovery path is reported only when `--preserve-on-failure` was an
+explicit user choice and must not be read by the host.
+
+Every external command and downloaded artifact is limited to 10 MiB. Full mode
+preserves all substantive content only within that finite safety bound.
+
+`skipped_duplicate` is a successful controller status, not an error. It reports sorted
+existing paths and a count without extraction or synthesis.
+
+For an explicitly requested live Codex authentication leg, unavailable OAuth or an
+unavailable API-key login is an incomplete acceptance result with a nonzero outcome; it
+is not evidence that the leg was skipped successfully. If the optional API-key test
+variable was not supplied, that leg is `not_requested`, not skipped.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Runtime Path Escape"
+  short_description: "Invalid fixture with an escaping dependency"
+  default_prompt: "Use $runtime-path-escape to test validation."

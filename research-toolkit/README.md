@@ -11,7 +11,7 @@ AI/ML research and verification tools for software development.
 | `ai-dev-research` | World-expert technical research on AI-enabled software development topics. Covers RAG architectures, agentic workflows, LLM integration, embeddings, and AI coding tools. |
 | `ai-twitter-radar` | Discover trending AI tools, news, and insights from influential developers and AI advocates on Twitter/X using Bird CLI. Read-only skill for research and discovery. |
 | `research-verification` | Pre-flight verification checklist for research tasks. Prevents assumptions from becoming errors when gathering information about external systems, APIs, or configurations. |
-| `kcap` | Capture and distill knowledge from URLs into structured markdown notes. Supports web articles, YouTube videos, and Twitter/X posts with dual-agent security architecture. |
+| `kcap` | Capture and distill web articles, public YouTube videos, and Twitter/X posts into structured Markdown notes. The same self-contained package supports Claude Code and local Codex in the ChatGPT/Codex desktop app. |
 | `starduster` | Catalog GitHub starred repos into a structured Obsidian vault with AI-synthesized summaries, normalized topic taxonomy, graph-optimized wikilinks, and Obsidian Bases index files. |
 
 ## Installation
@@ -30,6 +30,15 @@ git clone https://github.com/swannysec/robot-tools.git
 cd robot-tools
 cc --plugin-dir ./research-toolkit
 ```
+
+### Direct portable kcap installation
+
+The canonical package is `research-toolkit/skills/kcap`. Copy that complete directory
+unchanged to `.claude/skills/kcap` for a Claude Code project or
+`$CODEX_HOME/skills/kcap` for Codex desktop (normally `~/.codex/skills/kcap`). An
+optional distributor may use another host-recognized shared root after verifying it.
+Direct installation requires neither the plugin checkout nor hplumb. ChatGPT on the
+web is not supported by this profile.
 
 ## Usage
 
@@ -52,6 +61,8 @@ Skills activate automatically via trigger phrases:
 - `"capture this url"`, `"save this article"`, `"kcap"`
 - `"knowledge capture"`, `"distill this"`, `"save to obsidian"`
 - `"capture this video"`, `"capture this tweet"`, `"save this for later"`
+
+kcap uses `~/.config/robot-tools/research-toolkit.json` with `schema_version: 1`. `RESEARCH_TOOLKIT_CONFIG` selects an alternate file, `RESEARCH_TOOLKIT_RUNTIME=claude|codex` provides an explicit runtime override, `RESEARCH_TOOLKIT_CODEX_AUTH=auto|oauth|api_key` selects Codex authentication, and `RESEARCH_TOOLKIT_NONINTERACTIVE=1` selects the controller's noninteractive duplicate and confirmation policies. The controller never opens Obsidian. Project `.claude/research-toolkit.local.md` remains readable through the `0.6.x` compatibility period and emits a migration notice. See [the package configuration reference](./skills/kcap/references/configuration.md) for the authentication and migration behavior.
 
 **starduster**:
 - `"catalog my github stars"`, `"starduster"`, `"export github stars"`
@@ -83,10 +94,11 @@ Skills activate automatically via trigger phrases:
 
 ## Requirements
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI or local Codex in the ChatGPT/Codex desktop app for kcap
 - [GitHub CLI (gh)](https://cli.github.com/) (for starduster — GitHub stars fetching)
 - [jq](https://jqlang.github.io/jq/) (for starduster — JSON data extraction)
 - [Bird CLI](https://github.com/steipete/bird) (for ai-twitter-radar and kcap Twitter capture)
+- `curl` (for kcap's pinned HTTPS article fetch and redirect validation)
 - [trafilatura](https://trafilatura.readthedocs.io/) (for kcap web article extraction)
 - [youtube-transcript-api](https://github.com/jdepoix/youtube-transcript-api) (for kcap YouTube capture)
 

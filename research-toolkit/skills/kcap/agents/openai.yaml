@@ -1,0 +1,4 @@
+interface:
+  display_name: "kcap"
+  short_description: "Capture URLs as structured Markdown notes"
+  default_prompt: "Use $kcap to capture this URL with the bundled controller."

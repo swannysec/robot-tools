@@ -2,8 +2,10 @@
 name: plugin-qa
 description: |
   Validates plugin manifest consistency, README cross-references, SKILL.md frontmatter,
-  and version sync across the robot-tools monorepo. Has two modes:
+  portable Claude Code and Codex Desktop skill packages, and version sync across the
+  robot-tools monorepo. Has three modes:
   - Validate mode: checks and reports pass/warn/fail (default)
+  - Portable skill mode: validates one standalone skill directory against Portable Skill Profile v1
   - Release prep mode: validates, walks through version bumping, re-validates, summarizes for commit
   Claude should proactively suggest release-prep mode when a development session that added
   or modified plugin content appears to be wrapping up.
@@ -13,6 +15,8 @@ triggers:
   - "check plugin consistency"
   - "lint plugins"
   - "plugin health check"
+  - "validate portable skill"
+  - "portable skill profile"
   - "pre-release validation"
   - "check manifests"
   - "prepare release"
@@ -37,9 +41,17 @@ This applies after any session involving:
 - Changes to README tables or root README lists
 - Changes to plugin.json or marketplace.json
 
-## Step 0 — Mode Selection
+## Step 0 — Mode and Scope Selection
 
-Determine mode from the user's trigger phrase using keyword matching (the frontmatter `triggers` array is the source of truth for all trigger phrases):
+Determine mode and scope from the request:
+
+**Portable skill mode**: The user supplies a skill directory or explicitly asks to validate one portable skill. Resolve the supplied directory, run the standalone validator below, report its checks, and stop. This mode does not require a robot-tools checkout or `.claude-plugin/marketplace.json`.
+
+```bash
+uv run --with pyyaml <plugin-qa-dir>/scripts/validate-portable-skill.py <skill-dir>
+```
+
+Use `--json` when another program will consume the result. Resolve `<plugin-qa-dir>` relative to this `SKILL.md`; do not assume an installed location.
 
 **Release prep mode**: Any trigger containing "release", "bump", or "version" → release-prep mode
 
@@ -93,7 +105,12 @@ This is informational — no pass/fail. The inventory is used as the reference s
 
 ### Step 3 — SKILL.md Frontmatter Validation
 
-For each SKILL.md found in Step 2, parse the YAML frontmatter and check:
+Select a profile independently for each skill:
+
+- If `<skill-dir>/agents/openai.yaml` exists, apply **Portable Skill Profile v1** by running `scripts/validate-portable-skill.py <skill-dir>`. Every failed portable-profile check is a **FAIL**. In particular, `triggers` must be absent.
+- Otherwise, apply the existing **Claude-only profile** below. A missing `triggers` field remains a **WARN** for these legacy skills.
+
+For each Claude-only SKILL.md found in Step 2, parse the YAML frontmatter and check:
 
 | Check | Severity |
 |-------|----------|
@@ -103,6 +120,21 @@ For each SKILL.md found in Step 2, parse the YAML frontmatter and check:
 | `triggers` field exists and is an array with at least one entry | WARN |
 
 Report each skill and its result. Overall phase result is the worst severity found.
+
+The normative portable contract, capability-assessment matrix, and migration checklist are in [references/portable-skill-profile.md](references/portable-skill-profile.md). Do not apply Claude-only `triggers` guidance to a portable skill.
+
+Portable Skill Profile v1 recommends a deterministic top-level operation for workflows
+with dependent commands, state, or untrusted-content boundaries. This is design guidance,
+not a universal standalone-validator requirement: do not fail a portable package solely
+because it does not need or expose such an operation.
+
+For portable runtime reviews, use the profile's authority and effect classifications.
+Do not require a tool-free design merely because a tool is present. A computation-only
+tool may be native when its exact operations and lifecycle are evidenced. Sandboxing
+compensates only for effects it actually governs; event inspection is defense in depth.
+External-effect tools require preventive controls and tests that show those controls
+work. The deterministic top-level operation remains recommended where it prevents the
+host from reconstructing state or crossing an untrusted-content boundary.
 
 ### Step 4 — Toolkit README Tables
 
@@ -159,6 +191,8 @@ For each skill that has a `references/` directory, verify that each `.md` file i
 
 - **WARN** for any reference file not mentioned in its skill's SKILL.md
 - Match on filename (without extension) or full relative path
+
+For portable skills, the standalone validator's required runtime references and package-boundary checks are authoritative. This phase still reports any additional unmentioned Markdown references.
 
 ### Summary Report
 

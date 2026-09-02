@@ -30,6 +30,7 @@ robot-tools/
 │   └── skills/
 │       ├── ai-dev-research/SKILL.md
 │       ├── ai-twitter-radar/SKILL.md
+│       ├── kcap/SKILL.md
 │       └── research-verification/SKILL.md
 ├── security-toolkit/
 │   ├── .claude-plugin/plugin.json
@@ -42,13 +43,14 @@ robot-tools/
 │   ├── README.md
 │   └── skills/
 │       └── impact-flow/SKILL.md
-└── workflow-toolkit/
-    ├── .claude-plugin/plugin.json
-    ├── README.md
-    ├── commands/*.md                          # Slash commands (auto-discovered)
-    ├── skills/*/SKILL.md                      # Skills (auto-discovered)
-    │   └── references/                        # Optional reference docs per skill
-    └── agents/*.md                            # Sub-agents (auto-discovered)
+├── workflow-toolkit/
+│   ├── .claude-plugin/plugin.json
+│   ├── README.md
+│   ├── commands/*.md                          # Slash commands (auto-discovered)
+│   ├── skills/*/SKILL.md                      # Skills (auto-discovered)
+│   │   └── references/                        # Optional reference docs per skill
+│   └── agents/*.md                            # Sub-agents (auto-discovered)
+└── tests/                                     # Portable cross-host acceptance
 ```
 
 **Auto-discovery:** Claude Code discovers components automatically from:
@@ -68,13 +70,15 @@ When adding a skill, agent, or command to any toolkit:
 2. Add YAML frontmatter with required fields:
    - `name` — must match the directory name exactly
    - `description` — multi-line (`|`) summary of what the skill does
-3. Add `triggers` array (strongly recommended) — array of trigger phrases (lowercase, quoted strings). Skills without `triggers` can still be discovered via their `description` field.
+3. Choose one profile:
+   - Claude-only: add a `triggers` array (strongly recommended).
+   - Portable Claude Code + Codex desktop: add `agents/openai.yaml`, omit `triggers`, link `references/runtime-claude.md` and `references/runtime-codex.md`, and follow [Portable Skill Profile v1](workflow-toolkit/skills/plugin-qa/references/portable-skill-profile.md).
 4. Optionally add `<toolkit>/skills/<skill-name>/references/*.md` for supplementary docs
 5. Add row to the **Skills table** in `<toolkit>/README.md`
 6. Add bullet to the toolkit's **Skills** list in root `README.md`
 7. Add skill name to `keywords` array in `<toolkit>/.claude-plugin/plugin.json`
 8. Add trigger phrases to the **Skills trigger section** in `<toolkit>/README.md`
-9. Run `plugin-qa` to validate consistency
+9. Run `plugin-qa` to validate consistency. For a portable package, also run `uv run --with pyyaml workflow-toolkit/skills/plugin-qa/scripts/validate-portable-skill.py <skill-dir>` and the cross-host acceptance suite.
 
 ### Agent Checklist
 
@@ -99,6 +103,12 @@ When adding a skill, agent, or command to any toolkit:
 - Use `date +%s` instead of `$EPOCHSECONDS`
 - POSIX-compliant constructs preferred for cross-platform scripts
 - See ADR-002 for full macOS portability rules
+
+## Debugging Protocol
+
+- Before each fix attempt, state the hypothesis and supporting evidence.
+- When a fix remains safe and in scope, make as many as five distinct, evidence-based attempts before stopping. Do not stop solely because two attempts failed.
+- After five unsuccessful attempts at the same issue, stop and re-plan the approach before making another change.
 
 ## Versioning Protocol
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Runtime Script Escape"
+  short_description: "Reject an escaping script dependency"
+  default_prompt: "Use $runtime-script-escape to test package boundaries."

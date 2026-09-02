@@ -30,6 +30,8 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 KCAP_DIR = ROOT / "research-toolkit" / "skills" / "kcap"
 KCAP_CLI = KCAP_DIR / "scripts" / "kcap.py"
+STARDUSTER_DIR = ROOT / "research-toolkit" / "skills" / "starduster"
+STARDUSTER_CLI = STARDUSTER_DIR / "scripts" / "starduster.py"
 PORTABLE_VALIDATOR = (
     ROOT
     / "workflow-toolkit"
@@ -219,13 +221,16 @@ def preferred_codex_binary(
 
 
 def tree_byte_manifest(root: Path) -> dict[Path, bytes]:
-    """Return the complete relative-file byte manifest for a copied tree."""
+    """Return the relative source-file byte manifest for a copied tree."""
     if not root.is_dir():
         raise AssertionError(f"tree root is not a directory: {root}")
     return {
         path.relative_to(root): path.read_bytes()
         for path in sorted(root.rglob("*"))
         if path.is_file()
+        and path.name != ".DS_Store"
+        and "__pycache__" not in path.parts
+        and path.suffix != ".pyc"
     }
 
 
@@ -328,6 +333,31 @@ def live_command_events(events: Sequence[Mapping[str, Any]]) -> list[str]:
             raise AssertionError(f"live provenance command lifecycle is ambiguous for {item_id}")
         commands.append(states["started"])
     return commands
+
+
+def starduster_claude_bash_evidence(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Require one exact Claude Bash call with enough time for five synthesis batches."""
+    calls: list[dict[str, Any]] = []
+    for event in events:
+        message = event.get("message")
+        if event.get("type") != "assistant" or not isinstance(message, Mapping):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, Mapping) or part.get("type") != "tool_use" or part.get("name") != "Bash":
+                continue
+            tool_input = part.get("input")
+            if not isinstance(tool_input, Mapping) or not isinstance(tool_input.get("command"), str):
+                raise AssertionError("Claude Starduster Bash event lacks a command")
+            timeout = tool_input.get("timeout")
+            if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout < 600000:
+                raise AssertionError("Claude Starduster Bash event lacks the required 600000 ms timeout")
+            calls.append({"command": tool_input["command"], "timeout_ms": timeout})
+    if len(calls) != 1:
+        raise AssertionError("Claude live Starduster run did not execute exactly one Bash command")
+    return calls[0]
 
 
 def safe_live_event_shape_summary(events: Sequence[Mapping[str, Any]]) -> dict[str, int]:
@@ -480,6 +510,7 @@ def verify_codex_app_server_provenance_report(
     expected_catalog_path: Path,
     expected_output_root: Path,
     expected_auth_mode: str = "oauth",
+    expected_synthesis_batches: int | None = None,
 ) -> dict[str, Any]:
     """Validate the small, redacted evidence record from the signed App Server proof."""
     if _report_has_sensitive_key(report):
@@ -499,10 +530,21 @@ def verify_codex_app_server_provenance_report(
     code_mode = report.get("code_mode")
     if not isinstance(code_mode, Mapping):
         raise AssertionError("App Server provenance lacks Code Mode evidence")
-    if code_mode.get("allowed_operations") != ["exec", "wait"]:
-        raise AssertionError("App Server provenance permits operations beyond Code Mode exec and wait")
-    if code_mode.get("lifecycle") != ["thread.start", "turn.start", "turn.complete"]:
-        raise AssertionError("App Server provenance has an incomplete Code Mode lifecycle")
+    synthesis_batches = report.get("synthesis_batches", 1)
+    if isinstance(synthesis_batches, bool) or not isinstance(synthesis_batches, int) or synthesis_batches < 0:
+        raise AssertionError("App Server provenance has an invalid synthesis batch count")
+    if expected_synthesis_batches is not None and synthesis_batches != expected_synthesis_batches:
+        raise AssertionError("App Server provenance has an unexpected synthesis batch count")
+    if synthesis_batches == 0:
+        if code_mode.get("allowed_operations") != []:
+            raise AssertionError("zero-work App Server provenance must not allow Code Mode operations")
+        if code_mode.get("lifecycle") != ["thread.start"]:
+            raise AssertionError("zero-work App Server provenance must contain only thread.start")
+    else:
+        if code_mode.get("allowed_operations") != ["exec", "wait"]:
+            raise AssertionError("App Server provenance permits operations beyond Code Mode exec and wait")
+        if code_mode.get("lifecycle") != ["thread.start", "turn.start", "turn.complete"]:
+            raise AssertionError("App Server provenance has an incomplete Code Mode lifecycle")
     environment = report.get("environment")
     if not isinstance(environment, Mapping) or environment.get("mode") != "empty" or environment.get("allowed") != []:
         raise AssertionError("App Server provenance requires an empty model environment")
@@ -513,9 +555,16 @@ def verify_codex_app_server_provenance_report(
     if any(filesystem.get(root) != "deny" for root in ("root", "tmp", "slash_tmp")):
         raise AssertionError("App Server provenance requires root and temporary filesystem denies")
     auth = report.get("auth")
-    if not isinstance(auth, Mapping) or auth != {
-        "mode": expected_auth_mode, "source_unchanged": True, "private_copy_removed": True
-    }:
+    expected_auth: Mapping[str, Any]
+    if expected_auth_mode == "oauth":
+        expected_auth = {"mode": "oauth", "source_unchanged": True, "private_copy_removed": True}
+    elif expected_auth_mode == "api_key":
+        expected_auth = {"mode": "api_key", "ephemeral_login": True, "persistent_credentials": False}
+    else:
+        raise AssertionError("App Server provenance has an unsupported authentication mode")
+    if not isinstance(auth, Mapping) or auth != expected_auth:
+        if expected_auth_mode == "api_key":
+            raise AssertionError("App Server provenance requires API-key ephemeral-login evidence")
         raise AssertionError("App Server provenance requires OAuth source and cleanup evidence")
     if report.get("prohibited_event_count") != 0:
         raise AssertionError("App Server provenance recorded prohibited activity")
@@ -535,6 +584,7 @@ def verify_codex_app_server_provenance_report(
         "version": version,
         "capture_command": expected_capture_command,
         "prohibited_event_count": 0,
+        "synthesis_batches": synthesis_batches,
     }
 
 
@@ -553,6 +603,28 @@ def requested_codex_live_result(auth_leg: str, availability: str) -> dict[str, A
     if availability == "available":
         return {"status": "PASS", "exit_code": 0, "auth_leg": auth_leg}
     return {"status": "INCOMPLETE", "exit_code": 1, "auth_leg": auth_leg}
+
+
+def validated_live_github_token(result: subprocess.CompletedProcess[str]) -> str:
+    """Return one bounded token without retaining authentication diagnostics."""
+    if result.returncode != 0:
+        raise SkipCase("authenticated GitHub CLI access is unavailable")
+    token = result.stdout.strip()
+    if not token or len(token) > 4096 or any(character.isspace() for character in token):
+        raise AssertionError("GitHub CLI returned invalid authentication material")
+    return token
+
+
+def live_github_token() -> str:
+    binary = shutil.which("gh")
+    if binary is None:
+        raise SkipCase("GitHub CLI is unavailable")
+    result = run(
+        [binary, "auth", "token"],
+        unset_env=("GH_TOKEN", "GITHUB_TOKEN"),
+        timeout=30,
+    )
+    return validated_live_github_token(result)
 
 
 def codex_prompt_input_catalog_text(value: str) -> str:
@@ -757,17 +829,53 @@ def add_portable_cases(harness: Harness) -> None:
         "portable.runtime-absolute-paths",
         validator_case("runtime-absolute-paths", 1, "dependencies.package-boundary"),
     )
+    harness.case("portable.starduster.source", lambda: portable_source_copy_case(harness.workspace, STARDUSTER_DIR))
+
+
+def portable_source_copy_case(workspace: Path, skill_dir: Path) -> dict[str, Any]:
+    """Validate the source package and unchanged direct copies for both hosts."""
+    if not skill_dir.is_dir():
+        raise AssertionError(f"portable source package is missing: {skill_dir}")
+    source_validation = run([sys.executable, str(PORTABLE_VALIDATOR), str(skill_dir), "--json"], cwd=workspace)
+    if source_validation.returncode != 0:
+        raise AssertionError("portable source validation failed: " + abbreviated(source_validation.stderr or source_validation.stdout))
+    source_manifest = tree_byte_manifest(skill_dir)
+    destinations = {
+        "claude": workspace / "direct-copy-claude" / ".claude" / "skills" / skill_dir.name,
+        "codex": workspace / "direct-copy-codex" / "codex-home" / "skills" / skill_dir.name,
+    }
+    for host, destination in destinations.items():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(skill_dir, destination, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        verify_tree_byte_manifest(source_manifest, destination, label=f"direct {host} {skill_dir.name} copy")
+        validation = run([sys.executable, str(PORTABLE_VALIDATOR), str(destination), "--json"], cwd=workspace)
+        if validation.returncode != 0:
+            raise AssertionError(
+                f"direct {host} {skill_dir.name} copy failed portable validation: "
+                + abbreviated(validation.stderr or validation.stdout)
+            )
+    return {
+        "skill": skill_dir.name,
+        "copied_file_count": len(source_manifest),
+        "destinations": {host: str(path) for host, path in destinations.items()},
+    }
 
 
 def add_deterministic_acceptance_cases(harness: Harness) -> None:
-    modules = (
+    modules = [
         "tests.acceptance.test_codex_app_server",
         "tests.acceptance.test_kcap_controller",
         "tests.acceptance.test_kcap_network_process",
         "tests.acceptance.test_kcap_policy",
         "tests.acceptance.test_live_provenance",
         "tests.acceptance.test_portable_validator",
-    )
+        "tests.acceptance.test_starduster_sync",
+        "tests.acceptance.test_starduster_rendering",
+        "tests.acceptance.test_starduster_policy",
+    ]
+    app_server_module = "tests.acceptance.test_starduster_app_server"
+    if (ROOT / "tests/acceptance/test_starduster_app_server.py").is_file():
+        modules.append(app_server_module)
     for module in modules:
         harness.case("acceptance.{}".format(module.rsplit(".", 1)[-1]), unittest_acceptance_case(module))
 
@@ -1629,6 +1737,7 @@ def run_codex_app_server_capture(
     environment: Mapping[str, str],
     timeout_seconds: float = 900.0,
     output_bytes_cap: int = 65536,
+    forbidden_values: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Run one exact controller argv through buffered App Server command/exec."""
     if timeout_seconds <= 0 or output_bytes_cap <= 0:
@@ -1764,8 +1873,12 @@ def run_codex_app_server_capture(
         stderr_bytes = len(stderr.encode("utf-8"))
         if stdout_bytes > output_bytes_cap or stderr_bytes > output_bytes_cap:
             raise AssertionError("Codex App Server command response exceeded the output limit")
+        if any(value and (value in stdout or value in stderr) for value in forbidden_values):
+            raise AssertionError("Codex App Server command response exposed authentication material")
         if exit_code != 0:
-            raise AssertionError("Codex App Server capture command exited unsuccessfully")
+            error_code = safe_controller_error_code(stderr)
+            suffix = " ({})".format(error_code) if error_code else ""
+            raise AssertionError("Codex App Server capture command exited unsuccessfully" + suffix)
         return {
             "event": {
                 "type": "command_execution",
@@ -1823,6 +1936,278 @@ def prepare_live_project(workspace: Path, host: str) -> tuple[Path, Path, Path, 
         encoding="utf-8",
     )
     return project, output_root, config_path, skill_dir, source_manifest
+
+
+def prepare_live_starduster_project(
+    workspace: Path, host: str
+) -> tuple[Path, Path, Path, Path, dict[Path, bytes]]:
+    project = workspace / f"live-starduster-{host}"
+    skill_root = project / ".claude/skills" if host == "claude" else workspace / "live-starduster-codex-home/skills"
+    skill_root.mkdir(parents=True)
+    for state_dir in (project / "home", project / "state"):
+        state_dir.mkdir(parents=True, mode=0o700)
+        state_dir.chmod(0o700)
+    skill_dir = skill_root / "starduster"
+    source_manifest = tree_byte_manifest(STARDUSTER_DIR)
+    shutil.copytree(STARDUSTER_DIR, skill_dir)
+    verify_tree_byte_manifest(source_manifest, skill_dir, label="temporary starduster copy before host execution")
+    output_root = project / "output"
+    output_root.mkdir(parents=True)
+    config_path = project / "research-toolkit.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "starduster": {
+                    "output_path": str(output_root),
+                    "subfolder": "catalog",
+                    "vault_name": None,
+                    "synthesis_profile": "fast",
+                    "synthesis_batch_size": 1,
+                },
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+    return project, output_root, config_path, skill_dir, source_manifest
+
+
+def starduster_live_command(config_path: Path, skill_dir: Path) -> list[str]:
+    return [
+        "python3", str((skill_dir / "scripts" / "starduster.py").resolve()), "sync",
+        "--limit", "5", "--project-dir", str(config_path.parent.resolve()),
+    ]
+
+
+def starduster_claude_live_environment(
+    project: Path,
+    config_path: Path,
+    github_token: str,
+) -> dict[str, str]:
+    """Keep Desktop-managed Claude login while isolating outputs and GitHub access."""
+    return {
+        "RESEARCH_TOOLKIT_CONFIG": str(config_path),
+        "RESEARCH_TOOLKIT_RUNTIME": "claude",
+        "RESEARCH_TOOLKIT_NONINTERACTIVE": "1",
+        "TMPDIR": str(project),
+        "GH_TOKEN": github_token,
+    }
+
+
+def starduster_controller_path(python_executable: Path, gh_executable: Path) -> str:
+    """Build the deterministic executable path used by the outer controller only."""
+    executables = (python_executable, gh_executable)
+    if any(not path.is_absolute() for path in executables):
+        raise AssertionError("Starduster controller executables must use absolute paths")
+    directories: list[str] = []
+    for directory in (python_executable.parent, gh_executable.parent, Path("/usr/bin"), Path("/bin")):
+        value = str(directory)
+        if value not in directories:
+            directories.append(value)
+    return os.pathsep.join(directories)
+
+
+def safe_controller_error_code(stderr: str) -> str | None:
+    """Extract only a bounded public controller code from an exact error envelope."""
+    if len(stderr.encode("utf-8")) > 4096:
+        return None
+    try:
+        value = json.loads(stderr)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict) or value.get("ok") is not False or set(value) != {"ok", "error"}:
+        return None
+    error = value.get("error")
+    if not isinstance(error, dict) or not {"code", "message"}.issubset(error):
+        return None
+    code, message = error.get("code"), error.get("message")
+    if not isinstance(code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code):
+        return None
+    if not isinstance(message, str) or len(message) > 512:
+        return None
+    return code
+
+
+def require_bundled_desktop_codex_for_live(binary: Path) -> Path:
+    """The release live proof is valid only for the signed Desktop binary."""
+    if canonical_live_path(binary) != canonical_live_path(BUNDLED_CODEX_BINARY):
+        raise SkipCase("Codex Starduster live proof requires the bundled Desktop binary")
+    return binary
+
+
+def verify_starduster_live_success(output_root: Path) -> dict[str, Any]:
+    """Use paths and bounded counts only; never inspect live GitHub or model text."""
+    root = output_root.resolve()
+    repo_root = root / "catalog" / "repos"
+    notes = sorted(path.resolve() for path in repo_root.glob("*.md")) if repo_root.is_dir() else []
+    if len(notes) != 5:
+        raise AssertionError("live Starduster run did not derive exactly five repository notes from its filesystem")
+    bases = sorted(path.resolve() for path in root.rglob("*.base"))
+    if len(bases) != 7:
+        raise AssertionError("live Starduster run did not derive exactly seven Bases indexes from its filesystem")
+    for note in notes:
+        try:
+            note.relative_to(root)
+        except ValueError as error:
+            raise AssertionError("live Starduster note escaped its temporary output root") from error
+        if not note.is_file():
+            raise AssertionError("live Starduster repository note is not a regular file")
+    return {
+        "repo_note_count": len(notes), "base_index_count": len(bases),
+        "output_root": str(root), "filesystem_derived": True,
+    }
+
+
+def verify_starduster_live_command(event: Mapping[str, Any], skill_dir: Path, project: Path) -> None:
+    command = event.get("command")
+    if not isinstance(command, str):
+        raise AssertionError("live Starduster provenance lacks one command")
+    values = shlex.split(command)
+    expected = starduster_live_command(project / "research-toolkit.json", skill_dir)
+    if values != expected:
+        raise AssertionError("live Starduster provenance differs from the exact temporary sync command")
+
+
+def starduster_codex_live_case(
+    workspace: Path,
+    *,
+    auth_leg: str = "oauth",
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    if auth_leg not in {"oauth", "api-key"}:
+        raise AssertionError("unknown Starduster Codex authentication leg")
+    if auth_leg == "api-key" and not api_key:
+        raise AssertionError("requested Starduster API-key live leg lacks its dedicated test credential")
+    codex = preferred_codex_binary(os.environ.get(CODEX_BINARY_OVERRIDE_ENV))
+    if codex is None:
+        raise SkipCase("Codex CLI is not installed")
+    codex = require_bundled_desktop_codex_for_live(codex)
+    gh_binary = shutil.which("gh")
+    python_binary = Path(sys.executable).parent / "python3"
+    if not STARDUSTER_CLI.is_file() or gh_binary is None or not python_binary.is_file():
+        raise SkipCase("Starduster controller or authenticated gh dependency is unavailable")
+    project, output_root, config_path, skill_dir, manifest = prepare_live_starduster_project(workspace, "codex")
+    codex_home = skill_dir.parent.parent
+    codex_home.chmod(0o700)
+    sqlite_home = project / "codex-sqlite"
+    sqlite_home.mkdir(mode=0o700)
+    sqlite_home.chmod(0o700)
+    auth_source = Path.home() / ".codex" / "auth.json"
+    auth_snapshot: Mapping[str, Any] | None = None
+    if auth_leg == "oauth":
+        if not auth_source.is_file():
+            raise SkipCase("Codex authentication file is not installed")
+        auth_snapshot = create_private_auth_copy(auth_source, codex_home / "auth.json")
+    report_path = project / "starduster-codex-app-server-report.json"
+    host_env = {
+        "RESEARCH_TOOLKIT_CONFIG": str(config_path), "RESEARCH_TOOLKIT_RUNTIME": "codex",
+        "RESEARCH_TOOLKIT_NONINTERACTIVE": "1", "RESEARCH_TOOLKIT_CODEX_AUTH": auth_leg.replace("-", "_"),
+        "RESEARCH_TOOLKIT_ACCEPTANCE_REPORT": str(report_path),
+        "CODEX_HOME": str(codex_home), "CODEX_SQLITE_HOME": str(sqlite_home),
+        "HOME": str(project / "home"), "TMPDIR": str(project),
+        "STARDUSTER_CODEX_BIN": str(codex),
+        "PATH": starduster_controller_path(python_binary, Path(gh_binary)),
+    }
+    if api_key is not None:
+        host_env["OPENAI_API_KEY"] = api_key
+    catalog = run(
+        [codex, "debug", "prompt-input", "Use $starduster"],
+        cwd=project,
+        env=host_env,
+        unset_env=("OPENAI_API_KEY",) if auth_leg == "oauth" else (),
+        timeout=60,
+    )
+    if catalog.returncode != 0:
+        raise AssertionError("Codex Starduster catalog preflight failed")
+    catalog_paths = codex_catalog_skill_paths(catalog.stdout + catalog.stderr, "starduster")
+    expected_catalog = (skill_dir / "SKILL.md").resolve()
+    if expected_catalog not in {path.resolve() for path in catalog_paths}:
+        raise AssertionError("Codex catalog does not contain the temporary Starduster copy")
+    if any(path.resolve() != expected_catalog for path in catalog_paths):
+        raise AssertionError("Codex catalog exposes a Starduster source other than the temporary copy")
+    github_token = live_github_token()
+    controller_env = {**host_env, "GH_TOKEN": github_token}
+    try:
+        evidence = run_codex_app_server_capture(
+            codex_bin=codex,
+            argv=starduster_live_command(config_path, skill_dir),
+            cwd=project,
+            environment=controller_env,
+            timeout_seconds=900,
+            forbidden_values=tuple(
+                value for value in (github_token, api_key) if isinstance(value, str) and value
+            ),
+        )
+    finally:
+        verify_tree_byte_manifest(manifest, skill_dir, label="temporary starduster copy after Codex execution")
+    verify_starduster_live_command(evidence["event"], skill_dir, project)
+    if auth_snapshot is not None:
+        verify_source_auth_unchanged(auth_source, auth_snapshot)
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise AssertionError("Codex Starduster controller did not produce a valid provenance report") from error
+    if not isinstance(report, dict):
+        raise AssertionError("Codex Starduster provenance report was not an object")
+    command = shlex.join(starduster_live_command(config_path, skill_dir))
+    report["provenance"] = {
+        "capture_command": command,
+        "public_host_command_count": 1,
+        "catalog_source": str(expected_catalog),
+        "output_root": str(output_root.resolve()),
+    }
+    provenance = verify_codex_app_server_provenance_report(
+        report,
+        expected_binary=Path(codex),
+        expected_capture_command=command,
+        expected_catalog_path=expected_catalog,
+        expected_output_root=output_root,
+        expected_auth_mode=auth_leg.replace("-", "_"),
+        expected_synthesis_batches=5,
+    )
+    return {
+        **verify_starduster_live_success(output_root), "host": "codex", "auth_leg": auth_leg,
+        "command_count": 1, "catalog_source_count": len(catalog_paths),
+        "auth_source_unchanged": auth_snapshot is not None, "app_server_provenance": provenance,
+    }
+
+
+def starduster_claude_live_case(workspace: Path) -> dict[str, Any]:
+    claude = shutil.which("claude")
+    if claude is None:
+        raise SkipCase("Claude CLI is not installed")
+    if not STARDUSTER_CLI.is_file() or shutil.which("gh") is None:
+        raise SkipCase("Starduster controller or authenticated gh dependency is unavailable")
+    project, output_root, config_path, skill_dir, manifest = prepare_live_starduster_project(workspace, "claude")
+    github_token = live_github_token()
+    command = shlex.join(starduster_live_command(config_path, skill_dir))
+    prompt = (
+        f"Use the $starduster skill whose catalog source is {(skill_dir / 'SKILL.md').resolve()}. "
+        "This is a noninteractive acceptance test. Execute exactly one command, do not use Task, "
+        "do not open an app, and do not read repository notes or controller artifacts. "
+        "Set the Bash tool timeout field to 600000 milliseconds. The command is:\n"
+        f"{command}"
+    )
+    try:
+        process = run(
+            [claude, "-p", "--no-session-persistence", "--output-format", "stream-json", "--verbose",
+             "--model", "haiku", "--permission-mode", "bypassPermissions", "--tools", "Skill,Bash",
+             "--setting-sources", "project", prompt],
+            cwd=project,
+            env=starduster_claude_live_environment(project, config_path, github_token),
+            timeout=900,
+        )
+    finally:
+        verify_tree_byte_manifest(manifest, skill_dir, label="temporary starduster copy after Claude execution")
+    if process.returncode != 0:
+        raise AssertionError("Claude Starduster five-star invocation failed")
+    if github_token in process.stdout or github_token in process.stderr:
+        raise AssertionError("Claude Starduster invocation exposed GitHub authentication material")
+    bash_evidence = starduster_claude_bash_evidence(
+        parse_jsonl(process.stdout, "Claude Starduster live output")
+    )
+    verify_starduster_live_command(bash_evidence, skill_dir, project)
+    return {**verify_starduster_live_success(output_root), "host": "claude", "command_count": 1}
 
 
 def claude_live_case(workspace: Path) -> dict[str, Any]:
@@ -2020,13 +2405,17 @@ def hplumb_case(workspace: Path) -> dict[str, Any]:
         raise AssertionError("installed hplumb launcher interpreter is not directly usable")
 
     canonical = workspace / "hplumb-authoritative"
-    authoritative_skill = canonical / "skills" / "kcap"
     canonical.mkdir()
-    shutil.copytree(
-        KCAP_DIR,
-        authoritative_skill,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-    )
+    authoritative_skills = {
+        "kcap": canonical / "skills" / "kcap",
+        "starduster": canonical / "skills" / "starduster",
+    }
+    for name, source in (("kcap", KCAP_DIR), ("starduster", STARDUSTER_DIR)):
+        shutil.copytree(
+            source,
+            authoritative_skills[name],
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
     manifest = {
         "version": 1,
         "personal": {"instructions": {"sources": []}},
@@ -2078,56 +2467,71 @@ def hplumb_case(workspace: Path) -> dict[str, Any]:
         )
     apply_result = parse_json(process.stdout, "hplumb programmatic result")
 
-    source_files = sorted(
-        path.relative_to(authoritative_skill)
-        for path in authoritative_skill.rglob("*")
-        if path.is_file()
-    )
-    destinations = {
-        "claude": isolated_home / ".claude" / "skills" / "kcap",
-        "codex": isolated_home / ".agents" / "skills" / "kcap",
-    }
     required = {
-        Path("SKILL.md"),
-        Path("agents/openai.yaml"),
-        Path("references/runtime-claude.md"),
-        Path("references/runtime-codex.md"),
-        Path("scripts/kcap.py"),
-        Path("schemas/standard.json"),
-        Path("schemas/deep.json"),
-        Path("schemas/full.json"),
+        "kcap": {
+            Path("SKILL.md"), Path("agents/openai.yaml"),
+            Path("references/runtime-claude.md"), Path("references/runtime-codex.md"),
+            Path("scripts/kcap.py"), Path("schemas/standard.json"),
+            Path("schemas/deep.json"), Path("schemas/full.json"),
+        },
+        "starduster": {
+            Path("SKILL.md"), Path("agents/openai.yaml"),
+            Path("references/runtime-claude.md"), Path("references/runtime-codex.md"),
+            Path("scripts/starduster.py"), Path("scripts/starduster_render.py"),
+            Path("schemas/starduster-synthesis.schema.json"),
+        },
     }
-    if not required.issubset(set(source_files)):
-        raise AssertionError("authoritative kcap package lacks required portable files")
-    for host, destination in destinations.items():
-        for relative in source_files:
-            copied = destination / relative
-            if not copied.is_file() or copied.read_bytes() != (authoritative_skill / relative).read_bytes():
-                raise AssertionError(f"hplumb changed or omitted {relative} for {host}")
-        validator = run(
-            [sys.executable, str(PORTABLE_VALIDATOR), str(destination), "--json"],
-            cwd=workspace,
+    copied_file_count = 0
+    destinations: dict[str, dict[str, Path]] = {}
+    for name, authoritative_skill in authoritative_skills.items():
+        source_files = sorted(
+            path.relative_to(authoritative_skill)
+            for path in authoritative_skill.rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
         )
-        if validator.returncode != 0:
-            raise AssertionError(
-                f"hplumb {host} copy failed portable validation: "
-                + abbreviated(validator.stderr or validator.stdout)
+        if not required[name].issubset(set(source_files)):
+            raise AssertionError(f"authoritative {name} package lacks required portable files")
+        copied_file_count += len(source_files)
+        destinations[name] = {
+            "claude": isolated_home / ".claude" / "skills" / name,
+            "codex": isolated_home / ".agents" / "skills" / name,
+        }
+        for host, destination in destinations[name].items():
+            for relative in source_files:
+                copied = destination / relative
+                if not copied.is_file() or copied.read_bytes() != (authoritative_skill / relative).read_bytes():
+                    raise AssertionError(f"hplumb changed or omitted {name}/{relative} for {host}")
+            validator = run(
+                [sys.executable, str(PORTABLE_VALIDATOR), str(destination), "--json"],
+                cwd=workspace,
             )
+            if validator.returncode != 0:
+                raise AssertionError(
+                    f"hplumb {host} {name} copy failed portable validation: "
+                    + abbreviated(validator.stderr or validator.stdout)
+                )
     version = run([hplumb, "--version"], timeout=10)
     return {
         "version": abbreviated(version.stdout or version.stderr, 200),
         "plan_id": apply_result.get("plan_id"),
-        "copied_file_count": len(source_files),
-        "destinations": {host: str(path) for host, path in destinations.items()},
+        "copied_file_count": copied_file_count,
+        "destinations": {
+            name: {host: str(path) for host, path in host_paths.items()}
+            for name, host_paths in destinations.items()
+        },
     }
 
 
 LIFECYCLE_TOOLKITS = ("research-toolkit", "workflow-toolkit")
 LIFECYCLE_BASELINE_VERSIONS = {
-    "research-toolkit": "0.4.4",
-    "workflow-toolkit": "0.8.3",
+    "research-toolkit": "0.5.0",
+    "workflow-toolkit": "0.9.0",
 }
-LIFECYCLE_BASELINE_COMMIT = "e3bdcef90c51c40f2d7321af25745a79df8569f4"
+LIFECYCLE_UPDATED_VERSIONS = {
+    "research-toolkit": "0.6.0",
+    "workflow-toolkit": "0.9.0",
+}
+LIFECYCLE_BASELINE_COMMIT = "9ded73e5d67c0d5769dc6cf719a4d550e7a7a215"
 
 
 def plugin_versions(plugin_root: Path) -> dict[str, str]:
@@ -2234,8 +2638,8 @@ def claude_plugin_lifecycle_case(workspace: Path) -> dict[str, Any]:
     post_merge_checkout = workspace / "simulated-post-merge-checkout"
     copy_lifecycle_plugins(post_merge_checkout)
     updated_versions = plugin_versions(post_merge_checkout)
-    if updated_versions == LIFECYCLE_BASELINE_VERSIONS:
-        raise AssertionError("lifecycle fixture must stage a version newer than its immutable baseline")
+    if updated_versions != LIFECYCLE_UPDATED_VERSIONS:
+        raise AssertionError(f"lifecycle fixture has unexpected updated versions: {updated_versions!r}")
     previous_release = workspace / "immutable-previous-release"
     extract_lifecycle_baseline(previous_release)
     previous_versions = plugin_versions(previous_release)
@@ -2326,6 +2730,20 @@ def claude_plugin_lifecycle_case(workspace: Path) -> dict[str, Any]:
         raise AssertionError(f"updated cache lacks the portable kcap package: {cached}")
     if re.search(r"(?m)^triggers\s*:", cached_skill.read_text(encoding="utf-8")):
         raise AssertionError("updated Claude plugin cache retained forbidden kcap triggers")
+    cached_starduster = research_cache_root / "skills" / "starduster"
+    required_starduster_files = (
+        cached_starduster / "SKILL.md",
+        cached_starduster / "agents" / "openai.yaml",
+        cached_starduster / "references" / "runtime-claude.md",
+        cached_starduster / "references" / "runtime-codex.md",
+        cached_starduster / "scripts" / "starduster.py",
+        cached_starduster / "scripts" / "starduster_render.py",
+        cached_starduster / "schemas" / "starduster-synthesis.schema.json",
+    )
+    if not all(path.is_file() for path in required_starduster_files):
+        raise AssertionError(f"updated cache lacks the portable starduster package: {cached_starduster}")
+    if re.search(r"(?m)^triggers\s*:", (cached_starduster / "SKILL.md").read_text(encoding="utf-8")):
+        raise AssertionError("updated Claude plugin cache retained forbidden starduster triggers")
     workflow_cache_root = cache_roots["workflow-toolkit"]
     workflow_cached = workflow_cache_root / "skills" / "plugin-qa"
     required_plugin_qa_files = (
@@ -2343,7 +2761,10 @@ def claude_plugin_lifecycle_case(workspace: Path) -> dict[str, Any]:
             label=f"updated {toolkit} plugin cache",
         )
     details_sources = {
-        "research-toolkit": assert_detail_inventory("research-toolkit", "kcap"),
+        "research-toolkit": {
+            "kcap": assert_detail_inventory("research-toolkit", "kcap"),
+            "starduster": assert_detail_inventory("research-toolkit", "starduster"),
+        },
         "workflow-toolkit": assert_detail_inventory("workflow-toolkit", "plugin-qa"),
     }
     return {
@@ -2351,6 +2772,7 @@ def claude_plugin_lifecycle_case(workspace: Path) -> dict[str, Any]:
         "updated_versions": new_versions,
         "staged_post_merge_checkout": str(post_merge_checkout),
         "research_cache_path": str(cached),
+        "research_starduster_cache_path": str(cached_starduster),
         "workflow_cache_path": str(workflow_cached),
         "cache_provenance": {toolkit: str(cache_root) for toolkit, cache_root in cache_roots.items()},
         "details_sources": details_sources,
@@ -2398,7 +2820,7 @@ def main() -> int:
         args.fixtures_only = True
     workspace = Path(tempfile.mkdtemp(prefix="robot-tools-acceptance-"))
     harness = Harness(workspace)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         futures = [
             executor.submit(run_fixture_group, harness, "portable", add_portable_cases),
             executor.submit(run_fixture_group, harness, "kcap", add_kcap_cases),
@@ -2423,19 +2845,29 @@ def main() -> int:
         harness.case("claude.plugin.lifecycle", lambda: claude_plugin_lifecycle_case(workspace))
     if args.live:
         harness.case("live.claude.kcap-youtube", lambda: claude_live_case(workspace))
+        harness.case("live.claude.starduster-five-stars", lambda: starduster_claude_live_case(workspace))
         requested_legs = requested_codex_live_auth_legs()
         if "oauth" not in requested_legs:
             raise AssertionError("Codex OAuth live leg must always be requested")
         harness.case("live.codex.kcap-youtube", lambda: codex_live_case(workspace, auth_leg="oauth"))
+        harness.case("live.codex.starduster-five-stars", lambda: starduster_codex_live_case(workspace))
         if "api-key" in requested_legs:
             api_key = os.environ["RESEARCH_TOOLKIT_TEST_OPENAI_API_KEY"]
             harness.case(
                 "live.codex.kcap-youtube-api-key",
                 lambda: codex_live_case(workspace, auth_leg="api-key", api_key=api_key),
             )
+            harness.case(
+                "live.codex.starduster-five-stars-api-key",
+                lambda: starduster_codex_live_case(workspace, auth_leg="api-key", api_key=api_key),
+            )
         else:
             harness.case(
                 "live.codex.kcap-youtube-api-key",
+                lambda: requested_codex_live_result("api-key", "not_requested"),
+            )
+            harness.case(
+                "live.codex.starduster-five-stars-api-key",
                 lambda: requested_codex_live_result("api-key", "not_requested"),
             )
     if args.hplumb_verify:

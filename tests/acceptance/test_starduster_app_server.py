@@ -25,7 +25,7 @@ SYNTHESIS_RESULT = [
         "full_name": "fixture/repository",
         "html_url": "https://github.com/fixture/repository",
         "category": "Developer Tools",
-        "normalized_topics": ["fixture"],
+        "tags": ["developer-tools"],
         "summary": "A synthetic structured fixture summary.",
         "key_features": ["One", "Two", "Three"],
         "similar_to": [],
@@ -209,7 +209,7 @@ class StardusterAppServerAcceptanceTests(unittest.TestCase):
         self.assertEqual(failure.exception.code, "codex_auth_error")
         self.assertFalse(self.log_path.exists())
 
-    def test_private_oauth_state_is_removed_on_capability_and_revalidation_failures(self) -> None:
+    def test_private_oauth_state_is_removed_and_a_later_desktop_refresh_is_allowed(self) -> None:
         project = self.root / "cleanup-project"
         project.mkdir()
         codex_home = self.root / "cleanup-auth-home"
@@ -249,10 +249,10 @@ class StardusterAppServerAcceptanceTests(unittest.TestCase):
             self.starduster, "child_environment", return_value=self.environment()
         ), patch.object(
             self.starduster, "verify_auth_snapshot", side_effect=[None, changed]
-        ):
-            with self.assertRaises(self.starduster.StardusterError) as failure:
-                self.starduster.codex_synthesize([star], "fast", self.workspace, project)
-        self.assertEqual(failure.exception.code, "codex_auth_error")
+        ) as verify:
+            result = self.starduster.codex_synthesize([star], "fast", self.workspace, project)
+        self.assertEqual(result, SYNTHESIS_RESULT)
+        verify.assert_called_once()
         self.assertEqual(list(self.workspace.rglob("auth.json")), [])
 
     def test_protocol_errors_include_mismatched_ids_unknown_requests_and_unknown_notifications(self) -> None:
@@ -303,7 +303,7 @@ class StardusterAppServerAcceptanceTests(unittest.TestCase):
         with self.assertRaises(self.starduster.SynthesisValidationError):
             self.starduster.validate_synthesis_payload([{"full_name": "fixture/repository"}], ["fixture/repository"])
         duplicate_values = json.loads(json.dumps(SYNTHESIS_RESULT))
-        duplicate_values[0]["normalized_topics"] = ["fixture", "fixture"]
+        duplicate_values[0]["tags"] = ["developer-tools", "developer-tools"]
         with self.assertRaises(self.starduster.SynthesisValidationError):
             self.starduster.validate_synthesis_payload(duplicate_values, ["fixture/repository"])
 

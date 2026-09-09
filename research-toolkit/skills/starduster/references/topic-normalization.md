@@ -1,7 +1,9 @@
 # Topic Normalization Reference
 
-Reference document for starduster category taxonomy, static topic mapping table,
-normalization rules, and controller classification fallback.
+Reference document for Starduster's category taxonomy, static GitHub-topic mapping
+table, and deterministic source-topic normalization. GitHub topics and Obsidian tags
+are intentionally separate: topics retain GitHub metadata and power local topic-hub
+links, while model-selected tags support broader Obsidian discovery.
 
 ## Fixed Category List
 
@@ -29,9 +31,10 @@ Exactly one category is assigned per repo. The controller must choose from this 
 
 ## Static Topic Mapping Table
 
-This table maps common GitHub topics to normalized topic names and their default category.
-The controller uses **exact matching** against this table first before applying
-normalization rules or controller classification.
+This table documents common GitHub-topic aliases and their usual categories for human
+reference. The controller does not remap source topics through it: it preserves each
+valid GitHub slug so the outbound topic URL still identifies the repository owner's
+original topic. Synthesis cannot invent, remove, or replace a GitHub topic.
 
 | Raw Topic (GitHub) | Normalized Topic | Default Category |
 |---------------------|-----------------|------------------|
@@ -166,32 +169,17 @@ name in the static table. Otherwise, keep the digits.
 
 ---
 
-## Controller Classification Fallback
+## Source preservation and category fallback
 
-For topics that cannot be normalized via the static table or rules, the controller
-uses the following deterministic classification rules:
+For every GitHub topic, the controller lowercases and validates the source slug, removes
+duplicates while preserving order, and retains the resulting valid topic. It does not
+use repository prose, the alias table, or model judgment to alter the source-topic list.
+An invalid value is omitted rather than replaced with an invented one.
 
-1. **Read the topic in context** of the repo's description, language, and other topics
-2. **Select the most appropriate category** from the fixed list
-3. **Generate a normalized topic name** following the rules above
-4. **Do NOT invent new categories** — use "Uncategorized" if truly ambiguous
-
-### Internal Classification Rules
-
-For each unknown topic, the controller applies this classification pattern:
-
-```
-For each unknown topic, consider:
-- What technology domain does this topic belong to?
-- Which fixed category best matches?
-- What would be a concise, hyphenated, lowercase name for this concept?
-
-Examples of good normalization:
-  "state management" -> "state-management" -> Frontend & UI
-  "web scraping" -> "web-scraping" -> Data & Databases
-  "code review" -> "code-review" -> Developer Tools
-  "load balancing" -> "load-balancing" -> Cloud & Infrastructure
-```
+Category selection remains distinct from source-topic preservation: it must use the
+fixed category list, with `Uncategorized` when no category is sufficiently supported.
+Neither a category nor a local discovery tag changes the GitHub topics recorded on the
+note.
 
 ---
 
@@ -209,3 +197,13 @@ Examples of good normalization:
 - **Existing hubs below threshold:** Stop regenerating the hub but do NOT delete the
   existing file. It becomes stale but harmless.
 - **Existing hubs at or above threshold:** Regenerate entirely (hub notes contain no user content)
+
+## Obsidian tag boundary
+
+The normal `tags` property contains `starduster`, one to five model-selected semantic
+discovery terms, and any user-added tags. Synthesis derives its terms primarily from the
+gathered repository description and README content; GitHub topics are supporting context,
+not a tag list. A term may overlap when the content independently supports it. The
+controller tracks its generated terms separately so a refresh can replace stale generated
+tags without deleting user additions. This tracking is controller metadata, not another
+user-facing taxonomy.

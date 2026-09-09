@@ -65,7 +65,9 @@ author: "Author"
 domain: "example.com"
 description: "One-line description"
 tags:
-  - topic
+  - kcap
+  - broad-topic
+  - specific-topic
 ---
 ```
 
@@ -76,12 +78,36 @@ Full mode omits `description`.
 Filenames are `YYYY-MM-DD-<slug>.md`. Slugs are lowercase ASCII, hyphenated, at most
 50 characters, and fall back to `capture-<timestamp>`.
 
+When `vault_name` is configured, success metadata may include an `obsidian_uri`. It is
+emitted only when the controller can prove the written note is below the configured
+output root and has a non-empty vault-relative path. A retained `vault_name` therefore
+does not guarantee a URI: an exact configured path can legitimately suppress it rather
+than inventing a vault-relative location.
+
 ## Validation and sanitization
 
 - Require a non-empty single-line title and at least one valid tag.
-- Require TL;DR to contain no more than 30 words.
+- For standard and deep captures, ask for an ordinary 35-50 word TL;DR. Accuracy and
+  effectiveness take priority over hitting an exact length.
+- Enforce a hidden deterministic TL;DR ceiling of 75 words. Do not present that ceiling
+  as the ordinary model target. The first two synthesis attempts use the ordinary policy;
+  only after two responses are too long does a third, explicit repair request state the
+  ceiling. If that repair is still too long, fail the capture. Full mode remains
+  unchanged: it has no TL;DR target or repair path and keeps its normal two-attempt
+  validation behavior.
 - Require full cleaned content to contain at least 50 words.
-- Permit tags only when they match `^[a-z0-9]+(-[a-z0-9]+)*$`.
+- The renderer always prepends the deterministic `kcap` provenance tag. This tag is
+  separate from the synthesis tag limit and is emitted exactly once even when defaults
+  or model output also contain it.
+- Ask for 1-5 grounded, topical tags, favoring a useful mix of established higher-level
+  subjects and specific topics. For example, a United States Civil War battle may use
+  `us-civil-war`, `battle`, and `military-history` rather than only people, dates, or a
+  campaign name. Deterministic structural policy retains only
+  unique, ordered tags that match `^[a-z0-9]+(-[a-z0-9]+)*$`, are at most 48 characters,
+  are not digits only, and are not exact generic labels such as `article`, `video`,
+  `tweet`, `summary`, or `content`; it rejects zero retained tags or more than five.
+  This structural filtering cannot establish semantic relevance, so the model prompt and
+  review remain responsible for topical grounding.
 - Remove null/control characters, Obsidian Templater blocks, Dataview inline fields,
   and HTML script blocks from generated prose.
 - Keep model-proposed reference URLs only when they pass HTTPS syntax and

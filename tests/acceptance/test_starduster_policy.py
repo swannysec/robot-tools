@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from unittest.mock import patch
 from pathlib import Path
 from typing import Any
@@ -73,6 +74,54 @@ class StardusterPolicyAcceptanceTests(unittest.TestCase):
         legacy.parent.mkdir(parents=True, exist_ok=True)
         legacy.write_text(document, encoding="utf-8")
 
+    def test_claude_synthesis_uses_a_model_operation_timeout(self) -> None:
+        import importlib.util
+
+        name = "starduster_claude_timeout_{}".format(uuid.uuid4().hex)
+        scripts = str(STARDUSTER_CLI.parent)
+        sys.path.insert(0, scripts)
+        try:
+            spec = importlib.util.spec_from_file_location(name, STARDUSTER_CLI)
+            assert spec and spec.loader
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        finally:
+            sys.path.remove(scripts)
+
+        record = {
+            "full_name": "fixture/repository",
+            "html_url": "https://github.com/fixture/repository",
+            "category": "Developer Tools",
+            "tags": ["developer-tools"],
+            "summary": "Synthetic summary.",
+            "key_features": ["One", "Two", "Three"],
+            "similar_to": [],
+            "use_case": "Exercise the Claude synthesis timeout.",
+            "maturity": "active",
+            "author_display": "Fixture",
+        }
+        star = {"full_name": "fixture/repository", "repo": {}, "readme_text": "Synthetic input."}
+        calls: list[dict[str, object]] = []
+
+        def fake_run(command, **kwargs):
+            calls.append({"command": command, **kwargs})
+            if "--help" in command:
+                help_text = " ".join(module.CLAUDE_REQUIRED_OPTIONS)
+                return subprocess.CompletedProcess(command, 0, help_text, "")
+            stdout = json.dumps({"structured_output": {"synthesis": [record]}})
+            return subprocess.CompletedProcess(command, 0, stdout, "")
+
+        with (
+            patch.object(module.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(module, "run_process", side_effect=fake_run),
+        ):
+            result = module.claude_synthesize([star], "fast", self.root)
+
+        synthesis_calls = [call for call in calls if "--help" not in call["command"]]
+        self.assertEqual(len(synthesis_calls), 1)
+        self.assertEqual(synthesis_calls[0].get("timeout"), 300)
+        self.assertEqual(result, [record])
+
     def write_executable(self, name: str, source: str) -> Path:
         path = self.bin_dir / name
         path.write_text(source, encoding="utf-8")
@@ -114,7 +163,7 @@ class StardusterPolicyAcceptanceTests(unittest.TestCase):
             "if [ \"$1\" = --help ]; then printf '%s\\n' '--safe-mode --no-session-persistence --no-chrome --tools --mcp-config --strict-mcp-config --json-schema --permission-mode'; exit 0; fi\n"
             "if [ \"${STARDUSTER_FIXTURE_FAILURE:-}\" = synthesis ]; then exit 42; fi\n"
             "if [ \"${STARDUSTER_FIXTURE_FAILURE:-}\" = validation ]; then printf '%s\\n' '{\"not\":\"a valid synthesis array\"}'; exit 0; fi\n"
-            "result='[{\"full_name\":\"fixture/repository\",\"html_url\":\"https://github.com/fixture/repository\",\"category\":\"Developer Tools\",\"normalized_topics\":[\"fixture\"],\"summary\":\"" + RAW_MODEL + "\",\"key_features\":[\"fixture\",\"portable\",\"safe\"],\"similar_to\":[],\"use_case\":\"Fixture use case.\",\"maturity\":\"active\",\"author_display\":\"Fixture\"}]'\n"
+            "result='[{\"full_name\":\"fixture/repository\",\"html_url\":\"https://github.com/fixture/repository\",\"category\":\"Developer Tools\",\"tags\":[\"developer-tools\"],\"summary\":\"" + RAW_MODEL + "\",\"key_features\":[\"fixture\",\"portable\",\"safe\"],\"similar_to\":[],\"use_case\":\"Fixture use case.\",\"maturity\":\"active\",\"author_display\":\"Fixture\"}]'\n"
             "output=''\n"
             "while [ \"$#\" -gt 0 ]; do if [ \"$1\" = --output-last-message ]; then shift; output=$1; fi; shift; done\n"
             "if [ -n \"$output\" ]; then printf '%s\\n' \"$result\" > \"$output\"; fi\n"
@@ -126,7 +175,7 @@ class StardusterPolicyAcceptanceTests(unittest.TestCase):
                 "full_name": "fixture/repository",
                 "html_url": "https://github.com/fixture/repository",
                 "category": "Developer Tools",
-                "normalized_topics": ["fixture"],
+                "tags": ["developer-tools"],
                 "summary": RAW_MODEL,
                 "key_features": ["fixture", "portable", "safe"],
                 "similar_to": [],
@@ -202,6 +251,41 @@ class StardusterPolicyAcceptanceTests(unittest.TestCase):
             process.returncode,
             expected_returncode,
             "sync stderr:\n{}\nstdout:\n{}".format(process.stderr, process.stdout),
+        )
+        stream = process.stdout if expected_returncode == 0 else process.stderr
+        try:
+            payload = json.loads(stream)
+        except json.JSONDecodeError as exc:
+            self.fail("controller must emit one JSON envelope: {}\n{}".format(exc, stream))
+        self.assertIsInstance(payload, dict)
+        return process, payload
+
+    def controller(
+        self,
+        command: str,
+        *arguments: str,
+        runtime: str | None = "claude",
+        expected_returncode: int = 0,
+        **environment: str,
+    ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+        """Invoke a public controller command and require its JSON envelope."""
+        selected_environment = self.environment(runtime or "")
+        if runtime is None:
+            selected_environment.pop("RESEARCH_TOOLKIT_RUNTIME", None)
+        selected_environment.update(environment)
+        process = subprocess.run(
+            [sys.executable, str(STARDUSTER_CLI), command, *arguments],
+            cwd=ROOT,
+            env=selected_environment,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(
+            process.returncode,
+            expected_returncode,
+            "{} stderr:\n{}\nstdout:\n{}".format(command, process.stderr, process.stdout),
         )
         stream = process.stdout if expected_returncode == 0 else process.stderr
         try:
@@ -310,7 +394,8 @@ class StardusterPolicyAcceptanceTests(unittest.TestCase):
         self.assertFalse(runtime_log.exists())
         self.assertNotIn("api /user/starred", gh_log.read_text(encoding="utf-8"))
         self.assertEqual(self.workspaces(), [])
-        self.assertFalse((self.output / "catalog").exists())
+        self.assertTrue((self.output / "catalog").is_dir())
+        self.assertEqual(list((self.output / "catalog").iterdir()), [])
 
         process, payload = self.sync(
             "--confirm-rate",
@@ -373,12 +458,14 @@ class StardusterPolicyAcceptanceTests(unittest.TestCase):
         render_log = self.root / "render.runtime.log"
         process, payload = self.sync(
             "--preserve-on-failure",
+            expected_returncode=1,
             STARDUSTER_FIXTURE_RUNTIME_LOG=str(render_log),
         )
-        self.assert_success(process, payload)
-        self.assertTrue(render_log.exists(), "the collision check must occur after synthesis")
-        self.assertTrue((blocked_note.parent / "fixture-repository-2.md").is_file())
+        self.assert_error(process, payload)
+        self.assertEqual(payload["error"]["code"], "output_error")
+        self.assertFalse(render_log.exists(), "unsafe catalog structure must fail before synthesis")
         self.assertEqual(self.workspaces(), [])
+        blocked_note.rmdir()
 
         process, payload = self.sync(
             "--preserve-on-failure",
@@ -390,28 +477,21 @@ class StardusterPolicyAcceptanceTests(unittest.TestCase):
         self.assertNotIn("recovery_path", payload["error"].get("details", {}))
         self.assertEqual(self.workspaces(), [])
 
-    def test_renderer_exception_cleans_or_returns_a_recovery_path(self) -> None:
-        """An ordinary renderer failure must not bypass private-workspace cleanup."""
+    def test_invalid_output_structure_fails_before_workspace_creation(self) -> None:
         blocked_repos = self.output / "catalog" / "repos"
         blocked_repos.parent.mkdir(parents=True)
         blocked_repos.write_text("not a directory", encoding="utf-8")
 
         process, payload = self.sync(expected_returncode=1)
         self.assert_error(process, payload)
-        self.assertEqual(payload["error"]["code"], "internal_error")
+        self.assertEqual(payload["error"]["code"], "output_error")
         self.assertEqual(self.workspaces(), [])
 
         process, payload = self.sync("--preserve-on-failure", expected_returncode=1)
         self.assert_error(process, payload)
-        self.assertEqual(payload["error"]["code"], "internal_error")
-        paths = self.workspaces()
-        try:
-            self.assertEqual(len(paths), 1)
-            self.assertEqual(Path(payload["error"]["details"]["recovery_path"]).resolve(), paths[0].resolve())
-            self.assertEqual(stat.S_IMODE(paths[0].stat().st_mode), 0o700)
-        finally:
-            for path in paths:
-                shutil.rmtree(path)
+        self.assertEqual(payload["error"]["code"], "output_error")
+        self.assertNotIn("recovery_path", payload["error"].get("details", {}))
+        self.assertEqual(self.workspaces(), [])
 
     def test_keyboard_interrupt_cleans_the_private_workspace(self) -> None:
         process, payload = self.sync(
@@ -527,6 +607,108 @@ class StardusterPolicyAcceptanceTests(unittest.TestCase):
         process, payload = self.sync(expected_returncode=1, RESEARCH_TOOLKIT_CONFIG="")
         self.assert_error(process, payload)
         self.assertEqual(payload["error"]["code"], "missing_legacy_section")
+
+    def test_first_run_shared_config_without_starduster_requires_destination_before_dependencies(self) -> None:
+        user_config = self.home / ".config" / "robot-tools" / "research-toolkit.json"
+        user_config.parent.mkdir(parents=True)
+        user_config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kcap": {"output_path": "/existing/kcap", "subfolder": "."},
+                    "unrelated": {"enabled": True},
+                }
+            ),
+            encoding="utf-8",
+        )
+        gh_log = self.root / "first-run-gh.log"
+        runtime_log = self.root / "first-run-runtime.log"
+
+        process, payload = self.sync(
+            "--limit", "0",
+            expected_returncode=1,
+            RESEARCH_TOOLKIT_CONFIG="",
+            STARDUSTER_FIXTURE_GH_LOG=str(gh_log),
+            STARDUSTER_FIXTURE_RUNTIME_LOG=str(runtime_log),
+        )
+
+        self.assert_error(process, payload)
+        self.assertEqual(payload["error"]["code"], "output_path_required")
+        self.assertEqual(
+            payload["error"]["details"]["suggested_path"],
+            str(self.home / "obsidian-vault" / "GitHub Stars" / "tools" / "github"),
+        )
+        self.assertFalse(gh_log.exists(), "destination selection must precede GitHub access")
+        self.assertFalse(runtime_log.exists(), "destination selection must precede synthesis")
+
+    def test_configure_merges_starduster_destination_without_changing_other_valid_settings(self) -> None:
+        user_config = self.home / ".config" / "robot-tools" / "research-toolkit.json"
+        user_config.parent.mkdir(parents=True)
+        original = {
+            "schema_version": 1,
+            "kcap": {"output_path": "/existing/kcap", "subfolder": ".", "default_tags": ["kcap"]},
+            "unrelated": {"enabled": True},
+        }
+        user_config.write_text(json.dumps(original), encoding="utf-8")
+        destination = self.root / "catalog with spaces"
+
+        process, payload = self.controller(
+            "configure", "--output-dir", str(destination), expected_returncode=0,
+            RESEARCH_TOOLKIT_CONFIG="",
+        )
+
+        self.assertTrue(payload["ok"], process.stderr)
+        self.assertEqual(stat.S_IMODE(user_config.stat().st_mode), 0o600)
+        updated = json.loads(user_config.read_text(encoding="utf-8"))
+        self.assertEqual(updated["kcap"], original["kcap"])
+        self.assertEqual(updated["unrelated"], original["unrelated"])
+        self.assertEqual(updated["starduster"]["output_path"], str(destination))
+        self.assertEqual(updated["starduster"]["subfolder"], ".")
+
+    def test_output_override_is_one_run_only_and_selected_config_remains_fail_closed_and_immutable(self) -> None:
+        selected = self.root / "selected.json"
+        selected.write_text(
+            json.dumps({"schema_version": 1, "kcap": {"output_path": "/existing/kcap", "subfolder": "."}}),
+            encoding="utf-8",
+        )
+        before = selected.read_bytes()
+        override = self.root / "one-run-catalog"
+
+        process, payload = self.sync(
+            "--limit", "0", "--output-dir", str(override),
+            RESEARCH_TOOLKIT_CONFIG=str(selected),
+        )
+        self.assert_success(process, payload, override)
+        self.assertEqual(selected.read_bytes(), before)
+
+        process, payload = self.controller(
+            "configure", "--output-dir", str(self.root / "persistent-catalog"),
+            expected_returncode=1,
+            RESEARCH_TOOLKIT_CONFIG=str(selected),
+        )
+        self.assert_error(process, payload)
+        self.assertEqual(payload["error"]["code"], "config_selected")
+        self.assertEqual(selected.read_bytes(), before)
+
+        process, payload = self.sync(
+            "--limit", "0", expected_returncode=1, RESEARCH_TOOLKIT_CONFIG=str(selected)
+        )
+        self.assert_error(process, payload)
+        self.assertEqual(payload["error"]["code"], "output_path_required")
+
+    def test_noninteractive_missing_destination_is_the_same_machine_readable_first_run_error(self) -> None:
+        user_config = self.home / ".config" / "robot-tools" / "research-toolkit.json"
+        user_config.parent.mkdir(parents=True)
+        user_config.write_text(json.dumps({"schema_version": 1, "kcap": {}}), encoding="utf-8")
+
+        process, payload = self.sync(
+            "--limit", "0", expected_returncode=1,
+            RESEARCH_TOOLKIT_CONFIG="",
+            RESEARCH_TOOLKIT_NONINTERACTIVE="1",
+        )
+
+        self.assert_error(process, payload)
+        self.assertEqual(payload["error"]["code"], "output_path_required")
 
     def test_runtime_is_fail_closed_uses_only_selected_adapter_and_scrubs_ambient_secrets(self) -> None:
         for runtime in ("claude", "codex"):
@@ -679,7 +861,8 @@ class StardusterPolicyAcceptanceTests(unittest.TestCase):
         evidence = json.loads(report.read_text(encoding="utf-8"))
         self.assertEqual(evidence["synthesis_batches"], 0)
         self.assertEqual(evidence["auth"], {
-            "mode": "oauth", "source_unchanged": True, "private_copy_removed": True,
+            "mode": "oauth", "source_unchanged": True,
+            "auth_copy_boundary_verified": True, "private_copy_removed": True,
         })
         self.assertEqual(list(self.work_root.rglob("auth.json")), [])
 

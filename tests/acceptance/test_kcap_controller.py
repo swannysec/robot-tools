@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 KCAP_CLI = ROOT / "research-toolkit" / "skills" / "kcap" / "scripts" / "kcap.py"
 FAKE_CODEX_APP_SERVER = ROOT / "tests" / "fixtures" / "codex-app-server" / "fake_codex_app_server.py"
 YOUTUBE_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+ARTICLE_URL = "https://example.com/fixture-article"
 RAW_MARKER = "RAW_EXTRACTION_MUST_NEVER_REACH_CONTROLLER_JSON"
 CHILD_MARKER = "RAW_CHILD_SYNTHESIS_MUST_NEVER_REACH_CONTROLLER_JSON"
 
@@ -35,6 +36,21 @@ STANDARD_SYNTHESIS = {
     "tags": ["fixture"],
     "chapters": [],
     "thread": [],
+}
+DEEP_SYNTHESIS = {
+    **STANDARD_SYNTHESIS,
+    "critical_analysis": "The fixture records the selected isolated runtime.",
+    "counterarguments": ["The synthetic input does not model a live source."],
+    "open_questions": ["Which live sources need this capture mode?"],
+    "connections": ["The controller keeps model routing separate from extraction."],
+    "action_items": ["Record the selected model and effort."],
+}
+FULL_SYNTHESIS = {
+    "title": "Fixture Article Capture",
+    "author": "Fixture Author",
+    "published": "2026-08-31",
+    "tags": ["fixture"],
+    "cleaned_content": " ".join(["article"] * 50),
 }
 SYNTHETIC_ACCOUNT_DOCUMENT = (
     b'{"auth_mode":"chatgpt","tokens":{"access_token":"synthetic-access",'
@@ -83,6 +99,17 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
         path.write_text(source, encoding="utf-8")
         path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
 
+    def _write_codex_app_server_fixture(self, name: str, synthesis: dict[str, Any]) -> Path:
+        self._write_executable(
+            name,
+            "#!/bin/sh\n"
+            "export KCAP_APP_SERVER_FIXTURE_LOG='" + str(self.root / (name + "-rpc.log")) + "'\n"
+            "export KCAP_APP_SERVER_FIXTURE_CLEANUP='" + str(self.root / (name + "-cleanup.log")) + "'\n"
+            "export KCAP_APP_SERVER_FIXTURE_RESULT='" + json.dumps(synthesis, separators=(",", ":")) + "'\n"
+            "exec python3 '" + str(FAKE_CODEX_APP_SERVER) + "' \"$@\"\n",
+        )
+        return self.bin_dir / name
+
     def _write_private_fixture(self, path: Path, content: bytes) -> None:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb") as handle:
@@ -116,6 +143,28 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
             "if [ \"$1\" = \"--dump-single-json\" ]; then\n"
             "  printf '%s\\n' '{\"title\":\"Fixture Video\",\"channel\":\"Fixture Channel\",\"duration_string\":\"10:00\",\"upload_date\":\"20260831\",\"chapters\":[]}'\n"
             "fi\n",
+        )
+        self._write_executable(
+            "curl",
+            "#!/bin/sh\n"
+            "headers=''\n"
+            "body=''\n"
+            "while [ \"$#\" -gt 0 ]; do\n"
+            "  case \"$1\" in\n"
+            "    -D) shift; headers=$1 ;;\n"
+            "    -o) shift; body=$1 ;;\n"
+            "  esac\n"
+            "  shift\n"
+            "done\n"
+            "printf '%s\\n' 'HTTP/1.1 200 OK' > \"$headers\"\n"
+            "printf '%s\\n' '<html><body>fixture article</body></html>' > \"$body\"\n"
+            "printf '200'\n",
+        )
+        self._write_executable(
+            "trafilatura",
+            "#!/bin/sh\n"
+            "i=0\n"
+            "while [ \"$i\" -lt 80 ]; do printf 'article '; i=$((i + 1)); done\n",
         )
         envelope = json.dumps({"structured_output": STANDARD_SYNTHESIS}, separators=(",", ":"))
         self._write_executable(
@@ -213,10 +262,26 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
         expected_returncode: int = 0,
         **environment: str,
     ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
-        if runtime == "codex":
+        return self._capture_url(
+            YOUTUBE_URL,
+            runtime,
+            *arguments,
+            expected_returncode=expected_returncode,
+            **environment,
+        )
+
+    def _capture_url(
+        self,
+        url: str,
+        runtime: str = "claude",
+        *arguments: str,
+        expected_returncode: int = 0,
+        **environment: str,
+    ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+        if runtime == "codex" and "--codex-bin" not in arguments:
             arguments = (*arguments, "--codex-bin", str(self.bin_dir / "codex"))
         process = subprocess.run(
-            [sys.executable, str(KCAP_CLI), "capture", YOUTUBE_URL, "--project-dir", str(self.project), *arguments],
+            [sys.executable, str(KCAP_CLI), "capture", url, "--project-dir", str(self.project), *arguments],
             cwd=ROOT,
             env=self._environment(runtime, **environment),
             text=True,
@@ -253,11 +318,36 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
     def _codex_command_records(self, path: Path) -> list[list[str]]:
         return [line.split() for line in path.read_text(encoding="utf-8").splitlines() if line]
 
-    def _assert_success(self, payload: dict[str, Any], effective_mode: str = "standard") -> Path:
+    def _codex_start_requests(self, path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+        requests = [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        threads = [request for request in requests if request.get("method") == "thread/start"]
+        turns = [request for request in requests if request.get("method") == "turn/start"]
+        self.assertEqual(len(threads), 1)
+        self.assertEqual(len(turns), 1)
+        thread = threads[0].get("params")
+        turn = turns[0].get("params")
+        self.assertIsInstance(thread, dict)
+        self.assertIsInstance(turn, dict)
+        return thread, turn
+
+    def _codex_turn_start_request(self, path: Path) -> dict[str, Any]:
+        _thread, turn = self._codex_start_requests(path)
+        return turn
+
+    def _assert_success(
+        self,
+        payload: dict[str, Any],
+        effective_mode: str = "standard",
+        content_type: str = "video",
+    ) -> Path:
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["status"], "created")
         self.assertEqual(payload["effective_mode"], effective_mode)
-        self.assertEqual(payload["content_type"], "video")
+        self.assertEqual(payload["content_type"], content_type)
         output_file = Path(payload["output_file"])
         self.assertEqual(payload["filename"], output_file.name)
         self.assertTrue(output_file.is_file())
@@ -430,7 +520,7 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
         self.assertEqual(auth.read_bytes(), before[0])
         self.assertEqual((after.st_dev, after.st_ino, after.st_mode, after.st_mtime_ns), (before[1].st_dev, before[1].st_ino, before[1].st_mode, before[1].st_mtime_ns))
 
-    def test_codex_oauth_source_change_during_synthesis_fails_without_attestation(self) -> None:
+    def test_codex_oauth_source_refresh_after_copy_keeps_the_copy_boundary_attestation(self) -> None:
         source_home = self.root / "codex-auth-mutation"
         source_home.mkdir()
         source = source_home / "auth.json"
@@ -440,18 +530,27 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
 
         process, payload = self._capture(
             "codex",
-            expected_returncode=1,
             RESEARCH_TOOLKIT_CODEX_AUTH="oauth",
             CODEX_HOME=str(source_home),
             RESEARCH_TOOLKIT_ACCEPTANCE_REPORT=str(report_path),
         )
 
-        self.assertFalse(payload["ok"])
-        self.assertEqual(payload["error"]["code"], "codex_auth_error")
-        self.assertFalse(report_path.exists())
+        self._assert_success(payload)
+        self.assertTrue(report_path.is_file())
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            report["auth"],
+            {
+                "mode": "oauth",
+                "source_unchanged": True,
+                "auth_copy_boundary_verified": True,
+                "private_copy_removed": True,
+            },
+        )
+        self.assertEqual(source.read_text(encoding="utf-8"), "mutated-during-synthesis\n")
         self.assertNotIn(SYNTHETIC_ACCOUNT_DOCUMENT.decode("utf-8").strip(), process.stdout + process.stderr)
 
-    def test_codex_oauth_source_change_does_not_replace_direct_synthesis_output(self) -> None:
+    def test_codex_oauth_source_refresh_after_copy_can_publish_direct_synthesis_output(self) -> None:
         import importlib.util
 
         spec = importlib.util.spec_from_file_location("kcap_auth_publish_order", KCAP_CLI)
@@ -463,8 +562,7 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
         content_file = work_dir / "content.txt"
         content_file.write_text(" ".join(["transcript"] * 80), encoding="utf-8")
         output_file = work_dir / "synthesis.json"
-        sentinel = b"preexisting-synthesis-must-survive\n"
-        output_file.write_bytes(sentinel)
+        output_file.write_bytes(b"preexisting-synthesis-must-be-replaced\n")
         source_home = self.root / "codex-auth-mutation"
         source_home.mkdir()
         self._write_private_fixture(source_home / "auth.json", SYNTHETIC_ACCOUNT_DOCUMENT)
@@ -492,11 +590,11 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
             },
             clear=True,
         ):
-            with self.assertRaises(module.KcapError) as failure:
-                module.codex_synthesize(args)
+            result = module.codex_synthesize(args)
 
-        self.assertEqual(failure.exception.code, "codex_auth_error")
-        self.assertEqual(output_file.read_bytes(), sentinel)
+        self.assertEqual(result["synthesis_file"], str(output_file))
+        self.assertNotEqual(output_file.read_bytes(), b"preexisting-synthesis-must-be-replaced\n")
+        self.assertEqual((source_home / "auth.json").read_text(encoding="utf-8"), "mutated-during-synthesis\n")
 
     def test_codex_capture_writes_only_bounded_acceptance_provenance_when_requested(self) -> None:
         oauth_home = self.root / "provenance-oauth-home"
@@ -530,7 +628,12 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
         self.assertEqual(report["environment"], {"mode": "empty", "allowed": []})
         self.assertEqual(
             report["auth"],
-            {"mode": "oauth", "source_unchanged": True, "private_copy_removed": True},
+            {
+                "mode": "oauth",
+                "source_unchanged": True,
+                "auth_copy_boundary_verified": True,
+                "private_copy_removed": True,
+            },
         )
         self.assertEqual(report["prohibited_event_count"], 0)
         rendered = json.dumps(report, sort_keys=True)
@@ -914,6 +1017,109 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
         )
         self.assertIn("capture_mode: standard", output_file.read_text(encoding="utf-8"))
 
+    def test_codex_capture_uses_frozen_luna_model_and_effort_by_effective_mode(self) -> None:
+        oauth_home = self.root / "runtime-contract-oauth-home"
+        oauth_home.mkdir()
+        self._write_private_fixture(oauth_home / "auth.json", SYNTHETIC_ACCOUNT_DOCUMENT)
+
+        cases = (
+            ("standard", YOUTUBE_URL, (), "standard", "video", "medium", STANDARD_SYNTHESIS),
+            ("deep-article", ARTICLE_URL, ("--mode", "deep"), "deep", "article", "high", DEEP_SYNTHESIS),
+            ("full-article", ARTICLE_URL, ("--mode", "full"), "full", "article", "medium", FULL_SYNTHESIS),
+            ("full-youtube-fallback", YOUTUBE_URL, ("--mode", "full"), "standard", "video", "medium", STANDARD_SYNTHESIS),
+        )
+        for name, url, arguments, effective_mode, content_type, effort, synthesis in cases:
+            with self.subTest(mode=name):
+                codex_bin = self._write_codex_app_server_fixture("codex-{}".format(name), synthesis)
+                _, payload = self._capture_url(
+                    url,
+                    "codex",
+                    *arguments,
+                    "--collision",
+                    "suffix",
+                    "--codex-bin",
+                    str(codex_bin),
+                    RESEARCH_TOOLKIT_CODEX_AUTH="oauth",
+                    CODEX_HOME=str(oauth_home),
+                )
+                self._assert_success(payload, effective_mode=effective_mode, content_type=content_type)
+                thread, turn = self._codex_start_requests(self.root / ("codex-{}-rpc.log".format(name)))
+                self.assertEqual(thread.get("model"), "gpt-5.6-luna")
+                self.assertEqual(turn.get("model"), "gpt-5.6-luna")
+                self.assertEqual(turn.get("effort"), effort)
+
+    def test_effective_codex_runtime_contract_keeps_luna_and_mode_effort_pairs(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("kcap_full_nonvideo_runtime", KCAP_CLI)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        cases = (
+            ("deep", "article", "deep", "high", False),
+            ("full-nonvideo", "article", "full", "medium", False),
+            ("full-youtube-fallback", "video", "standard", "medium", True),
+        )
+        for name, content_type, mode, effort, expects_warning in cases:
+            with self.subTest(mode=name):
+                effective, warnings = module.effective_config(
+                    {
+                        "default_mode": "standard",
+                        "synthesis_profile": "fast",
+                    },
+                    "full" if name.startswith("full") else "deep",
+                    content_type,
+                )
+                self.assertEqual(effective["mode"], mode)
+                self.assertEqual(effective["codex_reasoning"], effort)
+                self.assertEqual(effective.get("codex_model"), "gpt-5.6-luna")
+                self.assertEqual(bool(warnings), expects_warning)
+
+    def test_codex_desktop_indicators_select_codex_unless_an_explicit_override_wins(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("kcap_codex_runtime_detection", KCAP_CLI)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        for indicator in ("CODEX_SESSION_ID", "CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_CI"):
+            with self.subTest(indicator=indicator):
+                with patch.dict(os.environ, {indicator: "fixture"}, clear=True):
+                    self.assertEqual(module.detect_runtime(), ("codex", "environment"))
+
+        with patch.dict(
+            os.environ,
+            {
+                "CLAUDECODE": "fixture",
+                "CODEX_SESSION_ID": "fixture",
+                "RESEARCH_TOOLKIT_RUNTIME": "claude",
+            },
+            clear=True,
+        ):
+            self.assertEqual(module.detect_runtime(), ("claude", "override"))
+
+        with patch.dict(
+            os.environ,
+            {
+                "CLAUDECODE": "fixture",
+                "CODEX_SESSION_ID": "fixture",
+                "RESEARCH_TOOLKIT_RUNTIME": "codex",
+            },
+            clear=True,
+        ):
+            self.assertEqual(module.detect_runtime(), ("codex", "override"))
+
+        with patch.dict(
+            os.environ,
+            {"CLAUDECODE": "fixture", "CODEX_SESSION_ID": "fixture"},
+            clear=True,
+        ):
+            with self.assertRaises(module.KcapError) as failure:
+                module.detect_runtime()
+        self.assertEqual(failure.exception.code, "ambiguous_runtime")
+
     def test_capture_success_schema_excludes_raw_extraction_and_child_output(self) -> None:
         process, payload = self._capture("claude")
         self._assert_success(payload)
@@ -964,13 +1170,8 @@ class KcapControllerAcceptanceTests(unittest.TestCase):
         _, payload = self._capture("claude", "--preserve-on-failure", expected_returncode=1)
         self.assertFalse(payload["ok"])
         workspaces = self._workspaces()
-        try:
-            self.assertEqual(len(workspaces), 1)
-            self.assertEqual(stat.S_IMODE(workspaces[0].stat().st_mode), 0o700)
-            self.assertEqual(Path(payload["error"]["details"]["recovery_path"]).resolve(), workspaces[0].resolve())
-        finally:
-            for workspace in workspaces:
-                shutil.rmtree(workspace)
+        self.assertEqual(workspaces, [])
+        self.assertNotIn("recovery_path", payload["error"].get("details", {}))
 
         self.config.write_text("{}", encoding="utf-8")
         _, invalid_config = self._capture("claude", "--preserve-on-failure", expected_returncode=1)

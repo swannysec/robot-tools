@@ -6,16 +6,58 @@ public controller once. Do not ask the privileged Codex host agent to read or su
 raw content.
 
 ```text
-python3 "$KCAP_SKILL_DIR/scripts/kcap.py" capture URL \
+python3 "$KCAP_SKILL_DIR/scripts/kcap.py" capture "$URL" \
   [--mode standard|deep|full] [--focus TEXT] [--project-dir PATH] \
-  [--collision suffix|replace|skip] [--confirm-large] [--preserve-on-failure]
+  [--output-dir PATH] [--collision suffix|replace|skip] [--confirm-large] \
+  [--preserve-on-failure]
 ```
 
 Handle only the controller's safe JSON. If it returns `confirmation_required` during
 interactive use, use its safe details to ask for large-capture consent or a collision
 choice, then rerun that same command with the chosen explicit `--confirm-large` or
 `--collision` flag. `skipped_duplicate` is a terminal success. Noninteractive behavior
-is controller-owned.
+is controller-owned. The URL argument is the raw shell-quoted URL, never a Markdown link
+expression.
+
+If an interactive capture returns `output_path_required`, ask once for the exact
+destination (suggest `~/Documents/kcap/captures`), run
+`python3 "$KCAP_SKILL_DIR/scripts/kcap.py" configure --output-dir "$OUTPUT_DIR"`, and
+automatically retry the original capture. Approval for `configure` may cover only the
+write to `~/.config/robot-tools/research-toolkit.json`; do not elevate capture. A
+noninteractive host stops instead. For `write_pending`, request approval naming the
+returned output target, then use all returned fields in:
+
+```text
+python3 "$KCAP_SKILL_DIR/scripts/kcap.py" commit-output "$PENDING" \
+  --output-root "$ROOT" --output-dir "$DIR" --filename "$FILE" \
+  --collision "$POLICY" --capsule-digest "$DIGEST"
+```
+
+Prefer structured argv; otherwise quote every value. The digest binds the capsule and
+the target fields bind publication. Do not elevate capture, inspect the capsule or note,
+replace fields, or replace the normal safe controller result.
+
+## Runtime selection and synthesis model
+
+In Codex or ChatGPT Desktop, the controller selects the Codex adapter when it detects
+one of `CODEX_SESSION_ID`, `CODEX_THREAD_ID`, `CODEX_SANDBOX`, or `CODEX_CI`.
+`RESEARCH_TOOLKIT_RUNTIME=claude|codex` explicitly overrides host detection. If both
+Claude and Codex indicators are present without an override, the controller fails as
+ambiguous instead of selecting either adapter.
+
+Codex synthesis uses the following fixed selection:
+
+| Effective capture mode | Model | Effort |
+|---|---|---|
+| `standard` | `gpt-5.6-luna` | `medium` |
+| `deep` | `gpt-5.6-luna` | `high` |
+| `full` for articles and Twitter/X | `gpt-5.6-luna` | `medium` |
+| `full` for YouTube | Falls back to `standard` | `medium` |
+
+A host or orchestrator starting a capture should prefer `gpt-5.6-luna` with medium
+effort. This is a recommendation for task creation only: the skill cannot change the
+model of an already-running Codex task. `agents/openai.yaml` has no supported
+model-selection field, so the package does not declare one there.
 
 ## Authentication
 
@@ -23,7 +65,7 @@ is controller-owned.
 
 | Value | Behavior |
 |---|---|
-| `auto` (default) | Prefer file-backed OAuth. Use API-key authentication only when OAuth is unavailable and `OPENAI_API_KEY` was explicitly configured. |
+| `auto` (default) | Prefer file-backed Desktop OAuth. Use API-key authentication only when OAuth is unavailable and `OPENAI_API_KEY` was explicitly configured. |
 | `oauth` | Require a readable, regular OAuth authentication file. Fail closed if it is unavailable or unsafe to copy. |
 | `api_key` | Require `OPENAI_API_KEY` and start an ephemeral API-key login. API-key use is billed to that API account; it is distinct from an OAuth-authenticated Desktop session. |
 
@@ -32,7 +74,10 @@ readable OAuth file, copies that snapshot to a private `0600` App Server home, c
 source again immediately after the copy, and removes the private copy during cleanup. The
 resulting `source_unchanged` evidence is limited to that immediate copy boundary; it does
 not claim that a long-lived OAuth source cannot be independently refreshed later. The
-adapter never passes OAuth material or an API key through a prompt, result, event report,
+acceptance report records `auth_copy_boundary_verified: true` when that immediate copy
+boundary is verified. It does not turn `source_unchanged` into a claim about a later
+independent refresh. The adapter never passes OAuth material or an API key through a
+prompt, result, event report,
 or host diagnostic. The acceptance runner requests its optional API-key live leg only
 through `RESEARCH_TOOLKIT_TEST_OPENAI_API_KEY`; an ambient `OPENAI_API_KEY` does not
 request that leg.
@@ -42,8 +87,9 @@ request that leg.
 Codex is an external host dependency, not a file supplied by this package. When the
 caller does not supply an explicit `--codex-bin`, the adapter prefers the bundled ChatGPT
 Desktop Codex binary and then falls back to `codex` on `PATH`; an explicit executable
-takes precedence over both. It starts a short-lived stdio App Server and creates one
-ephemeral thread for the controller-owned synthesis.
+takes precedence over both. In the default automatic path, this bundled Desktop binary
+and Desktop OAuth are preferred together when available. It starts a short-lived stdio
+App Server and creates one ephemeral thread for the controller-owned synthesis.
 
 The least-authority boundary permits Code Mode `exec` and `wait` only for bounded
 computation. That allowlist does not approve arbitrary process or filesystem access.
@@ -69,13 +115,21 @@ writes it inside the private workspace, and returns only safe status metadata. I
 returns raw transcript, model output, OAuth data, API-key data, prompts, or tool payloads
 to the privileged host.
 
+The broker opts out of incremental agent-message deltas, token-usage updates, and other
+passive lifecycle or status notifications that kcap does not consume. It still derives
+the authoritative synthesis result from `item/completed` and requires `turn/completed`.
+The remaining stream is bounded independently by the operation timeout, per-message and
+total-output byte limits, and a 16,384-event ceiling. The event ceiling is a final guard
+against an abnormal server stream, not a normal-workload budget.
+
 When explicitly requested, the adapter writes one bounded, redacted acceptance report for
 that successful invocation. It records the selected binary and version, temporary catalog
 source, one public `kcap.py capture` command, App Server transport and lifecycle,
-authentication copy-boundary and cleanup evidence, sandbox/environment posture, and
-prohibited-event count. The report is run-scoped evidence, not a claim that a live-host
-acceptance has passed in another environment or at another time. Output success is
-determined from the resulting filesystem state, not final host prose.
+authentication copy-boundary and cleanup evidence, sandbox/environment posture, selected
+synthesis model and effort, and prohibited-event count. The report is run-scoped evidence,
+not a claim that a live-host acceptance has passed in another environment or at another
+time. Output success is determined from the resulting filesystem state, not final host
+prose.
 
 ## Confirmation, retry, and failure
 

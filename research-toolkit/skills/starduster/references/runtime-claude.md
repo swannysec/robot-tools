@@ -6,7 +6,8 @@ controller once:
 
 ```text
 python3 "$STARDUSTER_SKILL_DIR/scripts/starduster.py" sync \
-  [--limit N] [--full] [--project-dir PATH] [--confirm-rate] [--preserve-on-failure]
+  [--limit N] [--full] [--project-dir "PATH"] [--output-dir "PATH"] [--confirm-rate] \
+  [--preserve-on-failure]
 ```
 
 Set the Claude Bash tool's `timeout` field to `600000` milliseconds for this single
@@ -21,7 +22,15 @@ known host is present, it fails closed instead of guessing.
 
 Handle only the safe JSON result. If it reports `confirmation_required` during an
 interactive run, use the safe details to ask for rate approval and rerun the same
-command with `--confirm-rate`. Noninteractive behavior remains controller-owned.
+command with `--confirm-rate`. If it reports `output_path_required`, ask once for the
+exact catalog directory, run `configure --output-dir "PATH"`, and retry the original
+command. If the host permission boundary blocks the normal user
+configuration file, request permission only for that exact `configure` write.
+`--output-dir` is a one-run override. If a successful result reports
+`write_pending`, elevate only the returned `commit-output` command with its returned
+`pending_directory`, `output_root`, `output_dir`, and `capsule_digest` fields as shown
+in `SKILL.md`; do not elevate `sync` or read the pending catalog. Noninteractive behavior
+remains controller-owned.
 
 Internally, the controller keeps raw GitHub files in its private workspace and builds a
 bounded batch JSON document for synthesis. It launches `claude -p` in a separate

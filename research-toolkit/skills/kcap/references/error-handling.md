@@ -17,11 +17,13 @@ use the controller result and verified output file instead.
 | Codes | Action |
 |---|---|
 | `invalid_config`, `missing_config`, `missing_config_section`, `unsupported_schema` | Stop and report the neutral configuration path. |
+| `output_path_required` | Interactive host: ask once for the exact destination, request approval only to write `~/.config/robot-tools/research-toolkit.json`, run package-local `configure --output-dir "$OUTPUT_DIR"`, then retry the original capture. Never elevate capture. Noninteractive host: stop. |
+| `config_selected` | Stop. An environment-selected configuration is intentionally immutable; do not rewrite it. |
 | `invalid_legacy_config`, `missing_legacy_section` | Stop and provide migration instructions; do not modify the legacy file. |
 | `invalid_runtime`, `unknown_runtime`, `ambiguous_runtime` | Stop and request an explicit runtime override. |
 | `invalid_url`, `dns_error`, `ssrf_blocked`, `network_error` | Stop before processing fetched content. |
 | `missing_extractor`, `extraction_failed`, `insufficient_content`, `content_too_large` | Stop and report the source/tool limitation. |
-| `invalid_synthesis`, `synthesis_error` | Retry once in isolation, then stop. |
+| `invalid_synthesis`, `synthesis_error` | Follow the synthesis policy: ordinary validation receives two isolated attempts; only an overlong TL;DR receives one targeted third repair, then fails. |
 | `confirmation_required` | Inspect safe details. Ask for large-capture consent and rerun with `--confirm-large`, or ask for `suffix`, `replace`, or `skip` and rerun with that `--collision` value. Noninteractive behavior is controller-owned. |
 | `duplicate_ambiguous` | Stop: `replace` found more than one normalized-source match. Report the safe paths and require the user to resolve the ambiguity. |
 | `codex_auth_error` | Stop. The requested OAuth source or API-key login did not meet the selected authentication mode; never fall back from explicit `oauth` or `api_key`. |
@@ -29,6 +31,7 @@ use the controller result and verified output file instead.
 | `codex_app_server_protocol_error`, `codex_app_server_exit`, `codex_app_server_limit`, `codex_app_server_timeout` | Stop and discard the child result. Prohibited Code Mode activity, a missing lifecycle event, an unsafe event, or an exceeded resource bound is not recoverable. |
 | `claude_isolation_unsupported`, `claude_failed`, `claude_output_error` | Stop; never relax the empty child tool surface. |
 | `output_error`, `invalid_work_dir`, `invalid_acceptance_report`, `process_failed` | Apply the controller's cleanup policy and report only the safe write, process, or acceptance-contract failure. |
+| `invalid_pending_capsule`, `expired_pending_capsule` | Stop. Do not publish, inspect, or repair the capsule from the host. |
 
 Missing optional extractors are not automatically installed. The controller never opens
 Obsidian or another app. Cleanup warnings do not invalidate a note whose atomic move
@@ -40,6 +43,25 @@ preserves all substantive content only within that finite safety bound.
 
 `skipped_duplicate` is a successful controller status, not an error. It reports sorted
 existing paths and a count without extraction or synthesis.
+
+`write_pending` is also a successful controller status. It reports a safe pending
+directory after rendering succeeded but publication could not proceed. The pending
+capsule contains exactly `note.md` and `manifest.json`; it contains no raw extraction,
+metadata, model response, or other artifact. It is retained for a seven-day retry window
+and expired capsules are cleaned up. The host requests approval that names the returned
+publication target, then uses every returned authority field in the exact quoted command:
+
+```text
+python3 "$KCAP_SKILL_DIR/scripts/kcap.py" commit-output "$PENDING" \
+  --output-root "$ROOT" --output-dir "$DIR" --filename "$FILE" \
+  --collision "$POLICY" --capsule-digest "$DIGEST"
+```
+
+Use structured argv when available. Otherwise the shell quotes are required. The digest
+binds the exact capsule bytes, while the returned root, directory, filename, and
+collision policy bind the permissible publication target. The host never elevates
+`capture`, reads the capsule or note, substitutes fields, or substitutes its own result
+for the controller's safe commit result.
 
 For an explicitly requested live Codex authentication leg, unavailable OAuth or an
 unavailable API-key login is an incomplete acceptance result with a nonzero outcome; it

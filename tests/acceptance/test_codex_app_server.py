@@ -22,6 +22,8 @@ KCAP_PATH = ROOT / "research-toolkit" / "skills" / "kcap" / "scripts" / "kcap.py
 FIXTURE = ROOT / "tests" / "fixtures" / "codex-app-server" / "fake_codex_app_server.py"
 API_KEY = "api-key-fixture-not-a-real-secret"
 SERVER_SECRET = "APP_SERVER_SECRET_MUST_NOT_LEAK"
+LUNA_MODEL = "gpt-5.6-luna"
+SUCCESSFUL_NOTIFICATION_COUNT = 3
 SYNTHESIS_RESULT = {
     "title": "Fixture synthesis",
     "summary": "Safe structured result.",
@@ -106,16 +108,22 @@ class CodexAppServerAcceptanceTests(unittest.TestCase):
         auth_mode: str | None = "oauth",
         api_credential: str | None = None,
         limits: object | None = None,
+        model: str | None = None,
+        reasoning: str = "low",
     ):
-        return self.kcap.CodexAppServerBroker(
-            codex_bin=str(FIXTURE),
-            work_dir=self.work_dir,
-            environment=self.environment(scenario),
-            timeout=timeout,
-            limits=limits or self.limits(),
-            auth_mode=auth_mode,
-            api_credential=api_credential,
-        )
+        broker_options: dict[str, object] = {
+            "codex_bin": str(FIXTURE),
+            "work_dir": self.work_dir,
+            "environment": self.environment(scenario),
+            "timeout": timeout,
+            "limits": limits or self.limits(),
+            "auth_mode": auth_mode,
+            "api_credential": api_credential,
+            "reasoning": reasoning,
+        }
+        if model is not None:
+            broker_options["model"] = model
+        return self.kcap.CodexAppServerBroker(**broker_options)
 
     def synthesize(self, **kwargs: object) -> dict[str, object]:
         return self.broker(**kwargs).synthesize(
@@ -153,7 +161,25 @@ class CodexAppServerAcceptanceTests(unittest.TestCase):
         )
         initialize = requests[0]
         self.assertNotIn("experimentalApi", initialize["params"])
-        self.assertEqual(initialize["params"]["capabilities"], {"experimentalApi": True})
+        self.assertEqual(
+            initialize["params"]["capabilities"],
+            {
+                "experimentalApi": True,
+                "optOutNotificationMethods": [
+                    "account/rateLimits/updated",
+                    "item/agentMessage/delta",
+                    "item/reasoning/summaryPartAdded",
+                    "item/reasoning/summaryTextDelta",
+                    "item/reasoning/textDelta",
+                    "remoteControl/status/changed",
+                    "thread/settings/updated",
+                    "thread/started",
+                    "thread/status/changed",
+                    "thread/tokenUsage/updated",
+                    "turn/started",
+                ],
+            },
+        )
         client_info = initialize["params"]["clientInfo"]
         self.assertIsInstance(client_info, dict)
         self.assertTrue(client_info.get("name"))
@@ -190,6 +216,53 @@ class CodexAppServerAcceptanceTests(unittest.TestCase):
         self.assertEqual(turn_params["outputSchema"], json.loads(self.schema.read_text(encoding="utf-8")))
         self.assertNotIn("sandboxPolicy", turn_params)
         self.assertNotIn("tools", json.dumps(requests, sort_keys=True))
+
+    def test_standard_synthesis_routes_luna_model_and_medium_effort(self) -> None:
+        self.assertEqual(
+            self.synthesize(model=LUNA_MODEL, reasoning="medium"),
+            SYNTHESIS_RESULT,
+        )
+
+        requests = self.requests()
+        thread = requests[2]["params"]
+        turn = requests[3]["params"]
+        self.assertEqual(thread["model"], LUNA_MODEL)
+        self.assertEqual(turn["model"], LUNA_MODEL)
+        self.assertEqual(turn["effort"], "medium")
+
+    def test_deep_synthesis_routes_luna_model_and_high_effort(self) -> None:
+        self.assertEqual(
+            self.synthesize(model=LUNA_MODEL, reasoning="high"),
+            SYNTHESIS_RESULT,
+        )
+
+        requests = self.requests()
+        thread = requests[2]["params"]
+        turn = requests[3]["params"]
+        self.assertEqual(thread["model"], LUNA_MODEL)
+        self.assertEqual(turn["model"], LUNA_MODEL)
+        self.assertEqual(turn["effort"], "high")
+
+    def test_full_capture_routes_luna_model_and_medium_effort(self) -> None:
+        self.assertEqual(
+            self.synthesize(model=LUNA_MODEL, reasoning="medium"),
+            SYNTHESIS_RESULT,
+        )
+
+        requests = self.requests()
+        thread = requests[2]["params"]
+        turn = requests[3]["params"]
+        self.assertEqual(thread["model"], LUNA_MODEL)
+        self.assertEqual(turn["model"], LUNA_MODEL)
+        self.assertEqual(turn["effort"], "medium")
+
+    def test_model_attestation_rejects_an_effective_model_mismatch(self) -> None:
+        self.assert_kcap_error(
+            "codex_app_server_protocol_error",
+            scenario="attestation-model-mismatch",
+            model=LUNA_MODEL,
+            reasoning="medium",
+        )
 
     def test_private_config_serializes_exact_capability_root_denies(self) -> None:
         config = self.kcap.codex_app_server_config("oauth")
@@ -252,7 +325,7 @@ class CodexAppServerAcceptanceTests(unittest.TestCase):
         self.assert_kcap_error("codex_app_server_protocol_error", scenario="unknown-server-request")
 
     def test_message_and_event_limits_fail_closed(self) -> None:
-        self.assertGreaterEqual(self.kcap.CodexAppServerLimits().max_events, 1024)
+        self.assertEqual(self.kcap.CodexAppServerLimits().max_events, 16_384)
         self.assert_kcap_error(
             "codex_app_server_limit",
             scenario="oversized-message",
@@ -263,6 +336,29 @@ class CodexAppServerAcceptanceTests(unittest.TestCase):
             scenario="event-flood",
             limits=self.limits(max_events=3),
         )
+
+    def test_unused_streaming_notifications_are_suppressed_before_the_event_guard(self) -> None:
+        self.assertEqual(
+            self.synthesize(
+                scenario="high-volume-deltas",
+                limits=self.limits(max_events=SUCCESSFUL_NOTIFICATION_COUNT),
+            ),
+            SYNTHESIS_RESULT,
+        )
+
+    def test_passive_reasoning_deltas_are_suppressed_for_medium_and_high_effort(self) -> None:
+        """summaryTextDelta, summaryPartAdded, and textDelta are not synthesis input."""
+        for reasoning in ("medium", "high"):
+            with self.subTest(reasoning=reasoning):
+                self.assertEqual(
+                    self.synthesize(
+                        scenario="reasoning-deltas",
+                        model=LUNA_MODEL,
+                        reasoning=reasoning,
+                        limits=self.limits(max_events=SUCCESSFUL_NOTIFICATION_COUNT),
+                    ),
+                    SYNTHESIS_RESULT,
+                )
 
     def test_total_output_limit_fails_closed_across_small_messages(self) -> None:
         self.assert_kcap_error(

@@ -12,7 +12,7 @@ AI/ML research and verification tools for software development.
 | `ai-twitter-radar` | Discover trending AI tools, news, and insights from influential developers and AI advocates on Twitter/X using Bird CLI. Read-only skill for research and discovery. |
 | `research-verification` | Pre-flight verification checklist for research tasks. Prevents assumptions from becoming errors when gathering information about external systems, APIs, or configurations. |
 | `kcap` | Capture and distill web articles, public YouTube videos, and Twitter/X posts into structured Markdown notes. The same self-contained package supports Claude Code and local Codex in the ChatGPT/Codex desktop app. |
-| `starduster` | Catalog GitHub starred repos into a structured Obsidian vault with AI-synthesized summaries, normalized topic taxonomy, graph-optimized wikilinks, and Obsidian Bases index files. The same self-contained package supports Claude Code and local Codex in the ChatGPT/Codex desktop app. |
+| `starduster` | Catalog GitHub starred repos into a structured Obsidian vault with AI-synthesized summaries, source-preserved GitHub topics, separate semantic discovery tags, graph-optimized wikilinks, and portable Obsidian Bases index files. The same self-contained package supports Claude Code and local Codex in the ChatGPT/Codex desktop app. |
 
 ## Installation
 
@@ -63,7 +63,15 @@ Skills activate automatically via trigger phrases:
 - `"knowledge capture"`, `"distill this"`, `"save to obsidian"`
 - `"capture this video"`, `"capture this tweet"`, `"save this for later"`
 
-kcap uses `~/.config/robot-tools/research-toolkit.json` with `schema_version: 1`. `RESEARCH_TOOLKIT_CONFIG` selects an alternate file, `RESEARCH_TOOLKIT_RUNTIME=claude|codex` provides an explicit runtime override, `RESEARCH_TOOLKIT_CODEX_AUTH=auto|oauth|api_key` selects Codex authentication, and `RESEARCH_TOOLKIT_NONINTERACTIVE=1` selects the controller's noninteractive duplicate and confirmation policies. The controller never opens Obsidian. Project `.claude/research-toolkit.local.md` remains readable through the `0.6.x` compatibility period and emits a migration notice. See [the package configuration reference](./skills/kcap/references/configuration.md) for the authentication and migration behavior.
+kcap uses `~/.config/robot-tools/research-toolkit.json` with `schema_version: 1`.
+On first use, it asks for an exact output destination and narrowly configures that file;
+`capture --output-dir PATH` is a one-capture override that does not persist. If a capture
+returns `write_pending`, approve only the returned target and let the controller commit
+it with its returned authority fields; never elevate the capture itself. `RESEARCH_TOOLKIT_CONFIG` selects an alternate file, `RESEARCH_TOOLKIT_RUNTIME=claude|codex` provides an explicit runtime override, `RESEARCH_TOOLKIT_CODEX_AUTH=auto|oauth|api_key` selects Codex authentication, and `RESEARCH_TOOLKIT_NONINTERACTIVE=1` selects the controller's noninteractive duplicate and confirmation policies. The controller never opens Obsidian. Project `.claude/research-toolkit.local.md` remains readable through the `0.6.x` compatibility period and emits a migration notice. See [the package configuration reference](./skills/kcap/references/configuration.md) for the authentication and migration behavior.
+
+Marketplace users update with their host's marketplace/plugin update flow. Directly
+installed copies are independent: recopy the complete kcap package from an updated
+checkout and restart the host so it rediscovers the skill.
 
 **starduster**:
 - `"catalog my github stars"`, `"starduster"`, `"export github stars"`
@@ -74,11 +82,21 @@ kcap uses `~/.config/robot-tools/research-toolkit.json` with `schema_version: 1`
 starduster uses the same neutral configuration file and runtime/authentication selectors
 as kcap. Its deterministic `sync` controller fetches stars through the authenticated
 GitHub CLI, returns confirmation instructions when estimated rate use is high, and never
-opens Obsidian. The legacy project configuration remains readable through the `0.6.x`
+opens Obsidian. On first use, the host asks once for the exact catalog directory and
+saves it as the working default. If the task sandbox cannot publish there directly,
+Starduster stages only the sanitized catalog and uses a narrow final-writer command;
+the GitHub and synthesis workflow is never elevated. The legacy project configuration remains readable through the `0.6.x`
 compatibility period and emits a migration notice. See [the package configuration
 reference](./skills/starduster/references/configuration.md). Direct controller use
 requires Python 3 with PyYAML and authenticated `gh`; the acceptance suite supplies
 PyYAML explicitly with `uv run --with pyyaml`.
+
+Starduster preserves normalized GitHub topics as source metadata and links them to
+topic hubs. It keeps those topics separate from Obsidian tags: each repository has the
+mandatory `starduster` provenance tag plus one to five AI-selected semantic discovery
+tags, while refresh retains user-added tags. Its Bases use portable self-relative
+filters and current Bases ordering/grouping syntax. Open a Base directly; embedding it
+changes Obsidian's `this` context and is not a supported catalog view.
 
 > **kcap vs ai-twitter-radar:** Use kcap to save/distill a specific URL to a structured note. Use ai-twitter-radar to browse, discover, or search AI tweets.
 > **starduster vs kcap:** Use starduster to bulk-catalog your GitHub stars into a vault. Use kcap to capture a single specific URL.

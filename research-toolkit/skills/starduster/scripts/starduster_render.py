@@ -41,6 +41,7 @@ _CATEGORIES = {
 }
 _MATURITIES = {"experimental", "active", "mature", "unmaintained"}
 _TAG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_GENERIC_TAGS = {"video", "article", "tweet", "summary", "content"}
 _SLUG = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 _DANGEROUS = re.compile(
     r"<%[\s\S]*?%>|\[[^\]\n]{1,100}::[^\]\n]*\]|```(?:dataview|dataviewjs)[\s\S]*?```|"
@@ -63,7 +64,7 @@ _AUTO_FIELDS = {
     "title", "source", "full_name", "owner", "language", "license", "stars", "forks",
     "archived", "is_fork", "parent", "has_readme", "readme_oversized", "date_starred",
     "date_created", "last_pushed", "date_updated", "category", "maturity", "use_case",
-    "similar_to", "topics", "summary",
+    "similar_to", "topics", "summary", "tags", "starduster_tags",
 }
 _SET_ONCE_FIELDS = {"date_cataloged", "status", "reviewed", "date_unstarred"}
 
@@ -77,7 +78,7 @@ def validate_synthesis_payload(payload: object, expected_full_names: list[str]) 
     if not isinstance(payload, list) or len(payload) != len(expected_full_names):
         raise SynthesisValidationError("synthesis response must be an array matching the input batch")
     required = {
-        "full_name", "html_url", "category", "normalized_topics", "summary", "key_features",
+        "full_name", "html_url", "category", "tags", "summary", "key_features",
         "similar_to", "use_case", "maturity", "author_display",
     }
     records: list[dict[str, Any]] = []
@@ -94,7 +95,7 @@ def validate_synthesis_payload(payload: object, expected_full_names: list[str]) 
         if len(item["summary"]) > 500 or len(item["use_case"]) > 150 or len(item["author_display"]) > 100:
             raise SynthesisValidationError("synthesis scalar field exceeds its limit")
         for field, minimum, maximum, item_limit in (
-            ("normalized_topics", 0, 20, 100),
+            ("tags", 1, 5, 48),
             ("key_features", 3, 8, 100),
             ("similar_to", 0, 3, 200),
         ):
@@ -103,9 +104,14 @@ def validate_synthesis_payload(payload: object, expected_full_names: list[str]) 
                 raise SynthesisValidationError("{} has invalid cardinality".format(field))
             if any(not isinstance(value, str) or len(value) > item_limit for value in values):
                 raise SynthesisValidationError("{} has invalid values".format(field))
-            if field in {"normalized_topics", "similar_to"} and len(set(values)) != len(values):
+            if field in {"tags", "similar_to"} and len(set(values)) != len(values):
                 raise SynthesisValidationError("{} must contain unique values".format(field))
-        records.append(dict(item))
+        semantic_tags = _semantic_tags(item["tags"])
+        if not semantic_tags:
+            raise SynthesisValidationError("tags must contain at least one usable discovery term")
+        validated = dict(item)
+        validated["tags"] = semantic_tags
+        records.append(validated)
     return records
 
 
@@ -196,8 +202,7 @@ def _sanitize_record(record: dict[str, Any]) -> dict[str, Any]:
     maturity = _clean_text(record["maturity"])
     if maturity not in _MATURITIES:
         maturity = "active"
-    topics = [_clean_text(topic).lower() for topic in record["normalized_topics"]]
-    topics = list(dict.fromkeys(topic for topic in topics if _TAG.fullmatch(topic)))
+    tags = _semantic_tags(record["tags"])
     similar = [_clean_text(value) for value in record["similar_to"]]
     similar = list(dict.fromkeys(value for value in similar if _SLUG.fullmatch(value)))
     features = [_clean_text(value) for value in record["key_features"]]
@@ -206,7 +211,7 @@ def _sanitize_record(record: dict[str, Any]) -> dict[str, Any]:
         "full_name": record["full_name"],
         "html_url": record["html_url"],
         "category": category,
-        "normalized_topics": topics,
+        "tags": tags,
         "summary": _clean_text(record["summary"]),
         "key_features": features,
         "similar_to": similar,
@@ -235,6 +240,19 @@ def _merge_frontmatter(existing: dict[str, Any], star: dict[str, Any], synthesis
     full_name = synthesis["full_name"]
     data = _star_data(star)
     owner = data.get("owner_login") or full_name.split("/", 1)[0]
+    existing_tags = existing.get("tags", [])
+    if not isinstance(existing_tags, list):
+        existing_tags = []
+    previous_auto_tags = existing.get("starduster_tags", [])
+    if not isinstance(previous_auto_tags, list):
+        previous_auto_tags = []
+    tags = ["starduster"]
+    tags.extend(
+        tag for tag in existing_tags
+        if isinstance(tag, str) and tag and tag != "starduster" and tag not in previous_auto_tags and tag not in tags
+    )
+    tags[1:1] = [tag for tag in synthesis["tags"] if tag not in tags]
+    topics = _github_topics(data.get("topics"))
     auto = {
         "title": full_name,
         "source": synthesis["html_url"],
@@ -257,7 +275,9 @@ def _merge_frontmatter(existing: dict[str, Any], star: dict[str, Any], synthesis
         "maturity": synthesis["maturity"],
         "use_case": synthesis["use_case"],
         "similar_to": synthesis["similar_to"],
-        "topics": synthesis["normalized_topics"],
+        "topics": topics,
+        "tags": tags,
+        "starduster_tags": synthesis["tags"],
         "summary": synthesis["summary"],
     }
     set_once = {
@@ -288,8 +308,11 @@ def _render_repo_body(frontmatter: dict[str, Any], synthesis: dict[str, Any], ol
     ]
     if synthesis["use_case"]:
         lines.extend(["", "**Use case:** {}".format(synthesis["use_case"])])
-    lines.extend(["", "## Topics", ""])
-    lines.extend("[[Topic - {}]]".format(topic) for topic in synthesis["normalized_topics"])
+    lines.extend(["", "## GitHub Topics", ""])
+    lines.extend(
+        "- [{}](https://github.com/topics/{}) — [[Topic - {}]]".format(topic, topic, topic)
+        for topic in frontmatter.get("topics", [])
+    )
     lines.extend(["", "## Key Features", ""])
     lines.extend("- {}".format(feature) for feature in synthesis["key_features"])
     if synthesis["similar_to"]:
@@ -325,7 +348,7 @@ def _render_category_hubs(directory: Path, rows: list[dict[str, Any]]) -> int:
         if category in _CATEGORIES:
             groups.setdefault(category, []).append(row)
     for category, entries in sorted(groups.items()):
-        lines = ["---", "type: category-hub", 'category: "{}"'.format(_yaml_text(category)), "date_updated: {}".format(_today()), "---", "", "# Category: {}".format(category), "", "## Repositories ({})".format(len(entries)), ""]
+        lines = ["---", "type: category-hub", "tags:", "  - starduster", 'category: "{}"'.format(_yaml_text(category)), "date_updated: {}".format(_today()), "---", "", "# Category: {}".format(category), "", "## Repositories ({})".format(len(entries)), ""]
         lines.extend("- [[{}]] — {}".format(_filename_stem(row["full_name"]), _snippet(row["frontmatter"].get("summary"))) for row in entries)
         _write_text(_safe_child(directory, "Category - {}.md".format(category)), "\n".join(lines) + "\n")
     return len(groups)
@@ -341,7 +364,7 @@ def _render_topic_hubs(directory: Path, rows: list[dict[str, Any]]) -> int:
     for topic, entries in sorted(groups.items()):
         if len(entries) < 3:
             continue
-        lines = ["---", "type: topic-hub", 'topic: "{}"'.format(topic), "date_updated: {}".format(_today()), "---", "", "# Topic: {}".format(topic), "", "## Repositories ({})".format(len(entries)), ""]
+        lines = ["---", "type: topic-hub", "tags:", "  - starduster", 'topic: "{}"'.format(topic), "date_updated: {}".format(_today()), "---", "", "# Topic: {}".format(topic), "", "[GitHub topic](https://github.com/topics/{})".format(topic), "", "## Repositories ({})".format(len(entries)), ""]
         lines.extend("- [[{}]] — {}".format(_filename_stem(row["full_name"]), _snippet(row["frontmatter"].get("summary"))) for row in entries)
         _write_text(_safe_child(directory, "Topic - {}.md".format(topic)), "\n".join(lines) + "\n")
         count += 1
@@ -358,7 +381,7 @@ def _render_author_hubs(directory: Path, rows: list[dict[str, Any]]) -> int:
     for owner, entries in sorted(groups.items(), key=lambda item: item[0].lower()):
         if len(entries) < 2:
             continue
-        lines = ["---", "type: author-hub", 'author: "{}"'.format(_yaml_text(owner)), 'github_url: "https://github.com/{}"'.format(_yaml_text(owner)), "date_updated: {}".format(_today()), "---", "", "# Author: {}".format(owner), "", "[GitHub Profile](https://github.com/{})".format(owner), "", "## Starred Repositories ({})".format(len(entries)), ""]
+        lines = ["---", "type: author-hub", "tags:", "  - starduster", 'author: "{}"'.format(_yaml_text(owner)), 'github_url: "https://github.com/{}"'.format(_yaml_text(owner)), "date_updated: {}".format(_today()), "---", "", "# Author: {}".format(owner), "", "[GitHub Profile](https://github.com/{})".format(owner), "", "## Starred Repositories ({})".format(len(entries)), ""]
         lines.extend("- [[{}]] — {}".format(_filename_stem(row["full_name"]), _snippet(row["frontmatter"].get("summary"))) for row in entries)
         _write_text(_safe_child(directory, "Author - {}.md".format(owner)), "\n".join(lines) + "\n")
         count += 1
@@ -366,16 +389,16 @@ def _render_author_hubs(directory: Path, rows: list[dict[str, Any]]) -> int:
 
 
 def _render_bases(directory: Path, subfolder: str) -> int:
-    folder = "{}/repos".format(subfolder.strip("/"))
-    common = 'file.inFolder("{}")'.format(folder)
+    del subfolder
+    common = 'file.inFolder(this.file.folder.replace(/\\/indexes$/, "/repos"))'
     bases = {
-        "master-index.base": _base([common], {"category": "Category", "language": "Language", "stars": "Stars", "maturity": "Maturity", "status": "Status", "date_starred": "Starred"}, "All Repositories", {"column": "stars", "direction": "DESC"}),
-        "by-language.base": _base([common, 'status == "active"'], {"language": "Language", "category": "Category", "stars": "Stars", "license": "License", "maturity": "Maturity"}, "By Language", {"column": "stars", "direction": "DESC"}, "language"),
-        "by-category.base": _base([common, 'status == "active"'], {"category": "Category", "language": "Language", "stars": "Stars", "use_case": "Use Case", "maturity": "Maturity"}, "By Category", {"column": "stars", "direction": "DESC"}, "category"),
-        "recently-starred.base": _base([common, 'status == "active"'], {"category": "Category", "language": "Language", "stars": "Stars", "maturity": "Maturity", "use_case": "Use Case", "date_starred": "Starred"}, "Recently Starred", {"column": "date_starred", "direction": "DESC"}, limit=50),
-        "review-queue.base": _base(['reviewed == false', 'status == "active"', common], {"category": "Category", "language": "Language", "stars": "Stars", "use_case": "Use Case", "maturity": "Maturity", "date_starred": "Starred"}, "Review Queue", {"column": "stars", "direction": "DESC"}),
-        "stale-repos.base": _base([common, 'status == "active"', 'last_pushed < now() - "365d"'], {"category": "Category", "language": "Language", "stars": "Stars", "forks": "Forks", "archived": "Archived", "last_pushed": "Last Pushed"}, "Stale Repos (>1 year)", {"column": "last_pushed", "direction": "ASC"}),
-        "unstarred.base": _base([common, 'status == "unstarred"'], {"category": "Category", "language": "Language", "stars": "Stars", "owner": "Owner", "date_starred": "Starred", "date_unstarred": "Unstarred"}, "Unstarred Repos", {"column": "date_unstarred", "direction": "DESC"}),
+        "master-index.base": _base([common], {"category": "Category", "language": "Language", "stars": "Stars", "maturity": "Maturity", "status": "Status", "date_starred": "Starred"}, "All Repositories", {"property": "stars", "direction": "DESC"}),
+        "by-language.base": _base([common, 'status == "active"'], {"language": "Language", "category": "Category", "stars": "Stars", "license": "License", "maturity": "Maturity"}, "By Language", {"property": "stars", "direction": "DESC"}, "language"),
+        "by-category.base": _base([common, 'status == "active"'], {"category": "Category", "language": "Language", "stars": "Stars", "use_case": "Use Case", "maturity": "Maturity"}, "By Category", {"property": "stars", "direction": "DESC"}, "category"),
+        "recently-starred.base": _base([common, 'status == "active"'], {"category": "Category", "language": "Language", "stars": "Stars", "maturity": "Maturity", "use_case": "Use Case", "date_starred": "Starred"}, "Recently Starred", {"property": "date_starred", "direction": "DESC"}, limit=50),
+        "review-queue.base": _base(['reviewed == false', 'status == "active"', common], {"category": "Category", "language": "Language", "stars": "Stars", "use_case": "Use Case", "maturity": "Maturity", "date_starred": "Starred"}, "Review Queue", {"property": "stars", "direction": "DESC"}),
+        "stale-repos.base": _base([common, 'status == "active"', 'last_pushed < now() - "365d"'], {"category": "Category", "language": "Language", "stars": "Stars", "forks": "Forks", "archived": "Archived", "last_pushed": "Last Pushed"}, "Stale Repos (>1 year)", {"property": "last_pushed", "direction": "ASC"}),
+        "unstarred.base": _base([common, 'status == "unstarred"'], {"category": "Category", "language": "Language", "stars": "Stars", "owner": "Owner", "date_starred": "Starred", "date_unstarred": "Unstarred"}, "Unstarred Repos", {"property": "date_unstarred", "direction": "DESC"}),
     }
     for name, value in bases.items():
         _write_text(_safe_child(directory, name), yaml.safe_dump(value, sort_keys=False, allow_unicode=True))
@@ -383,9 +406,14 @@ def _render_bases(directory: Path, subfolder: str) -> int:
 
 
 def _base(filters: list[str], properties: dict[str, str], name: str, sort: dict[str, str], group_by: str | None = None, limit: int | None = None) -> dict[str, Any]:
-    view: dict[str, Any] = {"type": "table", "name": name, "sort": [sort]}
+    view: dict[str, Any] = {
+        "type": "table",
+        "name": name,
+        "sort": [sort],
+        "order": ["file.name", *["note.{}".format(property_name) for property_name in properties]],
+    }
     if group_by:
-        view["group_by"] = group_by
+        view["groupBy"] = {"property": "note.{}".format(group_by), "direction": "ASC"}
     if limit is not None:
         view["limit"] = limit
     return {"filters": {"and": filters}, "properties": {key: {"displayName": value} for key, value in properties.items()}, "views": [view]}
@@ -499,6 +527,25 @@ def _integer(value: object) -> int:
 
 def _optional_text(value: object) -> str | None:
     return _clean_text(value) if isinstance(value, str) and value else None
+
+
+def _github_topics(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    topics = [_clean_text(topic).lower() for topic in value if isinstance(topic, str)]
+    return list(dict.fromkeys(topic for topic in topics if _TAG.fullmatch(topic)))
+
+
+def _semantic_tags(values: object) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    tags = [_clean_text(tag).lower() for tag in values if isinstance(tag, str)]
+    return list(
+        dict.fromkeys(
+            tag for tag in tags
+            if _TAG.fullmatch(tag) and not tag.isdigit() and tag not in _GENERIC_TAGS
+        )
+    )
 
 
 def _date(value: object) -> str | None:

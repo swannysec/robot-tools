@@ -9,9 +9,12 @@ text, prompts, model prose, command arguments containing credentials, or tokens.
 
 Malformed selected JSON, unsupported schema versions, unknown fields, invalid paths,
 missing selected files, and a legacy file without a `starduster` section fail before
-fetching. A valid legacy section may omit fields and receives historical defaults during
-the `0.6.x` compatibility period. Legacy `main_model` is ignored with a warning; legacy
-`synthesis_model` maps through the portable profile table in
+fetching. A shared user configuration that has no Starduster section instead returns
+`output_path_required` before any GitHub or model work, so an interactive host can ask
+once for an exact catalog directory. The host then runs `configure --output-dir PATH`
+and retries the original `sync`; it must not infer a destination. A valid legacy section
+may omit fields and receives historical defaults during the `0.6.x` compatibility
+period. Legacy `main_model` is ignored with a warning; legacy `synthesis_model` maps through the portable profile table in
 [configuration.md](configuration.md).
 
 The controller verifies the `gh` dependency and authentication before star fetching or
@@ -36,6 +39,16 @@ The selected adapter fails closed for unknown or ambiguous runtime, unsupported 
 authentication failures, invalid structured synthesis, prohibited events, or bounded
 timeout. The controller validates the entire result before writing each artifact.
 Rendering failures leave no partial public result.
+
+If the host task sandbox denies final catalog publication with `EACCES` or `EPERM`, the
+controller returns successful `write_pending` status after removing raw GitHub,
+authentication, and model artifacts. The private pending directory contains only the
+sanitized catalog and bounded manifest, and is retained for seven days. The host may
+request elevation only for the returned `commit-output` command, passing only its
+returned authority fields. `commit-output` rechecks ownership, expiration, manifest
+integrity, path safety, and current collision state before atomic publication. It leaves
+the pending catalog intact after a failed commit, and never performs GitHub, model, or
+authentication work. Do not elevate `sync` itself or read pending artifacts.
 
 If Python 3 or PyYAML is unavailable, startup returns `missing_dependency` before GitHub
 authentication or artifact creation. Install PyYAML in the controller's Python

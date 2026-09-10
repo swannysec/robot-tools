@@ -6,7 +6,8 @@ controller once:
 
 ```text
 python3 "$STARDUSTER_SKILL_DIR/scripts/starduster.py" sync \
-  [--limit N] [--full] [--project-dir PATH] [--confirm-rate] [--preserve-on-failure]
+  [--limit N] [--full] [--project-dir "PATH"] [--output-dir "PATH"] [--confirm-rate] \
+  [--preserve-on-failure]
 ```
 
 The controller automatically selects Codex when the current process exposes a known
@@ -16,13 +17,22 @@ known host is present, it fails closed instead of guessing.
 
 Handle only safe JSON. On interactive `confirmation_required`, ask the rate question in
 the safe details and rerun the same command with explicit `--confirm-rate`. Do not read
-the controller workspace, GitHub artifacts, prompts, or model output.
+the controller workspace, GitHub artifacts, prompts, or model output. On
+`output_path_required`, ask once for the exact catalog directory, run
+`configure --output-dir "PATH"`, and retry the original command. If the Codex task
+sandbox blocks the normal user configuration file, request permission only for that
+exact `configure` write. `--output-dir` changes
+only one run. A successful `write_pending` result requires elevation only for the
+package-local `commit-output` command described in `SKILL.md`, using its returned
+`pending_directory`, `output_root`, `output_dir`, and `capsule_digest` fields. Never
+elevate the full `sync` controller or inspect a pending catalog.
 
 ## Authentication and App Server isolation
 
 `RESEARCH_TOOLKIT_CODEX_AUTH=auto|oauth|api_key` chooses the authentication behavior
 described in [configuration.md](configuration.md). OAuth is copied only to a private
-App Server home, verified again after synthesis, and removed during cleanup. The
+App Server home, verified across the copy boundary, and removed during cleanup. A
+later Desktop credential refresh is allowed. The
 selected Codex executable is an external host dependency: `STARDUSTER_CODEX_BIN` is the
 explicit override, followed by the bundled Desktop executable and then `codex` on
 `PATH`. Each source must pass the same capability and isolation checks. The release live
@@ -50,7 +60,8 @@ closed rather than weakening the output contract.
 When explicitly requested, the controller writes a bounded, redacted run-scoped report
 of its inner App Server operation: selected binary/version, transport and lifecycle,
 authentication evidence, sandbox/environment posture, and prohibited-event count. OAuth
-evidence confirms that a private copy was removed and its source was unchanged. API-key
+evidence confirms that a private copy was removed and its source was unchanged while
+the copy was taken. API-key
 evidence confirms only ephemeral login and absence of persistent credentials; it makes
 no OAuth-copy claim. The acceptance runner, separately, combines catalog discovery, the
 exact public controller command, and filesystem-derived output provenance. Neither

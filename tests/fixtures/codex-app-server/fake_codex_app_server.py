@@ -70,16 +70,18 @@ def send(value: object) -> None:
 
 THREAD_ID = "thread-fixture"
 TURN_ID = "turn-fixture"
+OPTED_OUT_NOTIFICATION_METHODS: set[str] = set()
 
 
-def thread_start_result(cwd: str) -> dict[str, object]:
+def thread_start_result(cwd: str, requested_model: object) -> dict[str, object]:
+    model = requested_model if isinstance(requested_model, str) and requested_model else "fixture-model"
     result: dict[str, object] = {
         "activePermissionProfile": {"extends": None, "id": PERMISSION_PROFILE},
         "approvalPolicy": "never",
         "approvalsReviewer": "user",
         "cwd": cwd,
         "instructionSources": [],
-        "model": "fixture-model",
+        "model": model,
         "modelProvider": "fixture-provider",
         "runtimeWorkspaceRoots": [],
         "sandbox": {"networkAccess": False, "type": "readOnly"},
@@ -97,6 +99,8 @@ def thread_start_result(cwd: str) -> dict[str, object]:
         result["runtimeWorkspaceRoots"] = ["/unexpected"]
     elif SCENARIO == "attestation-sandbox-mismatch":
         result["sandbox"] = {"networkAccess": True, "type": "workspaceWrite", "writableRoots": [cwd]}
+    elif SCENARIO == "attestation-model-mismatch":
+        result["model"] = "fixture-model-mismatch"
     return result
 
 
@@ -190,13 +194,27 @@ for raw_line in sys.stdin:
         raise SystemExit(0)
 
     if method == "initialize":
+        capabilities = request.get("params", {}).get("capabilities", {})
+        opted_out = capabilities.get("optOutNotificationMethods", [])
+        if isinstance(opted_out, list):
+            OPTED_OUT_NOTIFICATION_METHODS.update(
+                value for value in opted_out if isinstance(value, str)
+            )
         send({"id": request_id, "result": {"server": "fixture"}})
     elif method == "initialized":
         continue
     elif method == "account/login/start":
         send({"id": request_id, "result": {"authenticated": True}})
     elif method == "thread/start":
-        send({"id": request_id, "result": thread_start_result(str(request["params"]["cwd"]))})
+        send(
+            {
+                "id": request_id,
+                "result": thread_start_result(
+                    str(request["params"]["cwd"]),
+                    request["params"].get("model"),
+                ),
+            }
+        )
     elif method == "turn/start":
         send({"id": request_id, "result": {"turn": {"id": TURN_ID}}})
         if SCENARIO == "event-flood":
@@ -210,6 +228,55 @@ for raw_line in sys.stdin:
         elif SCENARIO == "passive-items":
             for item_type in ("userMessage", "reasoning"):
                 send_item_lifecycle({"type": item_type, "id": f"{item_type}-fixture"})
+            send_agent_lifecycle()
+            send_turn_completed()
+        elif SCENARIO == "high-volume-deltas":
+            item = {"type": "agentMessage", "id": "item-fixture"}
+            send_item("item/started", item)
+            if "item/agentMessage/delta" not in OPTED_OUT_NOTIFICATION_METHODS:
+                for _ in range(4_097):
+                    send(
+                        {
+                            "method": "item/agentMessage/delta",
+                            "params": {
+                                "threadId": THREAD_ID,
+                                "turnId": TURN_ID,
+                                "itemId": "item-fixture",
+                                "delta": "x",
+                            },
+                        }
+                    )
+            item["text"] = json.dumps(SYNTHESIS_RESULT)
+            send_item("item/completed", item)
+            send_turn_completed()
+        elif SCENARIO == "reasoning-deltas":
+            reasoning_item_id = "reasoning-fixture"
+            notifications = (
+                (
+                    "item/reasoning/summaryTextDelta",
+                    {"delta": "fixture", "itemId": reasoning_item_id},
+                ),
+                (
+                    "item/reasoning/summaryPartAdded",
+                    {"itemId": reasoning_item_id, "summaryIndex": 0},
+                ),
+                (
+                    "item/reasoning/textDelta",
+                    {"delta": "fixture", "itemId": reasoning_item_id},
+                ),
+            )
+            for notification_method, notification_params in notifications:
+                if notification_method not in OPTED_OUT_NOTIFICATION_METHODS:
+                    send(
+                        {
+                            "method": notification_method,
+                            "params": {
+                                "threadId": THREAD_ID,
+                                "turnId": TURN_ID,
+                                **notification_params,
+                            },
+                        }
+                    )
             send_agent_lifecycle()
             send_turn_completed()
         elif SCENARIO == "forbidden-item":

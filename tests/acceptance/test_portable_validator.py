@@ -21,6 +21,7 @@ VALIDATOR = (
     / "validate-portable-skill.py"
 )
 FIXTURES = ROOT / "tests" / "fixtures" / "portable-skills"
+KCAP_SKILL = ROOT / "research-toolkit" / "skills" / "kcap"
 
 
 class PortableValidatorAcceptanceTests(unittest.TestCase):
@@ -114,6 +115,15 @@ class PortableValidatorAcceptanceTests(unittest.TestCase):
 
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertEqual(self.package_boundary(report)["status"], "pass")
+
+    def test_kcap_keeps_codex_model_policy_out_of_the_host_neutral_skill(self) -> None:
+        shared_instructions = (KCAP_SKILL / "SKILL.md").read_text(encoding="utf-8")
+        codex_instructions = (KCAP_SKILL / "references" / "runtime-codex.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("gpt-5.6-luna", shared_instructions)
+        self.assertIn("gpt-5.6-luna", codex_instructions)
 
 
 if __name__ == "__main__":

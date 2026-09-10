@@ -22,12 +22,37 @@ Profiles are `fast`, `balanced`, and `deep`. Unknown fields, malformed JSON, mis
 selected files, unsupported schema versions, and an absent `starduster` section in an
 otherwise selected JSON configuration fail safely.
 
+## First-run destination
+
+When neither an explicit `--output-dir` nor a Starduster configuration section is
+available, `sync` returns `output_path_required` before contacting GitHub or starting
+synthesis. Its safe details include a suggested dedicated catalog directory. An
+interactive host asks once for the user's exact directory, runs:
+
+```text
+python3 "$STARDUSTER_SKILL_DIR/scripts/starduster.py" configure --output-dir "PATH"
+```
+
+and retries the original `sync` command. `configure` atomically updates the normal
+user configuration file with mode `0600`, preserves the Kcap section and unrelated
+valid settings, stores the selected directory as `output_path`, and uses `subfolder:
+"."` so that directory is the exact catalog root.
+
+`sync --output-dir PATH` is a one-run, non-persistent override. A configuration named
+by `RESEARCH_TOOLKIT_CONFIG` is never changed by `configure`; a caller using it must
+update that selected file itself or pass `--output-dir`. Noninteractive and headless
+runs return the same machine-readable `output_path_required` result instead of
+prompting.
+
 ## Precedence
 
 1. File named by `RESEARCH_TOOLKIT_CONFIG`
 2. `~/.config/robot-tools/research-toolkit.json`
 3. Project `.claude/research-toolkit.local.md` through research-toolkit `0.6.x`
-4. Built-in defaults only when no configuration exists
+4. Built-in non-destination defaults after the user supplies `--output-dir`
+
+Public `sync` does not use the built-in destination silently. Without a Starduster
+section or `--output-dir`, it returns `output_path_required` so the host can ask once.
 
 An explicitly selected missing configuration fails. A legacy file is read only; the
 controller never appends defaults or modifies it. A present legacy file without a
@@ -65,10 +90,11 @@ requires a readable, regular OAuth file. `api_key` requires `OPENAI_API_KEY` and
 an ephemeral API-key login; billing then belongs to that API account rather than an
 OAuth Desktop session.
 
-The adapter snapshots the OAuth source, copies it to a private `0600` App Server home,
-verifies the source again after synthesis, and removes the private copy during cleanup.
-This is bounded run evidence, not a claim that an independently managed source cannot
-later change. Credentials never appear in prompts, controller JSON, model output, event
+The adapter opens the OAuth source without following symlinks, copies it to a private
+`0600` App Server home, verifies that the source did not change across that copy
+boundary, and removes the private copy during cleanup. A later Desktop credential
+refresh is allowed and does not invalidate completed synthesis. Credentials never
+appear in prompts, controller JSON, model output, event
 reports, or host diagnostics. The optional live
 API-key acceptance leg is requested only through
 `RESEARCH_TOOLKIT_TEST_OPENAI_API_KEY`; an ambient `OPENAI_API_KEY` never requests it.

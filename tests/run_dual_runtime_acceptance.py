@@ -54,6 +54,18 @@ HOST_RUNTIME_ENV = (
     "CODEX_CI",
     "RESEARCH_TOOLKIT_RUNTIME",
 )
+CODEX_HOST_INDICATORS = (
+    "CODEX_SESSION_ID",
+    "CODEX_THREAD_ID",
+    "CODEX_SANDBOX",
+    "CODEX_CI",
+)
+CODEX_DEFAULT_MODEL = "gpt-5.6-luna"
+MACOS_XCRUN_CACHE_WARNING = re.compile(
+    r"^python3: error: couldn't create cache file "
+    r"'/(?:private/)?var/folders/(?:[A-Za-z0-9_]+/)+T/xcrun_db-[A-Za-z0-9]+' "
+    r"\(errno=Operation not permitted\)$"
+)
 
 
 @dataclass
@@ -382,6 +394,22 @@ def safe_live_event_shape_summary(events: Sequence[Mapping[str, Any]]) -> dict[s
     return dict(sorted(summary.items()))
 
 
+def parse_live_shell_arguments(command: str, *, operation: str) -> list[str]:
+    """Parse a direct command or Codex's exact macOS ``/bin/zsh -lc`` wrapper."""
+    if re.search(r"(?:`|\$\(|;|&&|\|\||(?<!\|)\|(?!\|)|[<>])", command):
+        raise AssertionError(f"live provenance rejected a shell compound {operation} command")
+    try:
+        arguments = shlex.split(command, posix=True)
+    except ValueError as error:
+        raise AssertionError(f"live provenance could not parse {operation} command safely") from error
+    if len(arguments) == 3 and arguments[:2] == ["/bin/zsh", "-lc"]:
+        try:
+            arguments = shlex.split(arguments[2], posix=True)
+        except ValueError as error:
+            raise AssertionError(f"live provenance could not parse wrapped {operation} command safely") from error
+    return arguments
+
+
 def parse_live_capture_command(
     command: str,
     skill_dir: Path,
@@ -390,12 +418,7 @@ def parse_live_capture_command(
     expected_project_dir: Path,
 ) -> None:
     """Fail closed unless *command* is the copied public capture controller."""
-    if re.search(r"(?:`|\$\(|;|&&|\|\||(?<!\|)\|(?!\|)|[<>])", command):
-        raise AssertionError("live provenance rejected a shell compound or raw-reader command")
-    try:
-        arguments = shlex.split(command, posix=True)
-    except ValueError as error:
-        raise AssertionError("live provenance could not parse command safely") from error
+    arguments = parse_live_shell_arguments(command, operation="capture")
     script_indexes = [
         index for index, value in enumerate(arguments)
         if value.endswith("/scripts/kcap.py") or value == "scripts/kcap.py"
@@ -416,6 +439,235 @@ def parse_live_capture_command(
         raise AssertionError("live provenance capture command differs from the requested command")
     if canonical_live_path(arguments[5]) != expected_project:
         raise AssertionError("live provenance capture command used the wrong temporary project directory")
+
+
+def parse_live_commit_output_command(command: str, skill_dir: Path) -> tuple[Path, list[str]]:
+    """Require the one elevated follow-up to commit a controller pending capsule."""
+    arguments = parse_live_shell_arguments(command, operation="commit-output")
+    expected_script = canonical_live_path(skill_dir / "scripts" / "kcap.py")
+    if (
+        len(arguments) != 14
+        or arguments[0] != "python3"
+        or arguments[2] != "commit-output"
+        or canonical_live_path(arguments[1]) != expected_script
+        or arguments[4:14:2]
+        != ["--output-root", "--output-dir", "--filename", "--collision", "--capsule-digest",]
+    ):
+        raise AssertionError("live provenance requires the exact elevated commit-output command")
+    capsule = canonical_live_path(arguments[3])
+    temporary_root = canonical_live_path(tempfile.gettempdir())
+    if capsule.parent != temporary_root or not capsule.name.startswith("kcap-pending-"):
+        raise AssertionError("live provenance commit-output used an invalid pending directory")
+    return capsule, arguments
+
+
+def live_command_evidence(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Collect only trusted command lifecycle records from host JSONL events.
+
+    Direct ``command_execution`` records are retained for the Claude stream and
+    deterministic fixtures.  Codex JSONL emits item lifecycle records, which
+    are correlated by item ID and only accepted when both endpoints agree.
+    """
+    records: list[dict[str, Any]] = []
+    lifecycle: dict[str, dict[str, Mapping[str, Any]]] = {}
+    claude_bash: dict[str, str] = {}
+    completed_claude_bash: set[str] = set()
+    for event in events:
+        if event.get("type") == "command_execution" and isinstance(event.get("command"), str):
+            records.append(dict(event))
+            continue
+        item = event.get("item")
+        if (
+            event.get("type") in {"item.started", "item.completed"}
+            and isinstance(item, Mapping)
+            and item.get("type") == "command_execution"
+            and isinstance(item.get("command"), str)
+        ):
+            item_id = item.get("id")
+            if not isinstance(item_id, str) or not item_id:
+                raise AssertionError("live provenance command lifecycle lacks a stable item id")
+            state = str(event["type"]).split(".", 1)[1]
+            states = lifecycle.setdefault(item_id, {})
+            if state in states:
+                raise AssertionError("live provenance command lifecycle has duplicate item state")
+            states[state] = item
+            continue
+        message = event.get("message")
+        content = message.get("content") if isinstance(message, Mapping) else None
+        if not isinstance(content, list):
+            continue
+        if event.get("type") == "assistant":
+            for part in content:
+                if (
+                    isinstance(part, Mapping)
+                    and part.get("type") == "tool_use"
+                    and part.get("name") == "Bash"
+                ):
+                    tool_id = part.get("id")
+                    tool_input = part.get("input")
+                    command = tool_input.get("command") if isinstance(tool_input, Mapping) else None
+                    if not isinstance(tool_id, str) or not tool_id or not isinstance(command, str):
+                        raise AssertionError("Claude live provenance Bash invocation lacks stable command evidence")
+                    if tool_id in claude_bash or tool_id in completed_claude_bash:
+                        raise AssertionError("Claude live Bash invocation reused a tool id")
+                    claude_bash[tool_id] = command
+        elif event.get("type") == "user":
+            for part in content:
+                if not isinstance(part, Mapping) or part.get("type") != "tool_result":
+                    continue
+                tool_id = part.get("tool_use_id")
+                if isinstance(tool_id, str) and tool_id in completed_claude_bash:
+                    raise AssertionError("Claude live Bash invocation has a duplicate completed tool result")
+                if tool_id not in claude_bash:
+                    continue
+                result_content = part.get("content")
+                if isinstance(result_content, str):
+                    stdout = result_content
+                elif isinstance(result_content, list) and all(
+                    isinstance(block, Mapping)
+                    and block.get("type") == "text"
+                    and isinstance(block.get("text"), str)
+                    for block in result_content
+                ):
+                    stdout = "".join(str(block["text"]) for block in result_content)
+                else:
+                    raise AssertionError("Claude live Bash result lacks bounded text evidence")
+                records.append(
+                    {
+                        "type": "command_execution",
+                        "command": claude_bash.pop(str(tool_id)),
+                        "status": "completed",
+                        "exit_code": 1 if part.get("is_error") is True else 0,
+                        "stdout": stdout,
+                    }
+                )
+                completed_claude_bash.add(str(tool_id))
+    for item_id, states in lifecycle.items():
+        if set(states) != {"started", "completed"}:
+            raise AssertionError(f"live provenance command lifecycle is incomplete for {item_id}")
+        started, completed = states["started"], states["completed"]
+        if started["command"] != completed["command"]:
+            raise AssertionError(f"live provenance command lifecycle is ambiguous for {item_id}")
+        record = dict(completed)
+        record["type"] = "command_execution"
+        records.append(record)
+    if claude_bash:
+        raise AssertionError("Claude live Bash command lacks completed controller evidence")
+    return records
+
+
+def bounded_safe_controller_result(record: Mapping[str, Any], *, operation: str) -> dict[str, Any]:
+    """Decode a controller result without retaining model or command output."""
+    status = record.get("status")
+    exit_code = record.get("exit_code")
+    stdout = record.get("stdout", record.get("aggregated_output"))
+    if stdout is None:
+        raise AssertionError(f"live {operation} command lacks bounded controller JSON output")
+    if status != "completed" or exit_code != 0:
+        raise AssertionError(f"live {operation} command requires completed status and exit 0")
+    if not isinstance(stdout, str) or len(stdout.encode("utf-8")) > 65536:
+        raise AssertionError(f"live {operation} command requires bounded controller JSON output")
+    lines = stdout.splitlines()
+    payload = lines[1] if len(lines) == 2 and MACOS_XCRUN_CACHE_WARNING.fullmatch(lines[0]) else stdout
+    try:
+        result = json.loads(payload)
+    except json.JSONDecodeError as error:
+        lines = stdout.splitlines()
+        shape = {
+            "field": "stdout" if record.get("stdout") is not None else "aggregated_output",
+            "byte_length": len(stdout.encode("utf-8")),
+            "line_count": len(lines),
+            "lines": [
+                {
+                    "length": len(line),
+                    "starts_json": line.lstrip().startswith("{"),
+                    "ends_json": line.rstrip().endswith("}"),
+                }
+                for line in lines[:32]
+            ],
+            "truncated": len(lines) > 32,
+        }
+        raise AssertionError(
+            f"live {operation} command did not emit controller JSON; safe output shape {json.dumps(shape, sort_keys=True)}"
+        ) from error
+    if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(result.get("status"), str):
+        raise AssertionError(f"live {operation} command did not emit successful controller JSON")
+    return result
+
+
+def bounded_safe_controller_error(
+    record: Mapping[str, Any], *, operation: str, expected_code: str
+) -> dict[str, Any]:
+    """Decode one bounded expected controller error without retaining raw output."""
+    if record.get("status") != "completed" or record.get("exit_code") != 1:
+        raise AssertionError(f"live {operation} expected a completed exit 1 controller error")
+    stdout = record.get("stdout", "")
+    stderr = record.get("stderr", record.get("aggregated_output"))
+    if stdout not in (None, "") or not isinstance(stderr, str) or len(stderr.encode("utf-8")) > 65536:
+        raise AssertionError(f"live {operation} expected bounded safe JSON on stderr")
+    try:
+        result = json.loads(stderr)
+    except json.JSONDecodeError as error:
+        raise AssertionError(f"live {operation} expected safe controller error JSON on stderr") from error
+    error = result.get("error") if isinstance(result, Mapping) else None
+    if (
+        not isinstance(result, Mapping)
+        or result.get("ok") is not False
+        or not isinstance(error, Mapping)
+        or error.get("code") != expected_code
+        or not isinstance(error.get("message"), str)
+    ):
+        raise AssertionError(f"live {operation} did not emit expected safe {expected_code} error")
+    return dict(result)
+
+
+def command_output_paths(record: Mapping[str, Any], key: str) -> set[Path] | None:
+    value = record.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(path, str) for path in value):
+        raise AssertionError("live provenance command output evidence is invalid")
+    return {canonical_live_path(path) for path in value}
+
+
+def require_capture_pending_authority(result: Mapping[str, Any], output_root: Path) -> dict[str, Any]:
+    """Validate the complete capability returned by a write-pending capture."""
+    required = {
+        "pending_directory", "output_root", "output_dir", "filename", "collision", "capsule_digest",
+    }
+    if result.get("status") != "write_pending" or not required <= set(result):
+        raise AssertionError("live commit-output requires capture write_pending authority")
+    capsule = result["pending_directory"]
+    output_dir = result["output_dir"]
+    filename = result["filename"]
+    collision = result["collision"]
+    digest = result["capsule_digest"]
+    if not all(isinstance(value, str) and value for value in (capsule, output_dir, filename, collision, digest)):
+        raise AssertionError("live write_pending authority has invalid values")
+    capsule_path = canonical_live_path(capsule)
+    temporary_root = canonical_live_path(tempfile.gettempdir())
+    if capsule_path.parent != temporary_root or not capsule_path.name.startswith("kcap-pending-"):
+        raise AssertionError("live write_pending authority has an invalid pending directory")
+    root = canonical_live_path(output_root)
+    if canonical_live_path(str(result["output_root"])) != root:
+        raise AssertionError("live write_pending authority used the wrong output root")
+    resolved_output_dir = canonical_live_path(output_dir)
+    try:
+        resolved_output_dir.relative_to(root)
+    except ValueError as error:
+        raise AssertionError("live write_pending authority output directory escaped the output root") from error
+    if Path(filename).name != filename or not filename.endswith(".md") or collision not in {"suffix", "replace", "skip"}:
+        raise AssertionError("live write_pending authority has invalid output arguments")
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise AssertionError("live write_pending authority has an invalid capsule digest")
+    return {
+        "pending_directory": capsule_path,
+        "output_root": root,
+        "output_dir": resolved_output_dir,
+        "filename": filename,
+        "collision": collision,
+        "capsule_digest": digest,
+    }
 
 
 def resolve_live_catalog_path(value: str | Path, aliases: Mapping[str, Path]) -> Path:
@@ -449,10 +701,11 @@ def verify_live_host_acceptance(
     must not be able to choose either the note or the reported source identity.
     """
     del final_host_message
-    commands = live_command_events(events)
-    if len(commands) != 1:
+    command_records = live_command_evidence(events)
+    commands = [record["command"] for record in command_records if isinstance(record.get("command"), str)]
+    if len(commands) not in {1, 2}:
         raise AssertionError(
-            "live provenance requires exactly one command-execution capture operation; observed {}; event shapes {}".format(
+            "live provenance requires one capture and at most one conditional commit-output operation; observed {}; event shapes {}".format(
                 len(commands), safe_live_event_shape_summary(events)
             )
         )
@@ -463,6 +716,67 @@ def verify_live_host_acceptance(
         source_url,
         expected_project_dir=expected_project_dir,
     )
+    capture_result = bounded_safe_controller_result(command_records[0], operation="capture")
+    pending_authority: dict[str, Any] | None = None
+    pending_directory: Path | None = None
+    if len(commands) == 2:
+        # Validate the second operation's shape before examining controller
+        # output, so an extra capture or raw-reader command cannot masquerade
+        # as a missing pending authority.
+        parsed_capsule, commit_arguments = parse_live_commit_output_command(commands[1], expected_skill)
+        pending_authority = require_capture_pending_authority(capture_result, output_root)
+        pending_directory = parsed_capsule
+        if (
+            canonical_live_path(commit_arguments[3]) != pending_authority["pending_directory"]
+            or canonical_live_path(commit_arguments[5]) != pending_authority["output_root"]
+            or canonical_live_path(commit_arguments[7]) != pending_authority["output_dir"]
+            or commit_arguments[9] != pending_authority["filename"]
+            or commit_arguments[11] != pending_authority["collision"]
+            or commit_arguments[13] != pending_authority["capsule_digest"]
+        ):
+            raise AssertionError("live commit-output command differs from capture authority")
+        commit_result = bounded_safe_controller_result(command_records[1], operation="commit-output")
+        commit_status = commit_result.get("status")
+        expected_output = pending_authority["output_dir"] / pending_authority["filename"]
+        output_before = command_output_paths(command_records[1], "output_files_before")
+        output_after = command_output_paths(command_records[1], "output_files_after")
+        if commit_status in {"created", "replaced"}:
+            output_file = commit_result.get("output_file")
+            if not isinstance(output_file, str) or canonical_live_path(output_file) != expected_output:
+                raise AssertionError("live commit-output terminal result did not name the authorized output")
+            if commit_status == "created" and output_before is not None and expected_output in output_before:
+                raise AssertionError("live commit-output claimed success for a preexisting output")
+            if output_after is not None and expected_output not in output_after:
+                raise AssertionError("live commit-output terminal result lacks output filesystem evidence")
+        elif commit_status == "skipped_duplicate":
+            existing_paths = commit_result.get("existing_paths")
+            if (
+                not isinstance(existing_paths, list)
+                or [canonical_live_path(path) for path in existing_paths if isinstance(path, str)] != [expected_output]
+                or output_before is None
+                or expected_output not in output_before
+                or output_after is None
+                or expected_output not in output_after
+            ):
+                raise AssertionError("live commit-output skipped_duplicate result lacks matching existing output evidence")
+        else:
+            raise AssertionError("live commit-output did not reach a terminal success status")
+    else:
+        capture_status = capture_result.get("status")
+        output_file = capture_result.get("output_file")
+        if capture_status == "write_pending":
+            raise AssertionError("live write_pending capture requires its conditional commit-output")
+        if capture_status not in {"created", "replaced", "skipped_duplicate"}:
+            raise AssertionError("live capture did not reach a terminal success status")
+        if not isinstance(output_file, str):
+            raise AssertionError("live capture terminal result did not name an output file")
+        capture_path = canonical_live_path(output_file)
+        output_before = command_output_paths(command_records[0], "output_files_before")
+        output_after = command_output_paths(command_records[0], "output_files_after")
+        if capture_status == "created" and output_before is not None and capture_path in output_before:
+            raise AssertionError("live capture claimed success for a preexisting output")
+        if capture_status != "skipped_duplicate" and output_after is not None and capture_path not in output_after:
+            raise AssertionError("live capture terminal result lacks output filesystem evidence")
 
     expected_catalog = canonical_live_path(expected_skill / "SKILL.md")
     resolved_catalog_paths = [resolve_live_catalog_path(path, catalog_aliases) for path in catalog_paths]
@@ -470,22 +784,201 @@ def verify_live_host_acceptance(
         if catalog_path != expected_catalog:
             raise AssertionError("live provenance catalog points to a different temporary skill source")
 
-    if dict(source_auth_before) != dict(source_auth_after):
-        raise AssertionError("live provenance source authentication metadata changed")
+    # The live host proof can attest the private-copy boundary only.  It cannot
+    # safely claim that an independently refreshed OAuth source stayed immutable
+    # for the whole host run.
+    del source_auth_before, source_auth_after
 
     root = canonical_live_path(output_root)
     note_files = sorted(path.resolve() for path in root.rglob("*.md"))
     if len(note_files) != 1:
         raise AssertionError("live provenance could not derive one output file from the filesystem")
     details = verify_live_output(note_files[0], root, source_url=source_url)
+    if pending_authority is None and capture_path != note_files[0]:
+        raise AssertionError("live capture terminal result differs from the filesystem-derived output")
+    if pending_authority is not None and note_files[0] != pending_authority["output_dir"] / pending_authority["filename"]:
+        raise AssertionError("live commit-output filesystem result differs from its authorized output")
     details.update(
         {
             "capture_command_count": 1,
+            "commit_output_command_count": len(commands) - 1,
             "catalog_source_verified": bool(resolved_catalog_paths),
             "catalog_source_count": len(resolved_catalog_paths),
-            "source_auth_metadata_unchanged": True,
+            **({"pending_directory": str(pending_directory)} if pending_directory is not None else {}),
         }
     )
+    return details
+
+
+def _parse_starduster_public_command(
+    command: str,
+    skill_dir: Path,
+    *,
+    expected_project_dir: Path,
+    expected_limit: int,
+) -> tuple[str, list[str]]:
+    """Validate one public Starduster host-controller command, fail closed."""
+    arguments = parse_live_shell_arguments(command, operation="Starduster")
+    expected_script = canonical_live_path(skill_dir / "scripts" / "starduster.py")
+    if len(arguments) < 3 or arguments[0] != "python3" or canonical_live_path(arguments[1]) != expected_script:
+        raise AssertionError("live Starduster provenance forbids raw readers and non-controller commands")
+    operation = arguments[2]
+    project = canonical_live_path(expected_project_dir)
+    if operation == "sync":
+        if (
+            len(arguments) != 7
+            or arguments[3:6] != ["--limit", str(expected_limit), "--project-dir"]
+            or canonical_live_path(arguments[6]) != project
+        ):
+            raise AssertionError("live Starduster provenance requires the exact public sync command")
+    elif operation == "configure":
+        if len(arguments) != 7 or arguments[3] != "--output-dir" or arguments[5] != "--project-dir":
+            raise AssertionError("live Starduster provenance requires the exact public configure command")
+        if canonical_live_path(arguments[6]) != project:
+            raise AssertionError("live Starduster configure used the wrong temporary project directory")
+        destination = Path(arguments[4])
+        if not destination.is_absolute() or any(part in {"", ".", ".."} for part in destination.parts[1:]):
+            raise AssertionError("live Starduster configure used an invalid output directory")
+    elif operation == "commit-output":
+        if len(arguments) != 10 or arguments[4:10:2] != ["--output-root", "--output-dir", "--capsule-digest"]:
+            raise AssertionError("live Starduster provenance requires the exact narrow commit-output command")
+    else:
+        raise AssertionError("live Starduster provenance forbids raw readers and non-controller commands")
+    return operation, arguments
+
+
+def _require_starduster_pending_authority(result: Mapping[str, Any], output_root: Path) -> dict[str, Any]:
+    required = {"pending_directory", "output_root", "output_dir", "capsule_digest"}
+    if result.get("status") != "write_pending" or not required <= set(result):
+        raise AssertionError("live Starduster commit-output requires sync write_pending authority")
+    pending, authority_root, authority_dir, digest = (
+        result[name] for name in ("pending_directory", "output_root", "output_dir", "capsule_digest")
+    )
+    if not all(isinstance(value, str) and value for value in (pending, authority_root, authority_dir, digest)):
+        raise AssertionError("live Starduster write_pending authority has invalid values")
+    pending_path = canonical_live_path(pending)
+    if pending_path.parent != canonical_live_path(tempfile.gettempdir()) or not pending_path.name.startswith("starduster-pending-"):
+        raise AssertionError("live Starduster write_pending authority has an invalid pending directory")
+    root = canonical_live_path(output_root)
+    if canonical_live_path(authority_root) != root:
+        raise AssertionError("live Starduster write_pending authority used the wrong output root")
+    resolved_dir = canonical_live_path(authority_dir)
+    try:
+        resolved_dir.relative_to(root)
+    except ValueError as error:
+        raise AssertionError("live Starduster write_pending authority output directory escaped the output root") from error
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise AssertionError("live Starduster write_pending authority has an invalid capsule digest")
+    return {
+        "pending_directory": pending_path,
+        "output_root": root,
+        "output_dir": resolved_dir,
+        "capsule_digest": digest,
+    }
+
+
+def _verify_starduster_host_filesystem(output_root: Path) -> dict[str, Any]:
+    """Derive Starduster live success solely from bounded filesystem effects."""
+    root = canonical_live_path(output_root)
+    notes = sorted(path.resolve() for path in root.rglob("*.md"))
+    bases = sorted(path.resolve() for path in root.rglob("*.base"))
+    if len(notes) != 5 or len(bases) != 7:
+        raise AssertionError("live Starduster run did not derive five repository notes and seven Bases from the filesystem")
+    if any(not path.is_file() for path in (*notes, *bases)):
+        raise AssertionError("live Starduster filesystem result contains a non-regular output")
+    return {
+        "repo_note_count": len(notes), "base_index_count": len(bases),
+        "output_root": str(root), "filesystem_derived": True,
+    }
+
+
+def verify_starduster_host_acceptance(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    skill_dir: Path,
+    output_root: Path,
+    expected_project_dir: Path,
+    expected_limit: int,
+    final_host_message: object = None,
+) -> dict[str, Any]:
+    """Verify public Starduster host orchestration without trusting host prose."""
+    del final_host_message
+    records = live_command_evidence(events)
+    commands = [record.get("command") for record in records]
+    if not all(isinstance(command, str) for command in commands):
+        raise AssertionError("live Starduster provenance requires controller command evidence")
+    parsed = [
+        _parse_starduster_public_command(
+            str(command), skill_dir, expected_project_dir=expected_project_dir, expected_limit=expected_limit
+        )
+        for command in commands
+    ]
+    operations = [operation for operation, _ in parsed]
+    sync_count = operations.count("sync")
+    configure_count = operations.count("configure")
+    commit_count = operations.count("commit-output")
+    if operations == ["sync"]:
+        result = bounded_safe_controller_result(records[0], operation="Starduster sync")
+        if result.get("status") != "completed":
+            raise AssertionError("live Starduster sync did not reach a terminal success status")
+    elif operations in (["sync", "configure", "sync"], ["sync", "configure", "sync", "commit-output"]):
+        bounded_safe_controller_error(
+            records[0], operation="Starduster sync", expected_code="output_path_required"
+        )
+        configured = bounded_safe_controller_result(records[1], operation="Starduster configure")
+        configured_path = configured.get("output_dir")
+        if configured.get("status") != "configured" or not isinstance(configured_path, str):
+            raise AssertionError("live Starduster configure did not return its configured output directory")
+        if canonical_live_path(parsed[1][1][4]) != canonical_live_path(configured_path):
+            raise AssertionError("live Starduster configure result differs from its requested destination")
+        final = bounded_safe_controller_result(records[2], operation="Starduster sync")
+        if operations == ["sync", "configure", "sync"]:
+            if final.get("status") != "completed":
+                raise AssertionError("live Starduster retried sync did not reach a terminal success status")
+        else:
+            authority = _require_starduster_pending_authority(final, output_root)
+            arguments = parsed[3][1]
+            if (
+                canonical_live_path(arguments[3]) != authority["pending_directory"]
+                or canonical_live_path(arguments[5]) != authority["output_root"]
+                or canonical_live_path(arguments[7]) != authority["output_dir"]
+                or arguments[9] != authority["capsule_digest"]
+            ):
+                raise AssertionError("live Starduster commit-output command differs from sync authority")
+            committed = bounded_safe_controller_result(records[3], operation="Starduster commit-output")
+            if committed.get("status") != "completed":
+                raise AssertionError("live Starduster commit-output did not reach a terminal success status")
+    elif operations == ["sync", "commit-output"]:
+        sync_result = bounded_safe_controller_result(records[0], operation="Starduster sync")
+        authority = _require_starduster_pending_authority(sync_result, output_root)
+        arguments = parsed[1][1]
+        if (
+            canonical_live_path(arguments[3]) != authority["pending_directory"]
+            or canonical_live_path(arguments[5]) != authority["output_root"]
+            or canonical_live_path(arguments[7]) != authority["output_dir"]
+            or arguments[9] != authority["capsule_digest"]
+        ):
+            raise AssertionError("live Starduster commit-output command differs from sync authority")
+        committed = bounded_safe_controller_result(records[1], operation="Starduster commit-output")
+        if committed.get("status") != "completed":
+            raise AssertionError("live Starduster commit-output did not reach a terminal success status")
+    else:
+        raise AssertionError("live Starduster provenance permits only sync, conditional configure/retry, or narrow commit-output")
+
+    details = _verify_starduster_host_filesystem(output_root)
+    details.update(
+        {
+            "sync_command_count": sync_count,
+            "configure_command_count": configure_count,
+            "commit_output_command_count": commit_count,
+        }
+    )
+    if operations in (["sync", "configure", "sync"], ["sync", "configure", "sync", "commit-output"]):
+        details["configured_output_dir"] = str(canonical_live_path(parsed[1][1][4]))
+    if operations == ["sync", "commit-output"]:
+        details["pending_directory"] = str(canonical_live_path(parsed[1][1][3]))
+    elif operations == ["sync", "configure", "sync", "commit-output"]:
+        details["pending_directory"] = str(canonical_live_path(parsed[3][1][3]))
     return details
 
 
@@ -510,9 +1003,19 @@ def verify_codex_app_server_provenance_report(
     expected_catalog_path: Path,
     expected_output_root: Path,
     expected_auth_mode: str = "oauth",
+    expected_auth_copy_boundary: bool = True,
     expected_synthesis_batches: int | None = None,
+    expected_synthesis_model: str | None = None,
+    expected_synthesis_effort: str | None = None,
 ) -> dict[str, Any]:
     """Validate the small, redacted evidence record from the signed App Server proof."""
+    allowed_top_level = {
+        "runtime", "transport", "binary", "session", "code_mode", "synthesis_batches",
+        "synthesis", "provenance", "sandbox", "environment", "auth", "prohibited_event_count",
+    }
+    unknown_top_level = set(report) - allowed_top_level
+    if unknown_top_level:
+        raise AssertionError("App Server provenance report has unrecognized schema fields")
     if _report_has_sensitive_key(report):
         raise AssertionError("App Server provenance report contains sensitive prompt or credential fields")
     if report.get("runtime") != "codex-app-server" or report.get("transport") != "stdio":
@@ -520,21 +1023,33 @@ def verify_codex_app_server_provenance_report(
     binary = report.get("binary")
     if not isinstance(binary, Mapping):
         raise AssertionError("App Server provenance lacks binary evidence")
+    if set(binary) != {"path", "version", "source"}:
+        raise AssertionError("App Server provenance binary evidence has an invalid schema")
     if canonical_live_path(str(binary.get("path", ""))) != canonical_live_path(expected_binary):
         raise AssertionError("App Server provenance used a different bundled binary")
     version = binary.get("version")
     if not isinstance(version, str) or not version.strip() or binary.get("source") != "bundled-desktop":
         raise AssertionError("App Server provenance lacks the signed bundled-build evidence")
-    if not isinstance(report.get("session"), Mapping) or report["session"].get("ephemeral") is not True:
+    if not isinstance(report.get("session"), Mapping) or report["session"] != {"ephemeral": True}:
         raise AssertionError("App Server provenance requires an ephemeral thread")
     code_mode = report.get("code_mode")
     if not isinstance(code_mode, Mapping):
         raise AssertionError("App Server provenance lacks Code Mode evidence")
+    if set(code_mode) != {"allowed_operations", "lifecycle"}:
+        raise AssertionError("App Server provenance Code Mode evidence has an invalid schema")
     synthesis_batches = report.get("synthesis_batches", 1)
     if isinstance(synthesis_batches, bool) or not isinstance(synthesis_batches, int) or synthesis_batches < 0:
         raise AssertionError("App Server provenance has an invalid synthesis batch count")
     if expected_synthesis_batches is not None and synthesis_batches != expected_synthesis_batches:
         raise AssertionError("App Server provenance has an unexpected synthesis batch count")
+    if (expected_synthesis_model is None) != (expected_synthesis_effort is None):
+        raise AssertionError("App Server provenance requires a complete expected synthesis selection")
+    synthesis = report.get("synthesis")
+    if expected_synthesis_model is not None:
+        if not isinstance(synthesis, Mapping) or set(synthesis) != {"model", "effort"}:
+            raise AssertionError("App Server provenance lacks explicit selected synthesis model and effort")
+        if synthesis != {"model": expected_synthesis_model, "effort": expected_synthesis_effort}:
+            raise AssertionError("App Server provenance recorded an unexpected selected synthesis model or effort")
     if synthesis_batches == 0:
         if code_mode.get("allowed_operations") != []:
             raise AssertionError("zero-work App Server provenance must not allow Code Mode operations")
@@ -546,10 +1061,14 @@ def verify_codex_app_server_provenance_report(
         if code_mode.get("lifecycle") != ["thread.start", "turn.start", "turn.complete"]:
             raise AssertionError("App Server provenance has an incomplete Code Mode lifecycle")
     environment = report.get("environment")
-    if not isinstance(environment, Mapping) or environment.get("mode") != "empty" or environment.get("allowed") != []:
+    if not isinstance(environment, Mapping) or environment != {"mode": "empty", "allowed": []}:
         raise AssertionError("App Server provenance requires an empty model environment")
     sandbox = report.get("sandbox")
     filesystem = sandbox.get("filesystem") if isinstance(sandbox, Mapping) else None
+    if not isinstance(sandbox, Mapping) or set(sandbox) != {"network", "filesystem"}:
+        raise AssertionError("App Server provenance sandbox evidence has an invalid schema")
+    if not isinstance(filesystem, Mapping) or set(filesystem) != {"root", "tmp", "slash_tmp"}:
+        raise AssertionError("App Server provenance filesystem evidence has an invalid schema")
     if not isinstance(filesystem, Mapping) or sandbox.get("network") != "deny":
         raise AssertionError("App Server provenance requires a network-deny sandbox")
     if any(filesystem.get(root) != "deny" for root in ("root", "tmp", "slash_tmp")):
@@ -557,7 +1076,13 @@ def verify_codex_app_server_provenance_report(
     auth = report.get("auth")
     expected_auth: Mapping[str, Any]
     if expected_auth_mode == "oauth":
-        expected_auth = {"mode": "oauth", "source_unchanged": True, "private_copy_removed": True}
+        expected_auth = {
+            "mode": "oauth",
+            "source_unchanged": True,
+            "private_copy_removed": True,
+        }
+        if expected_auth_copy_boundary:
+            expected_auth["auth_copy_boundary_verified"] = True
     elif expected_auth_mode == "api_key":
         expected_auth = {"mode": "api_key", "ephemeral_login": True, "persistent_credentials": False}
     else:
@@ -571,6 +1096,8 @@ def verify_codex_app_server_provenance_report(
     provenance = report.get("provenance")
     if not isinstance(provenance, Mapping):
         raise AssertionError("App Server provenance lacks capture evidence")
+    if set(provenance) != {"capture_command", "public_host_command_count", "catalog_source", "output_root"}:
+        raise AssertionError("App Server provenance capture evidence has an invalid schema")
     if provenance.get("capture_command") != expected_capture_command or provenance.get("public_host_command_count") != 1:
         raise AssertionError("App Server provenance requires one exact capture command")
     if canonical_live_path(str(provenance.get("catalog_source", ""))) != canonical_live_path(expected_catalog_path):
@@ -585,6 +1112,11 @@ def verify_codex_app_server_provenance_report(
         "capture_command": expected_capture_command,
         "prohibited_event_count": 0,
         "synthesis_batches": synthesis_batches,
+        **(
+            {"synthesis": {"model": expected_synthesis_model, "effort": expected_synthesis_effort}}
+            if expected_synthesis_model is not None
+            else {}
+        ),
     }
 
 
@@ -866,11 +1398,16 @@ def add_deterministic_acceptance_cases(harness: Harness) -> None:
         "tests.acceptance.test_codex_app_server",
         "tests.acceptance.test_kcap_controller",
         "tests.acceptance.test_kcap_network_process",
+        "tests.acceptance.test_kcap_oauth_boundary",
+        "tests.acceptance.test_kcap_output_state",
         "tests.acceptance.test_kcap_policy",
+        "tests.acceptance.test_kcap_synthesis_policy",
         "tests.acceptance.test_live_provenance",
         "tests.acceptance.test_portable_validator",
         "tests.acceptance.test_starduster_sync",
         "tests.acceptance.test_starduster_rendering",
+        "tests.acceptance.test_starduster_tag_semantics",
+        "tests.acceptance.test_starduster_output_state",
         "tests.acceptance.test_starduster_policy",
     ]
     app_server_module = "tests.acceptance.test_starduster_app_server"
@@ -920,8 +1457,10 @@ def add_kcap_cases(harness: Harness) -> None:
             raise AssertionError(f"explicit config source was {payload.get('source')!r}")
         if payload.get("effective", {}).get("synthesis_profile") != "fast":
             raise AssertionError("fast synthesis profile was not retained")
-        if payload.get("effective", {}).get("codex_reasoning") != "low":
-            raise AssertionError("fast profile did not map to low Codex reasoning")
+        if payload.get("effective", {}).get("codex_model") != CODEX_DEFAULT_MODEL:
+            raise AssertionError("standard capture did not select the frozen Codex model")
+        if payload.get("effective", {}).get("codex_reasoning") != "medium":
+            raise AssertionError("standard capture did not map to medium Codex reasoning")
         expected_output = str((output_path / "captures").resolve())
         actual_output = payload.get("effective", {}).get("output_dir")
         if not isinstance(actual_output, str) or canonical_live_path(actual_output) != canonical_live_path(expected_output):
@@ -1044,15 +1583,31 @@ def add_kcap_cases(harness: Harness) -> None:
 
     def profile_mapping_case() -> dict[str, Any]:
         mappings: dict[str, Any] = {}
-        for mode, content_type in (("deep", "article"), ("full", "tweet"), ("full", "video")):
+        expected_codex_selection = {
+            "standard-article": {"mode": "standard", "model": CODEX_DEFAULT_MODEL, "effort": "medium"},
+            "deep-article": {"mode": "deep", "model": CODEX_DEFAULT_MODEL, "effort": "high"},
+            "full-article": {"mode": "full", "model": CODEX_DEFAULT_MODEL, "effort": "medium"},
+            "full-video": {"mode": "standard", "model": CODEX_DEFAULT_MODEL, "effort": "medium"},
+        }
+        for mode, content_type in (("standard", "article"), ("deep", "article"), ("full", "article"), ("full", "video")):
             _, payload = kcap_command(
                 ["config", "--project-dir", str(harness.workspace), "--mode", mode, "--content-type", content_type],
                 env=base_env,
             )
-            mappings[f"{mode}-{content_type}"] = payload["effective"]
+            key = f"{mode}-{content_type}"
+            effective = payload["effective"]
+            expected = expected_codex_selection[key]
+            actual = {
+                "mode": effective.get("mode"),
+                "model": effective.get("codex_model"),
+                "effort": effective.get("codex_reasoning"),
+            }
+            if actual != expected:
+                raise AssertionError(f"{key} Codex model/effort selection was {actual!r}, expected {expected!r}")
+            mappings[key] = effective
         if mappings["deep-article"]["synthesis_profile"] != "balanced":
             raise AssertionError("deep mode did not force balanced")
-        if mappings["full-tweet"]["synthesis_profile"] != "balanced":
+        if mappings["full-article"]["synthesis_profile"] != "balanced":
             raise AssertionError("full mode did not force balanced")
         if mappings["full-video"]["mode"] != "standard":
             raise AssertionError("full YouTube mode did not fall back to standard")
@@ -1060,12 +1615,89 @@ def add_kcap_cases(harness: Harness) -> None:
 
     harness.case("kcap.config.profile-mapping", profile_mapping_case)
 
+    def codex_provenance_selection_case() -> dict[str, Any]:
+        report = {
+            "runtime": "codex-app-server",
+            "transport": "stdio",
+            "binary": {
+                "path": str(BUNDLED_CODEX_BINARY),
+                "version": "fixture",
+                "source": "bundled-desktop",
+            },
+            "session": {"ephemeral": True},
+            "code_mode": {
+                "allowed_operations": ["exec", "wait"],
+                "lifecycle": ["thread.start", "turn.start", "turn.complete"],
+            },
+            "sandbox": {
+                "network": "deny",
+                "filesystem": {"root": "deny", "tmp": "deny", "slash_tmp": "deny"},
+            },
+            "environment": {"mode": "empty", "allowed": []},
+            "auth": {
+                "mode": "oauth",
+                "source_unchanged": True,
+                "auth_copy_boundary_verified": True,
+                "private_copy_removed": True,
+            },
+            "prohibited_event_count": 0,
+            "provenance": {
+                "capture_command": "python3 fixture-kcap.py capture",
+                "public_host_command_count": 1,
+                "catalog_source": str((harness.workspace / "kcap" / "SKILL.md").resolve()),
+                "output_root": str((harness.workspace / "output").resolve()),
+            },
+            "synthesis": {"model": CODEX_DEFAULT_MODEL, "effort": "medium"},
+        }
+        expected = {"model": CODEX_DEFAULT_MODEL, "effort": "medium"}
+        details = verify_codex_app_server_provenance_report(
+            report,
+            expected_binary=BUNDLED_CODEX_BINARY,
+            expected_capture_command="python3 fixture-kcap.py capture",
+            expected_catalog_path=harness.workspace / "kcap" / "SKILL.md",
+            expected_output_root=harness.workspace / "output",
+            expected_synthesis_model=expected["model"],
+            expected_synthesis_effort=expected["effort"],
+        )
+        if details.get("synthesis") != expected:
+            raise AssertionError("App Server provenance did not retain the selected model and effort")
+        for field, value in (("model", None), ("effort", "high"), ("unexpected", "value")):
+            incomplete = dict(report)
+            selection = dict(report["synthesis"])
+            if value is None:
+                selection.pop(field)
+            else:
+                selection[field] = value
+            incomplete["synthesis"] = selection
+            try:
+                verify_codex_app_server_provenance_report(
+                    incomplete,
+                    expected_binary=BUNDLED_CODEX_BINARY,
+                    expected_capture_command="python3 fixture-kcap.py capture",
+                    expected_catalog_path=harness.workspace / "kcap" / "SKILL.md",
+                    expected_output_root=harness.workspace / "output",
+                    expected_synthesis_model=expected["model"],
+                    expected_synthesis_effort=expected["effort"],
+                )
+            except AssertionError:
+                continue
+            raise AssertionError(f"App Server provenance accepted invalid selected synthesis {field}")
+        return {"synthesis": expected}
+
+    harness.case("kcap.codex-app-server.provenance-synthesis-selection", codex_provenance_selection_case)
+
     def runtime_case() -> dict[str, Any]:
         runtimes: list[str] = []
         for runtime in ("claude", "codex"):
             _, payload = kcap_command(
                 ["detect-runtime"],
-                env={**base_env, "RESEARCH_TOOLKIT_RUNTIME": runtime},
+                env={
+                    **base_env,
+                    "RESEARCH_TOOLKIT_RUNTIME": runtime,
+                    "CLAUDECODE": "fixture",
+                    "CODEX_CI": "fixture",
+                },
+                unset_env=HOST_RUNTIME_ENV,
             )
             if payload.get("runtime") != runtime or payload.get("source") != "override":
                 raise AssertionError(f"runtime override did not select {runtime}")
@@ -1073,6 +1705,21 @@ def add_kcap_cases(harness: Harness) -> None:
         return {"runtimes": runtimes}
 
     harness.case("kcap.detect-runtime.override", runtime_case)
+
+    def codex_host_indicator_case() -> dict[str, Any]:
+        detected: list[str] = []
+        for indicator in CODEX_HOST_INDICATORS:
+            _, payload = kcap_command(
+                ["detect-runtime"],
+                env={"RESEARCH_TOOLKIT_RUNTIME": "", indicator: "fixture"},
+                unset_env=HOST_RUNTIME_ENV,
+            )
+            if payload.get("runtime") != "codex" or payload.get("source") != "environment":
+                raise AssertionError(f"Codex indicator {indicator} did not select the Codex runtime: {payload!r}")
+            detected.append(indicator)
+        return {"host_indicators": detected, "runtime": "codex", "source": "environment"}
+
+    harness.case("kcap.detect-runtime.codex-host-indicators", codex_host_indicator_case)
 
     def runtime_fail_closed_case() -> dict[str, Any]:
         _, unknown = kcap_command(
@@ -1648,15 +2295,26 @@ def live_capture_command(config_path: Path, skill_dir: Path) -> str:
 
 def live_prompt(config_path: Path, output_root: Path, skill_dir: Path) -> str:
     controller = live_capture_command(config_path, skill_dir)
+    commit_controller = "python3 {} commit-output \"PENDING_DIRECTORY\" --output-root \"OUTPUT_ROOT\" --output-dir \"OUTPUT_DIR\" --filename \"FILENAME\" --collision \"COLLISION\" --capsule-digest \"CAPSULE_DIGEST\"".format(
+        shlex.quote(str((skill_dir / "scripts" / "kcap.py").resolve()))
+    )
     return (
         f"Use the $kcap skill whose catalog source is {(skill_dir / 'SKILL.md').resolve()}. "
-        "This is a noninteractive acceptance test. Execute exactly one shell command as the sole required "
-        "action, with no preliminary config, validation, extraction, reader, or application-launch commands. "
+        "This is a noninteractive acceptance test. Execute the public capture command with no preliminary "
+        "config, validation, extraction, reader, or application-launch commands. "
         "Do not use Task or delegate work. The command must be:\n"
         f"{controller}\n"
+        "If and only if its safe JSON result has status write_pending, execute exactly this one elevated "
+        "follow-up with each placeholder replaced by the corresponding returned pending_directory, output_root, "
+        "output_dir, filename, collision, and capsule_digest value:\n"
+        f"{commit_controller}\n"
+        "Do not run any other command before or after the controller, including ls, stat, find, test, "
+        "or a manual filesystem check. The acceptance runner verifies filesystem effects independently. "
+        "If the shell tool yields a session before completion, poll that same running session until it "
+        "returns terminal controller JSON; polling the existing session is not another command. "
         "Do not open Obsidian. The controller must write only below "
         f"{output_root}. Configuration is supplied through {config_path}. Do not claim completion unless "
-        "the command completed."
+        "the output exists."
     )
 
 
@@ -1710,6 +2368,22 @@ def create_private_auth_copy(source: Path, destination: Path) -> dict[str, Any]:
         raise AssertionError("private Codex authentication copy bytes differ from source")
     verify_source_auth_unchanged(source, snapshot)
     return snapshot
+
+
+def remove_private_auth_copy(destination: Path) -> None:
+    """Remove the private OAuth copy and prove no path remains at that name."""
+    try:
+        status = destination.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(status.st_mode) or stat.S_IMODE(status.st_mode) != 0o600:
+        raise AssertionError("private Codex authentication cleanup found an unsafe destination")
+    destination.unlink()
+    try:
+        destination.lstat()
+    except FileNotFoundError:
+        return
+    raise AssertionError("private Codex authentication cleanup did not remove the copy")
 
 
 def codex_live_environment(
@@ -1963,7 +2637,7 @@ def prepare_live_starduster_project(
                     "subfolder": "catalog",
                     "vault_name": None,
                     "synthesis_profile": "fast",
-                    "synthesis_batch_size": 1,
+                    "synthesis_batch_size": 5,
                 },
             }
         ) + "\n",
@@ -2068,7 +2742,7 @@ def verify_starduster_live_command(event: Mapping[str, Any], skill_dir: Path, pr
         raise AssertionError("live Starduster provenance differs from the exact temporary sync command")
 
 
-def starduster_codex_live_case(
+def _starduster_codex_live_case_attempt(
     workspace: Path,
     *,
     auth_leg: str = "oauth",
@@ -2163,13 +2837,29 @@ def starduster_codex_live_case(
         expected_catalog_path=expected_catalog,
         expected_output_root=output_root,
         expected_auth_mode=auth_leg.replace("-", "_"),
-        expected_synthesis_batches=5,
+        expected_auth_copy_boundary=auth_snapshot is not None,
+        expected_synthesis_batches=1,
     )
     return {
         **verify_starduster_live_success(output_root), "host": "codex", "auth_leg": auth_leg,
         "command_count": 1, "catalog_source_count": len(catalog_paths),
-        "auth_source_unchanged": auth_snapshot is not None, "app_server_provenance": provenance,
+        "auth_copy_boundary_verified": auth_snapshot is not None, "app_server_provenance": provenance,
     }
+
+
+def starduster_codex_live_case(
+    workspace: Path,
+    *,
+    auth_leg: str = "oauth",
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Run one live leg and always remove an OAuth copy created beneath its temp home."""
+    auth_copy = workspace / "live-starduster-codex-home" / "auth.json"
+    try:
+        return _starduster_codex_live_case_attempt(workspace, auth_leg=auth_leg, api_key=api_key)
+    finally:
+        if auth_leg == "oauth":
+            remove_private_auth_copy(auth_copy)
 
 
 def starduster_claude_live_case(workspace: Path) -> dict[str, Any]:
@@ -2267,6 +2957,58 @@ def claude_live_case(workspace: Path) -> dict[str, Any]:
     )
 
 
+def run_codex_exec_host_task(
+    *,
+    codex_bin: Path,
+    prompt: str,
+    cwd: Path,
+    environment: Mapping[str, str],
+    timeout_seconds: int = 900,
+) -> list[dict[str, Any]]:
+    """Run one isolated Codex host task and return its JSONL lifecycle events.
+
+    The caller consumes only command lifecycle evidence.  In particular, the
+    final agent message is never inspected or copied into an acceptance report.
+    """
+    if timeout_seconds <= 0:
+        raise AssertionError("Codex exec host timeout must be positive")
+    process = run(
+        [
+            str(codex_bin),
+            "exec",
+            "--json",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--sandbox",
+            "workspace-write",
+            "--config",
+            'approval_policy="never"',
+            "--config",
+            "sandbox_workspace_write.network_access=true",
+            "--model",
+            CODEX_DEFAULT_MODEL,
+            "--config",
+            'model_reasoning_effort="medium"',
+            "--cd",
+            str(cwd.resolve()),
+            "--skip-git-repo-check",
+            prompt,
+        ],
+        cwd=cwd,
+        env=dict(environment),
+        timeout=timeout_seconds,
+    )
+    if process.returncode != 0:
+        raise AssertionError("Codex ephemeral host task failed")
+    events = parse_jsonl(process.stdout, "Codex exec JSONL output")
+    # Fail before filesystem validation if the host produced no usable command
+    # lifecycle.  This also prevents final prose from becoming fallback proof.
+    if not live_command_evidence(events):
+        raise AssertionError("Codex ephemeral host task produced no command lifecycle evidence")
+    return events
+
+
 def codex_live_case(
     workspace: Path,
     *,
@@ -2280,6 +3022,7 @@ def codex_live_case(
     codex = preferred_codex_binary(os.environ.get(CODEX_BINARY_OVERRIDE_ENV))
     if codex is None:
         raise SkipCase("Codex CLI is not installed")
+    codex = require_bundled_desktop_codex_for_live(codex)
     if not KCAP_CLI.is_file():
         raise AssertionError("kcap package is incomplete: scripts/kcap.py is missing")
     if shutil.which("yt-dlp") is None and shutil.which("youtube_transcript_api") is None:
@@ -2293,10 +3036,13 @@ def codex_live_case(
     private_home = project / "home"
     private_home.mkdir(mode=0o700)
     auth_source = Path.home() / ".codex" / "auth.json"
-    if not auth_source.is_file():
-        raise SkipCase("Codex authentication file is not installed")
-    auth_snapshot = create_private_auth_copy(auth_source, codex_home / "auth.json")
-    auth_before_metadata = auth_snapshot["metadata"]
+    auth_copy = codex_home / "auth.json"
+    auth_snapshot: Mapping[str, Any] | None = None
+    if auth_leg == "oauth":
+        if not auth_source.is_file():
+            raise SkipCase("Codex authentication file is not installed")
+        auth_snapshot = create_private_auth_copy(auth_source, auth_copy)
+    auth_before_metadata = auth_snapshot["metadata"] if auth_snapshot is not None else {}
     auth_after_metadata = dict(auth_before_metadata)
     app_server_report_path = project / "kcap-codex-app-server-report.json"
     host_env = codex_live_environment(project, config_path, codex_home, sqlite_home)
@@ -2331,23 +3077,21 @@ def codex_live_case(
         expected_catalog_path = (skill_dir / "SKILL.md").resolve()
         if expected_catalog_path not in {path.resolve() for path in catalog_kcap_paths}:
             raise AssertionError("Codex catalog does not contain the temporary kcap copy")
-        command_evidence = run_codex_app_server_capture(
+        if any(output_root.rglob("*")):
+            raise AssertionError("Codex live output root was not empty before the ephemeral host task")
+        events = run_codex_exec_host_task(
             codex_bin=codex,
-            argv=[
-                "python3",
-                str((skill_dir / "scripts" / "kcap.py").resolve()),
-                "capture",
-                YOUTUBE_URL,
-                "--project-dir",
-                str(project.resolve()),
-            ],
+            prompt=live_prompt(config_path, output_root, skill_dir),
             cwd=project,
             environment=capture_env,
             timeout_seconds=900,
         )
     finally:
-        verify_tree_byte_manifest(source_manifest, skill_dir, label="temporary kcap copy after host execution")
-    events = [command_evidence["event"]]
+        try:
+            verify_tree_byte_manifest(source_manifest, skill_dir, label="temporary kcap copy after host execution")
+        finally:
+            if auth_snapshot is not None:
+                remove_private_auth_copy(auth_copy)
     details = verify_live_host_acceptance(
         events,
         skill_dir=skill_dir,
@@ -2366,30 +3110,33 @@ def codex_live_case(
         raise AssertionError("Codex live controller did not produce a valid App Server provenance report") from error
     if not isinstance(app_server_report, dict):
         raise AssertionError("Codex live App Server provenance report was not an object")
-    commands = live_command_events(events)
+    expected_capture = live_capture_command(config_path, skill_dir)
     app_server_report["provenance"] = {
-        "capture_command": commands[0],
-        "public_host_command_count": len(commands),
-        "catalog_source": str((skill_dir / "SKILL.md").resolve()),
+        "capture_command": expected_capture,
+        "public_host_command_count": 1,
+        "catalog_source": str(expected_catalog_path),
         "output_root": str(output_root.resolve()),
     }
     app_server_details = verify_codex_app_server_provenance_report(
         app_server_report,
         expected_binary=Path(codex),
-        expected_capture_command=live_capture_command(config_path, skill_dir),
-        expected_catalog_path=skill_dir / "SKILL.md",
+        expected_capture_command=expected_capture,
+        expected_catalog_path=expected_catalog_path,
         expected_output_root=output_root,
         expected_auth_mode="api_key" if auth_leg == "api-key" else "oauth",
+        expected_auth_copy_boundary=auth_snapshot is not None,
+        expected_synthesis_model=CODEX_DEFAULT_MODEL,
+        expected_synthesis_effort="medium",
     )
     version = run([str(codex), "--version"], timeout=10)
     codex_version = abbreviated(version.stdout or version.stderr, 300).splitlines()
     details["catalog_kcap_source_count"] = len(catalog_kcap_paths)
-    details["auth_source_unchanged"] = True
+    details["auth_copy_boundary_verified"] = auth_snapshot is not None
     details["auth_leg"] = auth_leg
     details["codex_binary"] = str(codex)
     details["codex_version"] = codex_version[0] if codex_version else None
+    details["installed_auth_observed_only_during_private_copy"] = auth_snapshot is not None
     details["app_server_provenance"] = app_server_details
-    details["installed_auth_observed_only_during_private_copy"] = True
     return details
 
 
@@ -2477,7 +3224,7 @@ def hplumb_case(workspace: Path) -> dict[str, Any]:
         "starduster": {
             Path("SKILL.md"), Path("agents/openai.yaml"),
             Path("references/runtime-claude.md"), Path("references/runtime-codex.md"),
-            Path("scripts/starduster.py"), Path("scripts/starduster_render.py"),
+            Path("scripts/starduster.py"), Path("scripts/starduster_publish.py"), Path("scripts/starduster_render.py"),
             Path("schemas/starduster-synthesis.schema.json"),
         },
     }
@@ -2524,14 +3271,14 @@ def hplumb_case(workspace: Path) -> dict[str, Any]:
 
 LIFECYCLE_TOOLKITS = ("research-toolkit", "workflow-toolkit")
 LIFECYCLE_BASELINE_VERSIONS = {
-    "research-toolkit": "0.5.0",
-    "workflow-toolkit": "0.9.0",
-}
-LIFECYCLE_UPDATED_VERSIONS = {
     "research-toolkit": "0.6.0",
     "workflow-toolkit": "0.9.0",
 }
-LIFECYCLE_BASELINE_COMMIT = "9ded73e5d67c0d5769dc6cf719a4d550e7a7a215"
+LIFECYCLE_UPDATED_VERSIONS = {
+    "research-toolkit": "0.6.1",
+    "workflow-toolkit": "0.9.0",
+}
+LIFECYCLE_BASELINE_COMMIT = "81c7c8632eb1c56d10d558a79bd55636eeaa0570"
 
 
 def plugin_versions(plugin_root: Path) -> dict[str, str]:
@@ -2737,6 +3484,7 @@ def claude_plugin_lifecycle_case(workspace: Path) -> dict[str, Any]:
         cached_starduster / "references" / "runtime-claude.md",
         cached_starduster / "references" / "runtime-codex.md",
         cached_starduster / "scripts" / "starduster.py",
+        cached_starduster / "scripts" / "starduster_publish.py",
         cached_starduster / "scripts" / "starduster_render.py",
         cached_starduster / "schemas" / "starduster-synthesis.schema.json",
     )

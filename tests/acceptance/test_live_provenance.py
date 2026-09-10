@@ -8,11 +8,15 @@ the temporary output root.
 
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -36,6 +40,7 @@ from tests.run_dual_runtime_acceptance import (
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE_SKILL = ROOT / "research-toolkit" / "skills" / "kcap"
+STARDUSTER_SKILL = ROOT / "research-toolkit" / "skills" / "starduster"
 SOURCE_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
 
@@ -78,8 +83,20 @@ class LiveHostProvenanceTests(unittest.TestCase):
             f"--project-dir {self.workspace / 'project'}"
         )
 
-    def _capture_event(self, skill_dir: Path | None = None) -> dict[str, str]:
-        return {"type": "command_execution", "command": self._capture_command(skill_dir)}
+    def _capture_event(self, skill_dir: Path | None = None) -> dict[str, object]:
+        capture = self.output_root / "captures" / "video.md"
+        return {
+            "type": "command_execution",
+            "command": self._capture_command(skill_dir),
+            "status": "completed",
+            "exit_code": 0,
+            "stdout": json.dumps(
+                {"ok": True, "status": "created", "output_file": str(capture.resolve())},
+                sort_keys=True,
+            ),
+            "output_files_before": [],
+            "output_files_after": [str(capture.resolve())],
+        }
 
     def _write_valid_capture(self) -> Path:
         capture = self.output_root / "captures" / "video.md"
@@ -204,7 +221,7 @@ class LiveHostProvenanceTests(unittest.TestCase):
     def test_requires_the_exact_live_capture_argv(self) -> None:
         self._write_valid_capture()
         expected = self._capture_command()
-        self._verify([{"type": "command_execution", "command": expected}])
+        self._verify([self._capture_event()])
 
         invalid_commands = (
             expected + " --mode standard",
@@ -217,8 +234,41 @@ class LiveHostProvenanceTests(unittest.TestCase):
                 with self.assertRaisesRegex(AssertionError, "exact|project|capture"):
                     self._verify([{"type": "command_execution", "command": command}])
 
-    def test_accepts_exact_nested_claude_bash_capture_event(self) -> None:
-        capture = self._write_valid_capture()
+    def test_accepts_only_the_exact_codex_zsh_lc_wrapper(self) -> None:
+        self._write_valid_capture()
+        event = self._capture_event()
+        event["command"] = "/bin/zsh -lc {}".format(shlex.quote(self._capture_command()))
+
+        details = self._verify([event])
+
+        self.assertEqual(details["capture_command_count"], 1)
+        for inner in (
+            self._capture_command() + "; ls",
+            self._capture_command() + " && true",
+            self._capture_command() + " | cat",
+        ):
+            with self.subTest(inner=inner):
+                bad = dict(event)
+                bad["command"] = "/bin/zsh -lc {}".format(shlex.quote(inner))
+                with self.assertRaisesRegex(AssertionError, "compound|exact|capture"):
+                    self._verify([bad])
+
+    def test_rejects_nonexact_or_unneeded_pending_output_commit(self) -> None:
+        self._write_valid_capture()
+        pending = Path(tempfile.gettempdir()) / "kcap-pending-live-provenance-fixture"
+        expected = "python3 {} commit-output {}".format(self.skill_dir / "scripts" / "kcap.py", pending)
+        cases = (
+            expected + " --project-dir {}".format(self.workspace / "project"),
+            expected.replace("commit-output", "capture"),
+            expected.replace(str(pending), str(self.workspace / "not-a-pending-directory")),
+        )
+        for command in cases:
+            with self.subTest(command=command):
+                with self.assertRaisesRegex(AssertionError, "commit-output|pending|capture"):
+                    self._verify([self._capture_event(), {"type": "command_execution", "command": command}])
+
+    def test_rejects_nested_claude_bash_capture_without_completion_evidence(self) -> None:
+        self._write_valid_capture()
         event = {
             "type": "assistant",
             "message": {
@@ -232,17 +282,85 @@ class LiveHostProvenanceTests(unittest.TestCase):
             },
         }
 
-        details = self._verify([event])
+        with self.assertRaisesRegex(AssertionError, "completed|exit|controller|provenance"):
+            self._verify([event])
+
+    def test_accepts_nested_claude_bash_capture_only_with_matching_tool_result(self) -> None:
+        capture = self._write_valid_capture()
+        tool_id = "toolu_kcap_capture"
+        events = [
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": tool_id,
+                            "name": "Bash",
+                            "input": {"command": self._capture_command()},
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "content": json.dumps(
+                                {"ok": True, "status": "created", "output_file": str(capture.resolve())}
+                            ),
+                        }
+                    ]
+                },
+            },
+        ]
+
+        details = self._verify(events)
 
         self.assertEqual(Path(str(details["output_file"])), capture.resolve())
 
-    def test_live_prompt_requires_one_shell_action_without_inviting_unverified_success(self) -> None:
+    def test_rejects_duplicate_claude_tool_result_for_completed_bash_use(self) -> None:
+        """A second result must not be silently ignored after command completion."""
+        capture = self._write_valid_capture()
+        tool_id = "toolu_kcap_capture"
+        result = {
+            "type": "tool_result",
+            "tool_use_id": tool_id,
+            "content": json.dumps({"ok": True, "status": "created", "output_file": str(capture.resolve())}),
+        }
+        events = [
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": tool_id,
+                            "name": "Bash",
+                            "input": {"command": self._capture_command()},
+                        }
+                    ]
+                },
+            },
+            {"type": "user", "message": {"content": [result]}},
+            {"type": "user", "message": {"content": [result]}},
+        ]
+
+        with self.assertRaisesRegex(AssertionError, "duplicate|completed|result"):
+            self._verify(events)
+
+    def test_live_prompt_requires_a_public_capture_and_conditional_pending_commit(self) -> None:
         config = self.workspace / "project" / "research-toolkit.json"
         prompt = live_prompt(config, self.output_root, self.skill_dir)
 
-        self.assertIn("sole required action", prompt)
-        self.assertIn("shell command", prompt)
+        self.assertIn("public capture command", prompt)
+        self.assertIn("If and only if", prompt)
+        self.assertIn('commit-output "PENDING_DIRECTORY"', prompt)
         self.assertIn("Do not use Task", prompt)
+        self.assertIn("Do not run any other command", prompt)
         self.assertNotIn('{"status": "passed"}', prompt)
 
     def test_deduplicates_matching_codex_started_and_completed_command_events(self) -> None:
@@ -256,7 +374,22 @@ class LiveHostProvenanceTests(unittest.TestCase):
                 },
                 {
                     "type": "item.completed",
-                    "item": {"id": "capture-1", "type": "command_execution", "command": command},
+                    "item": {
+                        "id": "capture-1",
+                        "type": "command_execution",
+                        "command": command,
+                        "status": "completed",
+                        "exit_code": 0,
+                        "aggregated_output": json.dumps(
+                            {
+                                "ok": True,
+                                "status": "created",
+                                "output_file": str(
+                                    (self.output_root / "captures" / "video.md").resolve()
+                                ),
+                            }
+                        ),
+                    },
                 },
             ]
         )
@@ -615,8 +748,10 @@ class LiveHostProvenanceTests(unittest.TestCase):
             "--project-dir /private/var/folders/kcap-live/project"
         )
 
+        event = self._capture_event()
+        event["command"] = private_command
         details = verify_live_host_acceptance(
-            [{"type": "command_execution", "command": private_command}],
+            [event],
             skill_dir=var_skill,
             output_root=self.output_root,
             source_url=SOURCE_URL,
@@ -648,16 +783,378 @@ class LiveHostProvenanceTests(unittest.TestCase):
         details = self._verify([self._capture_event()], final_host_message="I cannot provide a useful summary.")
         self.assertEqual(Path(str(details["output_file"])).resolve(), wrong_capture.resolve())
 
-    def test_preserves_source_auth_metadata_and_rejects_changed_snapshots(self) -> None:
+    def test_rejects_direct_controller_output_file_that_differs_from_sole_note(self) -> None:
+        capture = self._write_valid_capture()
+        claimed = self.output_root / "captures" / "claimed.md"
+        event = self._capture_event()
+        event["stdout"] = json.dumps({"ok": True, "status": "created", "output_file": str(claimed)})
+        event["output_files_after"] = [str(claimed)]
+
+        with self.assertRaisesRegex(AssertionError, "output|filesystem|result"):
+            self._verify([event])
+
+        self.assertTrue(capture.is_file())
+
+    def test_controller_json_failure_reports_only_safe_output_shape(self) -> None:
+        event = self._capture_event()
+        event["stdout"] = "credential-like-canary\nsecond line"
+
+        with self.assertRaises(AssertionError) as failure:
+            self._verify([event])
+
+        message = str(failure.exception)
+        self.assertIn("output shape", message)
+        self.assertIn("byte_length", message)
+        self.assertNotIn("credential-like-canary", message)
+        self.assertNotIn("second line", message)
+
+    def test_accepts_one_macos_xcrun_cache_warning_before_controller_json(self) -> None:
+        capture = self._write_valid_capture()
+        event = self._capture_event()
+        controller_json = event["stdout"]
+        event["stdout"] = (
+            "python3: error: couldn't create cache file "
+            "'/var/folders/r9/fixture/T/xcrun_db-Ab12Cd34' "
+            "(errno=Operation not permitted)\n{}".format(controller_json)
+        )
+
+        details = self._verify([event])
+
+        self.assertEqual(Path(str(details["output_file"])), capture.resolve())
+
+    def test_rejects_multiple_macos_xcrun_cache_warnings(self) -> None:
+        event = self._capture_event()
+        warning = (
+            "python3: error: couldn't create cache file "
+            "'/var/folders/r9/fixture/T/xcrun_db-Ab12Cd34' "
+            "(errno=Operation not permitted)"
+        )
+        event["stdout"] = "{}\n{}\n{}".format(warning, warning, event["stdout"])
+
+        with self.assertRaisesRegex(AssertionError, "controller JSON|output shape"):
+            self._verify([event])
+
+    def test_does_not_claim_whole_run_oauth_source_immutability(self) -> None:
         self._write_valid_capture()
         details = self._verify([self._capture_event()])
         self.assertEqual(self._metadata(self.auth_file), self.auth_metadata)
-        self.assertTrue(details["source_auth_metadata_unchanged"])
+        self.assertNotIn("source_auth_metadata_unchanged", details)
 
         changed_metadata = dict(self.auth_metadata)
         changed_metadata["mtime_ns"] += 1
-        with self.assertRaisesRegex(AssertionError, "auth|metadata|source"):
-            self._verify([self._capture_event()], auth_after=changed_metadata)
+        details = self._verify([self._capture_event()], auth_after=changed_metadata)
+        self.assertEqual(details["capture_command_count"], 1)
+
+
+    # RED contract for controller-result-bound pending output commits.
+    def _command_event(
+        self,
+        command: str,
+        result: dict[str, object],
+        *,
+        exit_code: int = 0,
+        execution_status: str = "completed",
+        output_before: list[Path] | None = None,
+        output_after: list[Path] | None = None,
+    ) -> dict[str, object]:
+        """Synthetic trusted command evidence, not model-authored final prose."""
+        return {
+            "type": "command_execution",
+            "command": command,
+            "status": execution_status,
+            "exit_code": exit_code,
+            "stdout": json.dumps({"ok": exit_code == 0, **result}, sort_keys=True),
+            "output_files_before": [str(path.resolve()) for path in output_before or []],
+            "output_files_after": [str(path.resolve()) for path in output_after or []],
+        }
+
+    def _pending_authority(self, capsule: Path, capture: Path) -> dict[str, object]:
+        return {
+            "status": "write_pending",
+            "pending_directory": str(capsule.resolve()),
+            "output_root": str(self.output_root.resolve()),
+            "output_dir": str(capture.parent.resolve()),
+            "filename": capture.name,
+            "collision": "suffix",
+            "capsule_digest": "a" * 64,
+        }
+
+    def _commit_command(self, authority: dict[str, object]) -> str:
+        return "python3 {} commit-output {} --output-root {} --output-dir {} --filename {} --collision {} --capsule-digest {}".format(
+            self.skill_dir / "scripts" / "kcap.py",
+            authority["pending_directory"],
+            authority["output_root"],
+            authority["output_dir"],
+            authority["filename"],
+            authority["collision"],
+            authority["capsule_digest"],
+        )
+
+    def test_accepts_a_completed_write_pending_capture_and_exact_successful_commit(self) -> None:
+        capture = self._write_valid_capture()
+        capsule = Path(tempfile.gettempdir()) / "kcap-pending-live-provenance-authority"
+        authority = self._pending_authority(capsule, capture)
+        details = self._verify(
+            [
+                self._command_event(
+                    self._capture_command(), authority, output_after=[],
+                ),
+                self._command_event(
+                    self._commit_command(authority),
+                    {"status": "created", "output_file": str(capture.resolve())},
+                    output_after=[capture],
+                ),
+            ]
+        )
+
+        self.assertEqual(Path(str(details["output_file"])), capture.resolve())
+        self.assertEqual(Path(str(details["pending_directory"])), capsule.resolve())
+
+    def test_rejects_a_commit_without_a_successful_write_pending_capture(self) -> None:
+        capture = self._write_valid_capture()
+        capsule = Path(tempfile.gettempdir()) / "kcap-pending-live-provenance-invented"
+        authority = self._pending_authority(capsule, capture)
+        capture_results = (
+            {"status": "created", "output_file": str(capture.resolve())},
+            {"status": "skipped_duplicate", "existing_paths": [str(capture.resolve())]},
+            {"status": "write_pending", "pending_directory": str(capsule.resolve())},
+        )
+        for result in capture_results:
+            with self.subTest(result=result):
+                with self.assertRaisesRegex(AssertionError, "write_pending|commit|authority"):
+                    self._verify(
+                        [
+                            self._command_event(self._capture_command(), result),
+                            self._command_event(
+                                self._commit_command(authority),
+                                {"status": "created", "output_file": str(capture.resolve())},
+                                output_after=[capture],
+                            ),
+                        ]
+                    )
+
+    def test_rejects_incomplete_or_unsuccessful_capture_execution_even_with_write_pending_json(self) -> None:
+        capture = self._write_valid_capture()
+        authority = self._pending_authority(
+            Path(tempfile.gettempdir()) / "kcap-pending-live-provenance-failed-capture", capture
+        )
+        for exit_code, status in ((1, "completed"), (0, "started")):
+            with self.subTest(exit_code=exit_code, status=status):
+                with self.assertRaises(AssertionError):
+                    self._verify(
+                        [
+                            self._command_event(
+                                self._capture_command(), authority,
+                                exit_code=exit_code, execution_status=status,
+                            ),
+                            self._command_event(
+                                self._commit_command(authority),
+                                {"status": "created", "output_file": str(capture.resolve())},
+                                output_after=[capture],
+                            ),
+                        ]
+                    )
+
+    def test_requires_bounded_success_controller_json_for_a_capture(self) -> None:
+        capture = self._write_valid_capture()
+        event = self._command_event(
+            self._capture_command(), {"status": "created", "output_file": str(capture.resolve())},
+            output_after=[capture],
+        )
+        malformed = dict(event)
+        malformed["stdout"] = "not controller JSON"
+        oversized = dict(event)
+        oversized["stdout"] = "{" + "x" * 65536 + "}"
+        for evidence in (malformed, oversized):
+            with self.subTest(stdout_bytes=len(str(evidence["stdout"]).encode("utf-8"))):
+                with self.assertRaisesRegex(AssertionError, "controller|JSON|bounded|output"):
+                    self._verify([evidence])
+
+        with self.assertRaisesRegex(AssertionError, "controller|JSON|bounded|output"):
+            self._verify([{"type": "command_execution", "command": self._capture_command()}])
+
+    def test_rejects_each_commit_argument_or_digest_that_differs_from_capture_authority(self) -> None:
+        capture = self._write_valid_capture()
+        authority = self._pending_authority(
+            Path(tempfile.gettempdir()) / "kcap-pending-live-provenance-mismatch", capture
+        )
+        command = self._commit_command(authority)
+        replacements = {
+            "capsule": (str(authority["pending_directory"]), str(Path(tempfile.gettempdir()) / "kcap-pending-other")),
+            "output root": (str(authority["output_root"]), str(self.workspace / "other-root")),
+            "output directory": (str(authority["output_dir"]), str(self.workspace / "other-directory")),
+            "filename": (str(authority["filename"]), "other.md"),
+            "collision": (str(authority["collision"]), "replace"),
+            "digest": (str(authority["capsule_digest"]), "b" * 64),
+        }
+        for name, (expected, replacement) in replacements.items():
+            with self.subTest(authority=name):
+                with self.assertRaisesRegex(AssertionError, "commit|authority|pending|digest"):
+                    self._verify(
+                        [
+                            self._command_event(self._capture_command(), authority),
+                            self._command_event(
+                                command.replace(expected, replacement, 1),
+                                {"status": "created", "output_file": str(capture.resolve())},
+                                output_after=[capture],
+                            ),
+                        ]
+                    )
+
+    def test_rejects_unsuccessful_or_nonterminal_commit_results_and_missing_output_evidence(self) -> None:
+        capture = self._write_valid_capture()
+        authority = self._pending_authority(
+            Path(tempfile.gettempdir()) / "kcap-pending-live-provenance-commit-result", capture
+        )
+        cases = (
+            (1, "completed", {"status": "created", "output_file": str(capture.resolve())}, [capture]),
+            (0, "started", {"status": "created", "output_file": str(capture.resolve())}, [capture]),
+            (0, "completed", {"status": "write_pending"}, [capture]),
+            (0, "completed", {"status": "created", "output_file": str(capture.resolve())}, []),
+        )
+        for exit_code, execution_status, result, output_after in cases:
+            with self.subTest(result=result, execution_status=execution_status, exit_code=exit_code):
+                with self.assertRaisesRegex(AssertionError, "completed|exit|created|replaced|skipped_duplicate|output"):
+                    self._verify(
+                        [
+                            self._command_event(self._capture_command(), authority),
+                            self._command_event(
+                                self._commit_command(authority), result,
+                                exit_code=exit_code, execution_status=execution_status,
+                                output_after=output_after,
+                            ),
+                        ]
+                    )
+
+    def test_rejects_preexisting_or_mismatched_output_claimed_as_commit_success(self) -> None:
+        capture = self._write_valid_capture()
+        other = self.output_root / "captures" / "other.md"
+        other.write_text(capture.read_text(encoding="utf-8"), encoding="utf-8")
+        authority = self._pending_authority(
+            Path(tempfile.gettempdir()) / "kcap-pending-live-provenance-output", capture
+        )
+        cases = (
+            ([capture], [capture], str(capture.resolve())),
+            ([], [capture], str(other.resolve())),
+        )
+        for output_before, output_after, output_file in cases:
+            with self.subTest(output_before=output_before, output_file=output_file):
+                with self.assertRaisesRegex(AssertionError, "preexisting|output|filesystem"):
+                    self._verify(
+                        [
+                            self._command_event(self._capture_command(), authority),
+                            self._command_event(
+                                self._commit_command(authority),
+                                {"status": "created", "output_file": output_file},
+                                output_before=output_before, output_after=output_after,
+                            ),
+                        ]
+                    )
+
+    def test_accepts_a_completed_skipped_duplicate_commit_only_with_matching_existing_file_evidence(self) -> None:
+        capture = self._write_valid_capture()
+        authority = self._pending_authority(
+            Path(tempfile.gettempdir()) / "kcap-pending-live-provenance-skipped", capture
+        )
+        details = self._verify(
+            [
+                self._command_event(self._capture_command(), authority),
+                self._command_event(
+                    self._commit_command(authority),
+                    {"status": "skipped_duplicate", "existing_paths": [str(capture.resolve())]},
+                    output_before=[capture], output_after=[capture],
+                ),
+            ]
+        )
+
+        self.assertEqual(Path(str(details["output_file"])), capture.resolve())
+
+    def test_accepts_a_completed_replaced_commit_only_with_matching_output_file(self) -> None:
+        capture = self._write_valid_capture()
+        authority = self._pending_authority(
+            Path(tempfile.gettempdir()) / "kcap-pending-live-provenance-replaced", capture
+        )
+        details = self._verify(
+            [
+                self._command_event(self._capture_command(), authority),
+                self._command_event(
+                    self._commit_command(authority),
+                    {"status": "replaced", "output_file": str(capture.resolve())},
+                    output_before=[capture], output_after=[capture],
+                ),
+            ]
+        )
+
+        self.assertEqual(Path(str(details["output_file"])), capture.resolve())
+
+
+class CodexLivePathIsolationTests(unittest.TestCase):
+    def test_codex_live_case_does_not_manufacture_a_command_event_via_app_server_command_exec(self) -> None:
+        """Keep the live path tied to host events, not a controller shortcut."""
+        tree = ast.parse(textwrap.dedent(inspect.getsource(acceptance_runner.codex_live_case)))
+        called_names = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+
+        self.assertNotIn("run_codex_app_server_capture", called_names)
+
+    def test_kcap_codex_live_case_requires_the_bundled_desktop_binary(self) -> None:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(acceptance_runner.codex_live_case)))
+        called_names = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+
+        self.assertIn("require_bundled_desktop_codex_for_live", called_names)
+
+    def test_codex_host_task_is_ephemeral_ignores_user_state_and_enables_only_workspace_network(self) -> None:
+        command = "python3 /tmp/kcap/scripts/kcap.py capture https://example.com --project-dir /tmp/project"
+        stream = "\n".join(
+            (
+                json.dumps(
+                    {
+                        "type": "item.started",
+                        "item": {"id": "cmd-1", "type": "command_execution", "command": command},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "id": "cmd-1",
+                            "type": "command_execution",
+                            "command": command,
+                            "status": "completed",
+                            "exit_code": 0,
+                            "aggregated_output": json.dumps(
+                                {"ok": True, "status": "created", "output_file": "/tmp/project/note.md"}
+                            ),
+                        },
+                    }
+                ),
+            )
+        )
+        with patch.object(
+            acceptance_runner,
+            "run",
+            return_value=subprocess.CompletedProcess(["codex"], 0, stream, ""),
+        ) as run:
+            acceptance_runner.run_codex_exec_host_task(
+                codex_bin=Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
+                prompt="Use $kcap",
+                cwd=Path(tempfile.gettempdir()),
+                environment={"CODEX_HOME": str(Path(tempfile.gettempdir()) / "codex-home")},
+            )
+
+        arguments = run.call_args.args[0]
+        self.assertEqual(arguments.count("--ephemeral"), 1)
+        for flag in ("--ignore-user-config", "--ignore-rules", "--skip-git-repo-check"):
+            self.assertIn(flag, arguments)
+        self.assertIn('approval_policy="never"', arguments)
+        self.assertIn("sandbox_workspace_write.network_access=true", arguments)
 
 
 class CodexAppServerProvenanceTests(unittest.TestCase):
@@ -728,6 +1225,7 @@ class CodexAppServerProvenanceTests(unittest.TestCase):
             "auth": {
                 "mode": "oauth",
                 "source_unchanged": True,
+                "auth_copy_boundary_verified": True,
                 "private_copy_removed": True,
             },
             "prohibited_event_count": 0,
@@ -871,7 +1369,11 @@ class CodexAppServerProvenanceTests(unittest.TestCase):
             },
             {
                 **self._valid_report(),
-                "auth": {"mode": "oauth", "source_unchanged": True, "private_copy_removed": False},
+                "auth": {
+                    "mode": "oauth",
+                    "auth_copy_boundary_verified": True,
+                    "private_copy_removed": False,
+                },
             },
         )
         for report in invalid_reports:
@@ -894,6 +1396,125 @@ class CodexAppServerProvenanceTests(unittest.TestCase):
         details = self._verify_report(report, expected_auth_mode="api_key")
 
         self.assertEqual(details["runtime"], "codex-app-server")
+
+    @unittest.skipUnless(
+        runner_seam_available("verify_codex_app_server_provenance_report"),
+        "requires Codex App Server provenance report verifier",
+    )
+    def test_rejects_unrecognized_report_fields_including_raw_or_credential_shaped_data(self) -> None:
+        for field, value in (
+            ("unreviewed", True),
+            ("credential_hint", "not-a-secret"),
+            ("raw_content", "fixture-only"),
+        ):
+            with self.subTest(field=field):
+                report = self._valid_report()
+                report[field] = value
+                with self.assertRaisesRegex(AssertionError, "schema|field|report|sensitive"):
+                    self._verify_report(report)
+
+    @unittest.skipUnless(
+        runner_seam_available("verify_codex_app_server_provenance_report"),
+        "requires Codex App Server provenance report verifier",
+    )
+    def test_rejects_unrecognized_nested_report_fields(self) -> None:
+        report = self._valid_report()
+        report["binary"]["unexpected"] = "fixture"
+
+        with self.assertRaisesRegex(AssertionError, "schema|binary|field"):
+            self._verify_report(report)
+
+    def test_codex_live_auth_copy_is_oauth_only_and_removed_after_each_attempt(self) -> None:
+        """The live harness must not create OAuth state for an API-key leg."""
+        for function_name in ("codex_live_case", "starduster_codex_live_case"):
+            source = inspect.getsource(getattr(acceptance_runner, function_name))
+            with self.subTest(function=function_name):
+                self.assertIn('if auth_leg == "oauth"', source)
+                self.assertIn("remove_private_auth_copy", source)
+
+    def test_private_oauth_copy_removal_verifies_the_path_is_gone(self) -> None:
+        remove = getattr(acceptance_runner, "remove_private_auth_copy", None)
+        self.assertTrue(callable(remove), "missing private OAuth cleanup seam")
+        destination = self.workspace / "private" / "auth.json"
+        destination.parent.mkdir()
+        destination.write_text("fixture", encoding="utf-8")
+        destination.chmod(0o600)
+
+        remove(destination)
+
+        self.assertFalse(destination.exists())
+
+    def test_starduster_oauth_copy_is_removed_when_catalog_invocation_raises(self) -> None:
+        """An exception before controller startup must still clear the private OAuth copy."""
+        workspace = self.workspace / "starduster-live"
+        source_home = workspace / "source-home"
+        source_auth = source_home / ".codex" / "auth.json"
+        source_auth.parent.mkdir(parents=True)
+        source_auth.write_text("{}\n", encoding="utf-8")
+        source_auth.chmod(0o600)
+        project = workspace / "live-starduster-codex"
+        project.mkdir(parents=True)
+        output_root = project / "output"
+        output_root.mkdir()
+        config = project / "research-toolkit.json"
+        config.write_text("{}\n", encoding="utf-8")
+        skill_dir = workspace / "live-starduster-codex-home" / "skills" / "starduster"
+        skill_dir.mkdir(parents=True)
+        auth_copy = workspace / "live-starduster-codex-home" / "auth.json"
+
+        with (
+            patch.object(acceptance_runner.Path, "home", return_value=source_home),
+            patch.object(acceptance_runner, "preferred_codex_binary", return_value=Path("/bin/echo")),
+            patch.object(acceptance_runner, "require_bundled_desktop_codex_for_live", side_effect=lambda value: value),
+            patch.object(acceptance_runner.shutil, "which", return_value="/bin/echo"),
+            patch.object(
+                acceptance_runner,
+                "prepare_live_starduster_project",
+                return_value=(project, output_root, config, skill_dir, {}),
+            ),
+            patch.object(acceptance_runner, "run", side_effect=RuntimeError("catalog boom")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "catalog boom"):
+                acceptance_runner.starduster_codex_live_case(workspace, auth_leg="oauth")
+
+        self.assertFalse(auth_copy.exists(), "outer cleanup must remove the OAuth copy after catalog errors")
+
+    def test_live_starduster_uses_one_five_repository_synthesis_batch(self) -> None:
+        """The host must not time out and retry the complete sync between batches."""
+        project, _output, config_path, _skill, _manifest = (
+            acceptance_runner.prepare_live_starduster_project(self.workspace, "claude")
+        )
+
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(project, self.workspace / "live-starduster-claude")
+        self.assertEqual(config["starduster"]["synthesis_batch_size"], 5)
+
+    def test_kcap_live_path_records_and_verifies_signed_app_server_evidence(self) -> None:
+        source = inspect.getsource(acceptance_runner.codex_live_case)
+        self.assertIn("RESEARCH_TOOLKIT_ACCEPTANCE_REPORT", source)
+        self.assertIn("verify_codex_app_server_provenance_report", source)
+        self.assertIn('details["app_server_provenance"]', source)
+
+    def test_live_prompt_requires_same_session_polling_until_controller_completion(self) -> None:
+        prompt = acceptance_runner.live_prompt(
+            self.workspace / "config.json",
+            self.workspace / "output",
+            self.workspace / "skill",
+        ).lower()
+
+        self.assertIn("same running session", prompt)
+        self.assertIn("poll", prompt)
+        self.assertIn("terminal controller json", prompt)
+
+    def test_kcap_skill_requires_same_session_polling_for_yielded_commands(self) -> None:
+        skill = (ROOT / "research-toolkit" / "skills" / "kcap" / "SKILL.md").read_text(
+            encoding="utf-8"
+        ).lower()
+
+        self.assertIn("same running session", skill)
+        self.assertIn("poll", skill)
+        self.assertIn("terminal json", skill)
 
     @unittest.skipUnless(
         runner_seam_available("verify_codex_app_server_provenance_report"),
@@ -1005,6 +1626,160 @@ class CodexAppServerProvenanceTests(unittest.TestCase):
         shutil.copytree(SOURCE_SKILL, hplumb_copy)
         verify_tree_byte_manifest(manifest, direct_copy, label="direct kcap copy")
         verify_tree_byte_manifest(manifest, hplumb_copy, label="hplumb kcap copy")
+
+
+class StardusterHostProvenanceRedTests(unittest.TestCase):
+    """RED contract for Starduster's public host-controller flow.
+
+    A host may use its own slash-command UI, but evidence is deliberately
+    limited to public package-local controller commands and safe JSON. Final
+    prose is not evidence of a successful sync.
+    """
+
+    def setUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory(prefix="starduster-host-provenance-")
+        self.workspace = Path(self._temporary_directory.name)
+        self.project = self.workspace / "project with spaces"
+        self.project.mkdir()
+        self.skill_dir = self.workspace / "isolated skills" / "starduster"
+        self.skill_dir.parent.mkdir(parents=True)
+        shutil.copytree(STARDUSTER_SKILL, self.skill_dir)
+        self.output_root = self.workspace / "output root"
+        self.output_root.mkdir()
+        self.destination = self.output_root / "github stars"
+
+    def tearDown(self) -> None:
+        self._temporary_directory.cleanup()
+
+    def _sync_command(self) -> str:
+        return shlex.join([
+            "python3", str(self.skill_dir / "scripts" / "starduster.py"), "sync",
+            "--limit", "5", "--project-dir", str(self.project),
+        ])
+
+    def _configure_command(self) -> str:
+        return shlex.join([
+            "python3", str(self.skill_dir / "scripts" / "starduster.py"), "configure",
+            "--output-dir", str(self.destination), "--project-dir", str(self.project),
+        ])
+
+    @staticmethod
+    def _event(command: str, result: dict[str, object], *, output_after: list[Path] | None = None) -> dict[str, object]:
+        return {
+            "type": "command_execution", "command": command, "status": "completed", "exit_code": 0,
+            "stdout": json.dumps({"ok": True, **result}, sort_keys=True),
+            "output_files_after": [str(path.resolve()) for path in output_after or []],
+        }
+
+    @staticmethod
+    def _error_event(command: str, code: str, *, details: dict[str, object] | None = None) -> dict[str, object]:
+        error: dict[str, object] = {"code": code, "message": "safe controller error"}
+        if details:
+            error["details"] = details
+        return {
+            "type": "command_execution", "command": command, "status": "completed", "exit_code": 1,
+            "stdout": "", "stderr": json.dumps({"ok": False, "error": error}, sort_keys=True),
+            "output_files_after": [],
+        }
+
+    def _write_successful_catalog(self) -> list[Path]:
+        repo_root = self.destination / "repos"
+        repo_root.mkdir(parents=True)
+        paths = []
+        for number in range(5):
+            path = repo_root / "owner-{}.md".format(number)
+            path.write_text("---\nrepo: owner/{}\n---\n".format(number), encoding="utf-8")
+            paths.append(path)
+        for number in range(7):
+            path = self.destination / "indexes" / "index-{}.base".format(number)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("views: []\n", encoding="utf-8")
+            paths.append(path)
+        return paths
+
+    def _verify(self, events: list[dict[str, object]], *, final_host_message: object = None) -> dict[str, object]:
+        verify = getattr(acceptance_runner, "verify_starduster_host_acceptance", None)
+        self.assertTrue(callable(verify), "missing Starduster host provenance verifier")
+        return verify(
+            events, skill_dir=self.skill_dir, output_root=self.output_root,
+            expected_project_dir=self.project, expected_limit=5, final_host_message=final_host_message,
+        )
+
+    def test_raw_limit_invocation_maps_to_one_public_sync_and_filesystem_success(self) -> None:
+        output_files = self._write_successful_catalog()
+        details = self._verify(
+            [self._event(self._sync_command(), {"status": "completed"}, output_after=output_files)],
+            final_host_message="Five repositories were captured.",
+        )
+        self.assertEqual(details["sync_command_count"], 1)
+        self.assertTrue(details["filesystem_derived"])
+        self.assertEqual(details["repo_note_count"], 5)
+        self.assertEqual(details["base_index_count"], 7)
+
+    def test_missing_destination_uses_the_exact_four_command_first_run_flow(self) -> None:
+        output_files = self._write_successful_catalog()
+        pending = Path(tempfile.gettempdir()) / "starduster-pending-host-provenance"
+        authority = {
+            "status": "write_pending", "pending_directory": str(pending.resolve()),
+            "output_root": str(self.output_root.resolve()), "output_dir": str(self.destination.resolve()),
+            "capsule_digest": "b" * 64,
+        }
+        commit = shlex.join([
+            "python3", str(self.skill_dir / "scripts" / "starduster.py"), "commit-output",
+            authority["pending_directory"], "--output-root", authority["output_root"],
+            "--output-dir", authority["output_dir"], "--capsule-digest", authority["capsule_digest"],
+        ])
+        details = self._verify([
+            self._error_event(
+                self._sync_command(), "output_path_required",
+                details={"suggested_path": "~/Documents/starduster"},
+            ),
+            self._event(self._configure_command(), {"status": "configured", "output_dir": str(self.destination.resolve())}),
+            self._event(self._sync_command(), authority),
+            self._event(commit, {"status": "completed"}, output_after=output_files),
+        ])
+        self.assertEqual(details["configure_command_count"], 1)
+        self.assertEqual(details["sync_command_count"], 2)
+        self.assertEqual(details["commit_output_command_count"], 1)
+        self.assertEqual(Path(str(details["configured_output_dir"])), self.destination.resolve())
+        self.assertEqual(Path(str(details["pending_directory"])), pending.resolve())
+
+    def test_output_path_required_is_an_exit_one_safe_stderr_error(self) -> None:
+        event = self._error_event(self._sync_command(), "output_path_required")
+        self.assertEqual(event["exit_code"], 1)
+        self.assertEqual(event["stdout"], "")
+        self.assertIn('"ok": false', str(event["stderr"]))
+        parse_error = getattr(acceptance_runner, "bounded_safe_controller_error", None)
+        self.assertTrue(callable(parse_error), "missing bounded safe controller error parser")
+        parsed = parse_error(event, operation="Starduster sync", expected_code="output_path_required")
+        self.assertEqual(parsed["error"]["code"], "output_path_required")
+
+    def test_write_pending_allows_only_a_controller_bound_narrow_commit(self) -> None:
+        output_files = self._write_successful_catalog()
+        pending = Path(tempfile.gettempdir()) / "starduster-pending-host-provenance-pending"
+        authority = {
+            "status": "write_pending", "pending_directory": str(pending.resolve()),
+            "output_root": str(self.output_root.resolve()), "output_dir": str(self.destination.resolve()),
+            "capsule_digest": "b" * 64,
+        }
+        commit = shlex.join([
+            "python3", str(self.skill_dir / "scripts" / "starduster.py"), "commit-output",
+            str(authority["pending_directory"]), "--output-root", str(authority["output_root"]),
+            "--output-dir", str(authority["output_dir"]), "--capsule-digest", str(authority["capsule_digest"]),
+        ])
+        details = self._verify([
+            self._event(self._sync_command(), authority),
+            self._event(commit, {"status": "completed"}, output_after=output_files),
+        ])
+        self.assertEqual(details["commit_output_command_count"], 1)
+        self.assertEqual(Path(str(details["pending_directory"])), pending.resolve())
+
+        raw_reader = {"type": "command_execution", "command": "cat {}/manifest.json".format(pending)}
+        with self.assertRaisesRegex(AssertionError, "raw|reader|commit-output|provenance"):
+            self._verify([
+                self._event(self._sync_command(), authority), raw_reader,
+                self._event(commit, {"status": "completed"}, output_after=output_files),
+            ])
 
 
 class CodexAppServerCommandExecTests(unittest.TestCase):

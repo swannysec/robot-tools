@@ -219,7 +219,7 @@ for full_name in targets:
         "full_name": full_name,
         "html_url": "https://github.com/" + full_name,
         "category": "Developer Tools",
-        "normalized_topics": ["testing"],
+        "tags": ["developer-tools"],
         "summary": "Fixture summary.",
         "key_features": ["Deterministic fixture", "Portable execution", "Safe rendering"],
         "similar_to": [],

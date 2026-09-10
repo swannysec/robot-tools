@@ -21,9 +21,12 @@ catalog identities. The `--limit` value affects only newly synthesized notes, ne
 identity inventory.
 
 The validated repository metadata used by later controller stages includes `full_name`,
-owner login, URL, language, normalized topics, license identifier, stars, forks,
+owner login, URL, language, GitHub topics, license identifier, stars, forks,
 archived/fork state, parent identity where present, creation/push timestamps, and
-`starred_at`. Repository descriptions and README text remain untrusted private inputs.
+`starred_at`. The controller normalizes the GitHub topic values deterministically and
+preserves them as source metadata. They are rendered as GitHub-topic links and topic
+hubs; they are not used as Obsidian tags. Repository descriptions and README text remain
+untrusted private inputs.
 
 ## README batches and rate estimates
 

@@ -1,0 +1,314 @@
+{
+  "malformed_required_role": {
+    "attempts": [
+      "MALFORMED",
+      "MALFORMED"
+    ],
+    "expected_final_status": "INCOMPLETE"
+  },
+  "missing_cross_provider": {
+    "native_status": "COMPLETE",
+    "cross_provider_status": "MISSING",
+    "expected_final_status": "INCOMPLETE"
+  },
+  "synthetic_source_slice_sha256": {
+    "check_id": "synthetic-source-slice",
+    "check_kind": "SOURCE_SLICE_SHA256",
+    "repository": "example",
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "relative_path": "src/parser.rs",
+    "start_line": 10,
+    "end_line": 20,
+    "expected_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "registry_sha256": "",
+    "whole_finding_refutation": "The complete source path may make the proposed consequence inapplicable; retain this counterevidence without interpretation."
+  },
+  "split_verdict_cases": {
+    "single_identical_typed_check": {
+      "verifier_stage2_results": [
+        "CONFIRMED",
+        "REFUTED"
+      ],
+      "literal_check_result": "PASSED",
+      "complete_discovery_records": [
+        {
+          "deterministic_checks": [
+            {
+              "check_id": "registered-safe-behavior",
+              "check_kind": "FROZEN_TEST_REFERENCE",
+              "repository": "example",
+              "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "relative_path": "",
+              "start_line": 0,
+              "end_line": 0,
+              "expected_sha256": "",
+              "registry_sha256": "2efd4207bf622bdffb6faf1b723eb084b558d0a38aca2198403c1f4e38434177",
+              "frozen_test_id": "safe-behavior",
+              "routing_table": [
+                {
+                  "literal_result": "PASSED",
+                  "final_status": "REFUTED"
+                },
+                {
+                  "literal_result": "FAILED",
+                  "final_status": "DISPUTED"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "deterministic_checks": [
+            {
+              "check_id": "registered-safe-behavior",
+              "check_kind": "FROZEN_TEST_REFERENCE",
+              "repository": "example",
+              "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "relative_path": "",
+              "start_line": 0,
+              "end_line": 0,
+              "expected_sha256": "",
+              "registry_sha256": "2efd4207bf622bdffb6faf1b723eb084b558d0a38aca2198403c1f4e38434177",
+              "frozen_test_id": "safe-behavior",
+              "routing_table": [
+                {
+                  "literal_result": "PASSED",
+                  "final_status": "REFUTED"
+                },
+                {
+                  "literal_result": "FAILED",
+                  "final_status": "DISPUTED"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "frozen_registry_json": "{\"schema_version\": 1, \"tests\": {\"safe-behavior\": {\"argv\": [\"synthetic-test\"], \"environment\": {}, \"expected_exit_status\": 0, \"expected_stdout_sha256\": \"\", \"proposition_sha256\": \"dfbbcd9d88b2e904fc3cfa41412b52fd7c81c80596fb07b3c30dd349731cbab2\", \"repository\": \"example\", \"revision\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"routing_table\": [{\"final_status\": \"REFUTED\", \"literal_result\": \"PASSED\"}, {\"final_status\": \"DISPUTED\", \"literal_result\": \"FAILED\"}], \"timeout_seconds\": 10, \"tool_version\": \"fixture\", \"working_directory\": \".\"}}}",
+      "frozen_request": {
+        "check_id": "registered-safe-behavior",
+        "check_kind": "FROZEN_TEST_REFERENCE",
+        "repository": "example",
+        "registry_sha256": "2efd4207bf622bdffb6faf1b723eb084b558d0a38aca2198403c1f4e38434177",
+        "frozen_test_id": "safe-behavior",
+        "routing_table": [
+          {
+            "literal_result": "PASSED",
+            "final_status": "REFUTED"
+          },
+          {
+            "literal_result": "FAILED",
+            "final_status": "DISPUTED"
+          }
+        ],
+        "target_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "packet_revision": "fixture-v1",
+        "candidate_id": "SVA-fixture",
+        "proposition": "The registered synthetic test measures this proposition."
+      },
+      "adapter_result": {
+        "role_type": "computation",
+        "status": "COMPLETE",
+        "adapter": "security-vuln-analyzer-deterministic-check",
+        "adapter_version": "1",
+        "packet_revision": "fixture-v1",
+        "candidate_id": "SVA-fixture",
+        "proposition": "The registered synthetic test measures this proposition.",
+        "check_id": "registered-safe-behavior",
+        "check_kind": "FROZEN_TEST_REFERENCE",
+        "repository": "example",
+        "target_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "relative_path": "",
+        "start_line": 0,
+        "end_line": 0,
+        "expected_sha256": "",
+        "registry_sha256": "2efd4207bf622bdffb6faf1b723eb084b558d0a38aca2198403c1f4e38434177",
+        "frozen_test_id": "safe-behavior",
+        "executed_argv": [
+          "synthetic-test"
+        ],
+        "tool_version": "fixture",
+        "bounded_output": "",
+        "exit_status": 0,
+        "literal_check_result": "PASSED",
+        "routing_table": [
+          {
+            "literal_result": "PASSED",
+            "final_status": "REFUTED"
+          },
+          {
+            "literal_result": "FAILED",
+            "final_status": "DISPUTED"
+          }
+        ]
+      },
+      "packet_revision": "fixture-v1",
+      "candidate_id": "SVA-fixture",
+      "proposition": "The registered synthetic test measures this proposition."
+    },
+    "source_digest_cannot_resolve": {
+      "verifier_stage2_results": [
+        "CONFIRMED",
+        "REFUTED"
+      ],
+      "literal_check_result": "MATCHED",
+      "complete_discovery_records": [
+        {
+          "deterministic_checks": [
+            {
+              "check_id": "synthetic-source-slice",
+              "check_kind": "SOURCE_SLICE_SHA256",
+              "repository": "example",
+              "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "relative_path": "src/parser.rs",
+              "start_line": 10,
+              "end_line": 20,
+              "expected_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+              "registry_sha256": "",
+              "frozen_test_id": "",
+              "routing_table": [
+                {
+                  "literal_result": "MATCHED",
+                  "final_status": "DISPUTED"
+                },
+                {
+                  "literal_result": "NOT_MATCHED",
+                  "final_status": "DISPUTED"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "missing_check": {
+      "verifier_stage2_results": [
+        "CONFIRMED",
+        "REFUTED"
+      ],
+      "literal_check_result": "MATCHED",
+      "complete_discovery_records": [
+        {
+          "deterministic_checks": []
+        }
+      ]
+    },
+    "multiple_checks": {
+      "verifier_stage2_results": [
+        "CONFIRMED",
+        "REFUTED"
+      ],
+      "literal_check_result": "MATCHED",
+      "complete_discovery_records": [
+        {
+          "deterministic_checks": [
+            {
+              "check_id": "one",
+              "routing_table": []
+            }
+          ]
+        },
+        {
+          "deterministic_checks": [
+            {
+              "check_id": "two",
+              "routing_table": []
+            }
+          ]
+        }
+      ]
+    },
+    "unresolved_check": {
+      "verifier_stage2_results": [
+        "CONFIRMED",
+        "REFUTED"
+      ],
+      "literal_check_result": "UNRESOLVED",
+      "complete_discovery_records": [
+        {
+          "deterministic_checks": [
+            {
+              "check_id": "synthetic-source-slice",
+              "routing_table": [
+                {
+                  "literal_result": "UNRESOLVED",
+                  "final_status": "REFUTED"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "non_security_note_cases": {
+    "complete_false_hardening": {
+      "disposition": "hardening or secure-code note",
+      "mandatory_discovery_roles": [
+        {
+          "status": "COMPLETE",
+          "affects_security_claim": false
+        },
+        {
+          "status": "COMPLETE",
+          "affects_security_claim": false
+        },
+        {
+          "status": "COMPLETE",
+          "affects_security_claim": false
+        }
+      ]
+    },
+    "complete_false_reliability": {
+      "disposition": "reliability or maintainability signal",
+      "mandatory_discovery_roles": [
+        {
+          "status": "COMPLETE",
+          "affects_security_claim": false
+        },
+        {
+          "status": "COMPLETE",
+          "affects_security_claim": false
+        },
+        {
+          "status": "COMPLETE",
+          "affects_security_claim": false
+        }
+      ]
+    },
+    "incomplete_discovery": {
+      "disposition": "hardening or secure-code note",
+      "mandatory_discovery_roles": [
+        {
+          "status": "COMPLETE",
+          "affects_security_claim": false
+        },
+        {
+          "status": "MISSING",
+          "affects_security_claim": false
+        },
+        {
+          "status": "COMPLETE",
+          "affects_security_claim": false
+        }
+      ]
+    },
+    "security_affecting_discovery": {
+      "disposition": "reliability or maintainability signal",
+      "mandatory_discovery_roles": [
+        {
+          "status": "COMPLETE",
+          "affects_security_claim": false
+        },
+        {
+          "status": "COMPLETE",
+          "affects_security_claim": true
+        },
+        {
+          "status": "COMPLETE",
+          "affects_security_claim": false
+        }
+      ]
+    }
+  }
+}

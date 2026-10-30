@@ -1,116 +1,49 @@
-# Scoring Frameworks Reference
+# Scoring Frameworks
 
-Combined severity scoring, prioritization formulas, business impact data, and security metrics for vulnerability assessment.
+Scoring records independent observations. It must not turn model agreement, a formula, or a missing signal into proof that a vulnerability exists.
 
-## EPSS + KEV + CVSS Combined Scoring
+## Required fields
 
-Do not use CVSS alone. Use three complementary signals:
+For each security candidate or finding, record these fields separately with citations, counterevidence, assumptions, and uncertainty:
 
-### CVSS (Common Vulnerability Scoring System)
-- Technical severity score (0.0-10.0)
-- Measures: attack vector, complexity, privileges required, user interaction, scope, impact (confidentiality/integrity/availability)
-- Limitation: does not predict real-world exploitation likelihood
+| Field | Meaning |
+|---|---|
+| Validity | Whether the cited code or configuration has the asserted security-relevant property. |
+| Reachability | Whether the stated attacker/input can reach the condition in the pinned deployment and trust-boundary context. |
+| Impact | The demonstrated security consequence of the reachable condition. |
+| Mitigation/fix state | Whether primary or compensating controls prevent the consequence for the declared primitive class and variants. |
+| Confidence | Evidence quality and remaining uncertainty; never a vote count or aggregate of model confidence. |
+| Priority | A human triage decision based on demonstrated consequence, exposure, exploit signals, remediation state, and organizational context. |
 
-### Scope Metric — Security Authority Test
+These fields are not interchangeable. A high-priority issue can remain `NOT VERIFIED`; a valid implementation defect can lack reachability or security impact; a fix can satisfy one primitive class while leaving another disputed.
 
-CVSS 3.1 defines Scope as whether the vulnerability impacts resources beyond the security authority governing the vulnerable component. A security authority is a mechanism (application sandbox, OS user account, container runtime, hypervisor) that defines and enforces access control.
+## CVSS v4.0
 
-**To determine Scope, answer three questions:**
-1. What security authority governs the **vulnerable component**?
-2. What security authority governs the **impacted component(s)**?
-3. Are these the **SAME** authority? If yes → **S:U**. If no → **S:C**.
+Use **CVSS v4.0** as the primary technical severity framework when the finding has enough evidence for a vector. Record the complete vector, score, calculator/version, score type (Base, Threat, Environmental, or Supplemental where used), inputs, and the security authorities/trust boundaries that justify the inputs.
 
-| Example | Vulnerable Component | Impacted Component | Same Authority? | Scope |
-|---------|--------------------|--------------------|----------------|-------|
-| Zed Editor command injection | Zed text processing (OS user) | User's SSH keys, shell (OS user) | Yes | S:U |
-| VS Code extension sandbox escape | Extension host sandbox | Host filesystem (OS user) | No | S:C |
-| Container escape from dev tool | Container runtime | Host OS | No | S:C |
-| Privilege escalation via helper daemon | Unprivileged user process | Root-owned service | No | S:C |
+CVSS describes technical severity; it neither establishes validity/reachability/impact nor predicts exploitation. Do not silently substitute CVSS v3.1. If a consumer requires v3.1, render it only as an explicitly labeled compatibility score alongside CVSS v4.0, with its own vector and rationale.
 
-**Do NOT use application category (e.g., "developer tool") as a Scope heuristic.** Scope depends on security authority boundaries, not on what kind of software is being scored.
+When evidence is insufficient to score a metric, record `CVSS v4.0: NOT SCORED` with the missing evidence. Do not infer a score from product category, repository name, or severity labels.
 
-**Mandatory: document the Scope decision** in the consensus table with the security authorities identified for both components.
+## Exploitation signals
 
-### Environmental Severity Note (Mandatory When Applicable)
+EPSS and CISA KEV are contextual triage signals, not evidence that a local claim is valid.
 
-When the base score uses S:U but the target environment provides access to high-value assets beyond the application's own data, add an **ENVIRONMENTAL SEVERITY NOTE** to the consensus table:
+- Record an EPSS value only for an applicable CVE. Include CVE, probability, percentile when available, retrieval timestamp in UTC, and the EPSS model/data version or API response version supplied at retrieval.
+- Record KEV membership with the catalog retrieval timestamp and catalog/version identifier when available.
+- `NO CVE`, `NOT RETRIEVED`, and `NOT APPLICABLE` are distinct states. A missing EPSS or KEV signal must not lower severity or disposition.
 
-> "Base score uses S:U (single security authority: [authority]). However, the exploited context has access to [specific assets: SSH keys, cloud provider credentials, CI/CD signing keys, package registry tokens, etc.]. Real-world impact may exceed the base score. Organizations should apply CVSS Environmental metrics (Modified Scope, Confidentiality Requirement: High) or treat as [adjusted severity] for prioritization."
+## Priority rationale
 
-This preserves spec-compliant base scores comparable to NVD while explicitly documenting the real blast radius for human reviewers.
+Priority is a transparent human triage field, not a weighted formula. State the evidence for exposure, attacker preconditions, demonstrated impact, active-exploitation signals, remediation availability, compensating controls, and required response timing. Separate external policy deadlines from the technical assessment.
 
-### EPSS (Exploit Prediction Scoring System)
-- Probability (0.0-1.0) that a CVE will be exploited in the wild within the next 30 days
-- Source: [first.org/epss](https://www.first.org/epss/)
-- API: `https://api.first.org/data/v1/epss?cve=CVE-YYYY-NNNNN`
-- Thresholds: >0.5 = high likelihood, >0.9 = near-certain exploitation
-- Key insight: Many high-CVSS vulnerabilities have low EPSS scores (hard to exploit in practice)
+## Disposition boundary
 
-### KEV (Known Exploited Vulnerabilities)
-- Binary signal: is this CVE in CISA's Known Exploited Vulnerabilities catalog?
-- Source: [cisa.gov/known-exploited-vulnerabilities-catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
-- If listed: confirmed active exploitation — escalate to Critical/immediate regardless of CVSS
-- CISA mandates federal agencies patch KEV entries within specified timelines
+The only discovery dispositions are:
 
-### Combined Decision Matrix
+1. `vulnerability finding`
+2. `primary-control weakness`
+3. `hardening or secure-code note`
+4. `reliability or maintainability signal`
 
-| CVSS | EPSS | KEV | Priority | Response Timeline |
-|------|------|-----|----------|-------------------|
-| 9.0+ | Any | Yes | Critical | Immediate (hours) |
-| 9.0+ | >0.5 | No | Critical | Immediate (24-72h) |
-| 9.0+ | <0.5 | No | High | 7 days |
-| 7.0-8.9 | >0.5 | Yes | Critical | Immediate |
-| 7.0-8.9 | >0.5 | No | High | 7 days |
-| 7.0-8.9 | <0.5 | No | Medium-High | 14 days |
-| 4.0-6.9 | Any | Yes | High | 7 days |
-| 4.0-6.9 | >0.5 | No | Medium | 30 days |
-| 4.0-6.9 | <0.5 | No | Medium | 30 days |
-| <4.0 | Any | No | Low | 90 days |
-
-## Vulnerability Prioritization Formula
-
-```
-Priority Score = (CVSS * 0.4) + (exploitability * 2.0) + (fix_available * 1.0)
-```
-
-| Variable | Values |
-|----------|--------|
-| CVSS | Base score 0.0-10.0 |
-| exploitability | 0 = no known exploit, 1 = PoC exists, 2 = active exploitation (KEV) |
-| fix_available | 0 = no fix available, 1 = patch/update available |
-
-Score range: 0.0-9.0. Higher = more urgent.
-
-Example: CVSS 7.5 with active exploitation and fix available = (7.5 * 0.4) + (2 * 2.0) + (1 * 1.0) = 3.0 + 4.0 + 1.0 = **8.0** (Critical priority)
-
-## Business Impact Data
-
-| Metric | Value | Source |
-|--------|-------|--------|
-| Average data breach cost | $4.88M | IBM Cost of a Data Breach Report 2024 |
-| Healthcare breach cost | $9.77M | IBM 2024 |
-| Financial services breach cost | $6.08M | IBM 2024 |
-| Average time to identify breach | 194 days | IBM 2024 |
-| Average time to contain breach | 64 days | IBM 2024 |
-
-### Compliance-to-Revenue Mapping
-
-| Compliance | Business Impact |
-|------------|----------------|
-| SOC 2 Type II | Enables $100K+ enterprise SaaS deals |
-| FedRAMP | Enables $1M+ US government contracts |
-| PCI-DSS | Required for payment card processing |
-| HIPAA | Required for healthcare data handling |
-| GDPR | Required for EU personal data processing (fines up to 4% of annual revenue) |
-
-## Security Metrics
-
-Track these to measure security posture over time:
-
-| Metric | Definition | Target |
-|--------|-----------|--------|
-| Vulnerability Density | Issues per 1,000 lines of code | < 1.0 |
-| Mean Time to Remediate (MTTR) | Average days from discovery to fix | Critical: <1 day, High: <7 days |
-| Compliance Score | % of applicable controls implemented | > 90% |
-| Security Debt | Count of unfixed known issues | Trending downward |
-| Scan Coverage | % of codebase covered by security scanning | > 95% |
+Disposition follows the evidence and four gates in [discovery-contract.md](discovery-contract.md) and [cross-model-verification.md](cross-model-verification.md), not a severity threshold. Stable IDs, status, provenance, and dispute packets follow [orchestrator-contract.md](orchestrator-contract.md).

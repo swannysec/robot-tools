@@ -1,169 +1,38 @@
-# Threat Modeling Methodology Reference
+# Threat Modeling Methodology
 
-STRIDE-per-interaction analysis, attack tree construction, control library, defense-in-depth assessment, and risk calibration data.
+Threat modeling establishes testable propositions; it does not assign a finding disposition by itself. Use the evidence and output boundaries in [discovery-contract.md](discovery-contract.md).
 
-## Table of Contents
+## Per-interaction analysis
 
-- [STRIDE-per-Interaction Mapping](#stride-per-interaction-mapping)
-- [Attack Tree Model](#attack-tree-model)
-- [Control Library](#control-library)
-- [Risk Calibration Data](#risk-calibration-data)
-- [Primitive Class Enumeration](#primitive-class-enumeration)
+For each source-to-target interaction, record the attacker capability, trust boundary/security authority, input transformation, guard/control, sink or observable, and evidence source. Apply STRIDE only where the interaction makes a category relevant:
 
-## STRIDE-per-Interaction Mapping
+| Category | Question |
+|---|---|
+| Spoofing | Can an attacker impersonate a principal or trusted system? |
+| Tampering | Can attacker-controlled state cross an integrity boundary? |
+| Repudiation | Can the system fail to produce trustworthy action evidence? |
+| Information disclosure | Can the attacker observe protected information? |
+| Denial of service | Can the attacker exhaust or block a protected resource? |
+| Elevation of privilege | Can the attacker obtain authority beyond the intended boundary? |
 
-Apply STRIDE categories based on the source→target element pair in each data flow, not uniformly to every component:
+For each proposition, state separately the evidence for validity, reachability, impact, and mitigation/fix state. Do not infer reachability from a source-to-sink resemblance, impact from a CWE label, or mitigation from a control's existence.
 
-| Source | Target | Applicable STRIDE Categories |
-|--------|--------|------------------------------|
-| External Entity | Process | **S**poofing, **T**ampering, **R**epudiation, **D**enial of Service |
-| Process | Data Store | **T**ampering, **I**nformation Disclosure, **D**enial of Service |
-| Process | External Entity | **S**poofing, **T**ampering, **R**epudiation, **I**nformation Disclosure, **D**enial of Service |
-| Process | Process | **S**poofing, **T**ampering, **R**epudiation, **I**nformation Disclosure, **D**enial of Service, **E**levation of Privilege |
-| Data Store | Process | **T**ampering, **I**nformation Disclosure |
+## Attack paths
 
-### STRIDE Category Definitions
-
-| Category | Question to Ask | Example Controls |
-|----------|----------------|------------------|
-| **S**poofing | Can an attacker impersonate a legitimate user or system? | Authentication (MFA, certificates), session management |
-| **T**ampering | Can data be modified in transit or at rest? | Input validation, checksums, encryption, digital signatures |
-| **R**epudiation | Can a user deny performing an action? | Audit logging, timestamps, non-repudiation controls |
-| **I**nformation Disclosure | Can sensitive data be exposed? | Encryption, access controls, data classification |
-| **D**enial of Service | Can the system be made unavailable? | Rate limiting, resource quotas, redundancy |
-| **E**levation of Privilege | Can a user gain unauthorized access levels? | RBAC, least privilege, input validation |
-
-## Attack Tree Model
-
-### Node Attributes
-
-Each node in an attack tree carries quantifiable attributes:
-
-| Attribute | Values | Description |
-|-----------|--------|-------------|
-| Difficulty | Low / Medium / High | Attacker skill level required |
-| Cost | Low / Medium / High | Resources needed (tools, infrastructure, time investment) |
-| Detection Risk | Low / Medium / High | Likelihood the attack is detected during execution |
-| Time | Hours / Days / Weeks | Estimated duration to execute this step |
-| Insider Required | Yes / No | Whether internal access is needed |
-
-### Path Analysis
-
-For each attack tree, identify three priority paths:
-
-1. **Easiest path**: Sequence of nodes with lowest cumulative difficulty. This is what script kiddies and automated tools will attempt first.
-2. **Cheapest path**: Sequence with lowest cumulative cost. This is what resource-constrained attackers will prefer.
-3. **Stealthiest path**: Sequence with lowest cumulative detection risk. This is what APTs and nation-state actors will use.
-
-Mitigations should block all three paths. If only the easiest path is blocked, sophisticated attackers still have options.
-
-### Node Types
-
-- **OR node**: Attacker needs to complete ANY child node (alternative attack methods)
-- **AND node**: Attacker needs to complete ALL child nodes (multi-step attack)
-- **LEAF node**: Atomic attack step (cannot be decomposed further)
-
-## Control Library
-
-### Control Types
-
-| Type | Purpose | Example |
-|------|---------|---------|
-| Preventive | Stop attacks before they succeed | Input validation, authentication, encryption |
-| Detective | Identify attacks during or after execution | IDS/IPS, audit logging, anomaly detection |
-| Corrective | Recover from successful attacks | Incident response, backup restoration, patch deployment |
-
-### Control Layers (Defense-in-Depth)
-
-| Layer | Scope | Example Controls |
-|-------|-------|------------------|
-| Application | Code-level security | Input validation, output encoding, auth, session management |
-| Infrastructure | Network and hosting | Firewalls, network segmentation, encryption in transit, WAF |
-| CI/CD | Build and deployment pipeline | Supply chain integrity, secrets management, image scanning, signed commits |
-
-### Gap Detection Rules
-
-Flag these as security gaps:
-- Any control layer with **coverage < 50%** of identified threats
-- Any threat with only **one type of control** (missing defense-in-depth — need at least preventive + detective)
-- Any layer with **no control diversity** (e.g., only preventive controls, no detective)
-- Any **Critical-severity threat** with no corrective control (no recovery plan)
-
-## Risk Calibration Data
-
-### Empirical Finding Frequency
-
-Calibrate likelihood estimates against real-world scan data:
-
-| Finding Type | Frequency in Typical Scans | Typical Severity |
-|-------------|---------------------------|------------------|
-| SQL Injection | ~35% | High-Critical |
-| Exposed Secrets | ~28% | High-Critical |
-| Vulnerable Dependencies | ~25% | Medium-High |
-| Missing Authentication | ~18% | High-Critical |
-| XSS Vulnerabilities | ~15% | Medium-High |
-| Weak Encryption | ~12% | Medium |
-| Missing Security Headers | ~10% | Low-Medium |
-| CSRF Vulnerabilities | ~8% | Medium |
-| Insecure Deserialization | ~5% | High |
-| Security Misconfiguration | ~4% | Medium |
-
-### Risk Matrix
-
-| | Low Impact | Medium Impact | High Impact | Critical Impact |
-|--|-----------|---------------|-------------|-----------------|
-| **High Likelihood** | Medium | High | Critical | Critical |
-| **Medium Likelihood** | Low | Medium | High | Critical |
-| **Low Likelihood** | Low | Low | Medium | High |
+Model AND/OR paths from attacker preconditions to observable consequence. Each node records preconditions, boundary crossed, cited evidence, control, and uncertainty. A path is useful only when its nodes can be checked against the pinned target and declared deployment context.
 
 ## Primitive Class Enumeration
 
-For the attacker's goal, enumerate the full equivalence class of inputs that achieves it, not exemplars within one class.
+For the attacker goal, enumerate the full set of evidence-supported inputs or representations that could produce the same observable outcome—not examples from the first family noticed.
 
-This rule is the antidote to the most common variant-miss: identifying *one* primitive class as "the attack vector," enumerating exemplars within that class, and missing the equivalent classes that achieve the same goal through different mechanisms. The attacker's primitive class includes every input that leads to the same observable outcome — not just the family the analysis happened to start with.
+1. State the attacker goal in observable terms.
+2. Name each primitive class and its canonical source (language/protocol specification, documented grammar, Unicode property set, library inventory, or other declared source).
+3. Enumerate members/variants, including alternative encodings, representations, delivery paths, state transitions, and concurrency interleavings where relevant.
+4. State which variants are in scope of the proposed control, which are not, and which cannot be enumerated with the available evidence.
+5. For each fix-bearing candidate, Role 3 owns the **Invariant + Adversarial Test Contract**: invariant, attacker-controlled input classes, expected secure behavior, sink/observable, deterministic oracle, and benign/negative control.
 
-### Domain examples
+An unenumerated or untestable member is an explicit uncertainty, not a passing result. Deterministic class coverage uses [deterministic-validation.md](deterministic-validation.md).
 
-Apply across any vulnerability class with multiple equivalent input primitives:
+## Threat-model output
 
-**Sanitization / filtering**
-- Character categories: whitespace, format characters, control characters, combining marks
-- Encoding variants: URL encoding, HTML entity encoding, Unicode escape sequences, double-encoding, mixed-encoding
-- Case variants: upper / lower / title / full-width / Turkic-i / Greek final-sigma
-
-**Injection**
-- Payload delivery vectors: query string, headers, cookies, request body, multipart fields, websocket frames
-- Serialization formats: JSON, XML, YAML, form-encoded, msgpack, protobuf
-- Context-specific syntax: SQL dialect variants, shell quoting styles, template engines (Jinja, ERB, Handlebars)
-
-**Authorization**
-- Attribute substitution paths: user ID, session token, role claim, group membership, tenant ID
-- Bypass primitives: TOCTOU, race, redirect, CSRF, alternate endpoint, parameter tampering
-
-**Deserialization**
-- Gadget chains within and across known sink libraries
-- Format alternatives that share a parser (e.g., XML/SOAP variants, YAML/JSON parsers, native binary serializers in dynamic languages)
-- Polymorphism abuse (e.g., `__class__`, type-coercing magic methods, custom reduce-style hooks)
-
-**Logic**
-- Ordering primitives: out-of-order step submission, skipping intermediate states
-- State-transition variants: re-entering states the design assumed terminal
-- Concurrency interleavings: parallel requests racing for the same resource
-- Retry / replay: idempotency token reuse, message replay against single-use endpoints
-
-### Checklist
-
-Apply at threat-modeling time, before recommending a fix:
-
-1. **State the attacker's goal** in one sentence — the observable outcome the attacker wants, not implementation jargon.
-2. **Identify the primitive class** needed to achieve that goal — the named family of inputs, not a specific exemplar.
-3. **Enumerate the full class** — every member, drawn from the canonical source (stdlib, language spec, library inventory). Do not stop at exemplars.
-4. **For each member, state whether it is in scope of the proposed fix.** Members outside the fix scope are bypass candidates and must be tracked as such.
-
-### Where this is applied downstream
-
-- **Step 1.5 SURFACE MAP construction** in `SKILL.md` references this section; the attack surface enumeration includes all primitive class members, not exemplars of one family.
-- **FINDER 2 (Threat Modeler)** in `step-2-agent-prompts.md` emits a Primitive Class Enumeration as a finding artifact for any vulnerability with multiple variants.
-- **FINDER 3 (Backend Coder)** consumes the enumeration to draft the Invariant + Adversarial Test Contract; each enumerated member is tested against the fix.
-- **FINDER 5 (Codex) Phase 2 variant probe** uses the enumeration to construct candidate bypass inputs.
-- **Class Coverage Check** in `deterministic-validation.md` runs the enumeration deterministically (no LLM judgment) against the fix's filter to produce a list of missed members.
+Return the normalized proposition, target/revision and locations, trust-boundary evidence, primitive classes/variants/enumeration source, attacker preconditions, attack path, controls and counterevidence, assumptions/uncertainty, and proposed disposition. Preserve stable IDs and provenance through [orchestrator-contract.md](orchestrator-contract.md); verification proceeds under [cross-model-verification.md](cross-model-verification.md).

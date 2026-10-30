@@ -1,0 +1,4 @@
+interface:
+  display_name: "Security Vulnerability Analyzer"
+  short_description: "Evidence-led cross-model vulnerability analysis"
+  default_prompt: "Use $security-vuln-analyzer to analyze this vulnerability report with mandatory cross-model verification."

@@ -1,0 +1,27 @@
+{
+  "type": "object", "additionalProperties": false,
+  "required": ["role_type", "status", "provider", "model", "effort", "packet_revision", "pinned_revisions", "candidate_id", "normalized_proposition", "verification_result", "affected_gates", "evidence", "counterevidence", "remaining_assumptions", "uncertainty", "check_evidence", "closure_recommendation", "closure_conditions"],
+  "properties": {
+    "role_type": {"type": "string", "enum": ["verifier_stage2"]},
+    "status": {"type": "string", "enum": ["COMPLETE", "MALFORMED", "FAILED", "MISSING"]},
+    "provider": {"type": "string"},
+    "model": {"type": "string"},
+    "effort": {"type": "string", "enum": ["high"]},
+    "packet_revision": {"type": "string"},
+    "pinned_revisions": {"type": "array", "items": {"type": "string"}},
+    "candidate_id": {"type": "string"},
+    "normalized_proposition": {"type": "string"},
+    "verification_result": {"type": "string", "enum": ["CONFIRMED", "REFUTED", "INCONCLUSIVE"]},
+    "affected_gates": {"type": "array", "items": {"type": "string", "enum": ["validity", "reachability", "impact", "mitigation_or_fix_state"]}},
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/citation"}},
+    "counterevidence": {"type": "array", "items": {"$ref": "#/$defs/citation"}},
+    "remaining_assumptions": {"type": "array", "items": {"type": "string"}},
+    "uncertainty": {"type": "array", "items": {"type": "string"}},
+    "check_evidence": {"type": "array", "items": {"$ref": "#/$defs/citation"}},
+    "closure_recommendation": {"type": "string", "enum": ["YES", "CONDITIONAL YES", "NO", "INCONCLUSIVE"]},
+    "closure_conditions": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["residual_scope_or_uncertainty", "tracking_reference", "owner", "acceptance_required"], "properties": {"residual_scope_or_uncertainty": {"type": "string", "minLength": 1}, "tracking_reference": {"type": "string", "minLength": 1}, "owner": {"type": "string", "minLength": 1}, "acceptance_required": {"type": "string", "minLength": 1}}}}
+  },
+  "$defs": {
+    "citation": {"type": "object", "additionalProperties": false, "required": ["source_kind", "repository", "revision", "relative_path", "start_line", "end_line", "quote", "observation", "artifact_id"], "properties": {"source_kind": {"type": "string", "enum": ["repository", "deterministic_check", "runtime_observation", "authoritative_source"]}, "repository": {"type": "string"}, "revision": {"type": "string"}, "relative_path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}, "quote": {"type": "string"}, "observation": {"type": "string"}, "artifact_id": {"type": "string"}}}
+  }
+}

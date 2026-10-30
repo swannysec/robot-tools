@@ -11,7 +11,7 @@ Security investigation and analysis tools for GitHub secret scanning and securit
 | Skill | Description |
 |-------|-------------|
 | `secret-scanning-investigator` | Investigate GitHub secret scanning alerts with evidence-based analysis. Trace provenance of leaked secrets, assess risk, and generate structured security reports. Includes batch processing and parallel sub-agent execution. |
-| `security-vuln-analyzer` | Multi-agent security vulnerability analysis with adversarial verification and ICD 203 analytic standards. Orchestrates 5 parallel finder agents (Security Sentinel, Threat Modeling Expert, Backend Security Coder, Comprehensive Security Reviewer, Codex Adversarial Analyst) with confirmation bias mitigation, CWE-specific verification procedures, and guided context gathering. Multi-phase synthesis with ICD 203 confidence/exploitability assessment, cross-model adversarial verification (Claude + Codex with 4-gate review), and deterministic validation. Adds `--verify-fix` mode (mandatory before issue closure — bypass construction against shipped fixes with PR attribution audit, regression check, and test coverage audit; the tracker accepts a URL or a local advisory file) and Primitive Class Enumeration (full equivalence-class hunting against the attacker's goal, not exemplars). Adds a `--develop-fix` mode (Rust-first v1) that, after confirming a concrete target, authors validated regression tests (fail-on-unpatched + sink-coverage + freeze) and a minimum fix on a branch, gates it (exploit-fail-to-pass + co-equal regression), and emits a human-gated **candidate patch** — the author never confirms its own fix (mandatory `--verify-fix` handoff; visibility-gated landing that never leaks an undisclosed public-repo vuln). Includes 16 reference files. |
+| `security-vuln-analyzer` | Portable evidence-led vulnerability analysis for Claude Code and Codex/ChatGPT Desktop. Runs three isolated native-model discovery roles and requires cold native plus cross-provider verification for every vulnerability or primary-control claim. Mechanical Reconciliation preserves counterevidence and unresolved disputes without voting or orchestrator judgment. Includes Rust security guidance plus retained `--verify-fix` and human-gated `--develop-fix` modes. Product-specific context remains run input rather than distributable skill content. |
 | `gha-hardening` | GitHub Actions security hardening and configuration best practices. Covers workflow permissions, secrets, OIDC, attack patterns (injection, pwn requests, supply chain), detection tools (zizmor, scorecard, poutine, actionlint, harden-runner), runner security, and incident response. |
 | `vanta` | Vanta compliance platform operations — posture analysis, audit readiness, vulnerability management, personnel compliance, and flexible reporting. Complements the official vanta-mcp-plugin with analysis workflows, direct API operations, and reporting. |
 | `vercel-forensics` | Preservation-first forensic evidence collection and analysis for Vercel incidents (OAuth supply-chain compromise, env-var exposure, audit-log triage). Read-only by construction: per-path `ALLOWED_PATHS` map, ingress field projection, GET-only verb gate, software WORM (SHA-256 manifest + `chmod -R a-w`). Emits 8-section findings report, fused Vercel + GitHub timeline, per-actor profiles, build-log IOC scan, and a rotation-worklist CSV for handoff to subinium/metapod. Engineering-triage grade — not court-admissible. |
@@ -95,9 +95,11 @@ Skills activate automatically via trigger phrases:
 
 ## Requirements
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
-- GitHub CLI (`gh`) authenticated with appropriate permissions
+- Claude Code or Codex/ChatGPT Desktop as the host harness
+- Both the Claude Code and Codex CLIs, authenticated and authorized for the repository, when cross-model verification is required
+- POSIX process groups and selectable subprocess pipes for frozen-test execution; native Windows is rejected before a test launches, and an unavailable required fix oracle leaves verification `INCOMPLETE`
 - Git
+- GitHub CLI (`gh`) only for GitHub-backed inputs or landing workflows
 
 ## License
 

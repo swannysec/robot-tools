@@ -1,0 +1,89 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["role_type", "status", "provider", "model", "effort", "packet_revision", "pinned_revisions", "scope", "evidence", "counterevidence", "candidates"],
+  "properties": {
+    "role_type": {"type": "string", "enum": ["discovery"]},
+    "status": {"type": "string", "enum": ["COMPLETE", "MALFORMED", "FAILED", "MISSING"]},
+    "provider": {"type": "string"},
+    "model": {"type": "string"},
+    "effort": {"type": "string", "enum": ["high"]},
+    "packet_revision": {"type": "string"},
+    "pinned_revisions": {"type": "array", "items": {"type": "string"}},
+    "scope": {"type": "string"},
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/citation"}},
+    "counterevidence": {"type": "array", "items": {"$ref": "#/$defs/citation"}},
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role_local_id", "normalized_proposition", "proposed_disposition", "affects_security_claim", "locations", "context_dependencies", "evidence", "counterevidence", "assumptions", "uncertainty", "attacker_preconditions", "reachability_trace", "affected_boundary", "primitive_class", "variant_family", "enumerated_variants", "enumeration_source", "validity", "reachability", "impact", "mitigation_or_fix_state", "confidence", "priority", "deterministic_checks", "invariant_test_contract"],
+        "properties": {
+          "role_local_id": {"type": "string"},
+          "normalized_proposition": {"type": "string"},
+          "proposed_disposition": {"type": "string", "enum": ["vulnerability finding", "primary-control weakness", "hardening or secure-code note", "reliability or maintainability signal"]},
+          "affects_security_claim": {"type": "boolean"},
+          "locations": {"type": "array", "items": {"$ref": "#/$defs/location"}},
+          "context_dependencies": {"type": "array", "items": {"$ref": "#/$defs/citation"}},
+          "evidence": {"type": "array", "items": {"$ref": "#/$defs/citation"}},
+          "counterevidence": {"type": "array", "items": {"$ref": "#/$defs/citation"}},
+          "assumptions": {"type": "array", "items": {"type": "string"}},
+          "uncertainty": {"type": "array", "items": {"type": "string"}},
+          "attacker_preconditions": {"type": "array", "items": {"type": "string"}},
+          "reachability_trace": {"type": "array", "items": {"type": "string"}},
+          "affected_boundary": {"type": "string"},
+          "primitive_class": {"type": "string"},
+          "variant_family": {"type": "string"},
+          "enumerated_variants": {"type": "array", "items": {"type": "string"}},
+          "enumeration_source": {"type": "array", "items": {"$ref": "#/$defs/citation"}},
+          "validity": {"type": "string"},
+          "reachability": {"type": "string"},
+          "impact": {"type": "string"},
+          "mitigation_or_fix_state": {"type": "string"},
+          "confidence": {"type": "string"},
+          "priority": {"type": "string"},
+          "deterministic_checks": {"type": "array", "items": {"$ref": "#/$defs/deterministic_check"}},
+          "invariant_test_contract": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["applicable", "invariant", "adversarial_input_classes", "expected_secure_behavior", "sink_or_observable", "deterministic_oracle", "benign_control"],
+            "properties": {
+              "applicable": {"type": "boolean"},
+              "invariant": {"type": "string"},
+              "adversarial_input_classes": {"type": "array", "items": {"type": "string"}},
+              "expected_secure_behavior": {"type": "string"},
+              "sink_or_observable": {"type": "string"},
+              "deterministic_oracle": {"type": "string"},
+              "benign_control": {"type": "string"}
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "location": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repository", "revision", "relative_path", "start_line", "end_line"],
+      "properties": {"repository": {"type": "string"}, "revision": {"type": "string"}, "relative_path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}}
+    },
+    "citation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_kind", "repository", "revision", "relative_path", "start_line", "end_line", "quote", "observation", "artifact_id"],
+      "properties": {"source_kind": {"type": "string", "enum": ["repository", "deterministic_check", "runtime_observation", "authoritative_source"]}, "repository": {"type": "string"}, "revision": {"type": "string"}, "relative_path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}, "quote": {"type": "string"}, "observation": {"type": "string"}, "artifact_id": {"type": "string"}}
+    },
+    "deterministic_check": {
+      "type": "object", "additionalProperties": false,
+      "required": ["check_id", "check_kind", "repository", "revision", "relative_path", "start_line", "end_line", "expected_sha256", "registry_sha256", "frozen_test_id", "literal_result_states", "routing_table"],
+      "properties": {
+        "check_id": {"type": "string"},
+        "check_kind": {"type": "string", "enum": ["SOURCE_SLICE_SHA256", "FROZEN_TEST_REFERENCE"]},
+        "repository": {"type": "string"}, "revision": {"type": "string"}, "relative_path": {"type": "string"},
+        "start_line": {"type": "integer"}, "end_line": {"type": "integer"}, "expected_sha256": {"type": "string"}, "registry_sha256": {"type": "string"}, "frozen_test_id": {"type": "string"},
+        "literal_result_states": {"type": "array", "items": {"type": "string", "enum": ["MATCHED", "NOT_MATCHED", "PASSED", "FAILED", "UNRESOLVED", "NOT_RUN"]}},
+        "routing_table": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["literal_result", "final_status"], "properties": {"literal_result": {"type": "string", "enum": ["MATCHED", "NOT_MATCHED", "PASSED", "FAILED", "UNRESOLVED", "NOT_RUN"]}, "final_status": {"type": "string", "enum": ["CROSS-MODEL VERIFIED", "REFUTED", "DISPUTED", "NOT VERIFIED", "INCOMPLETE"]}}}}
+      }
+    }
+  }
+}

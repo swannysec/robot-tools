@@ -1,42 +1,36 @@
 ---
 name: premature-fix-confirmation
-description: Failure pattern reference for premature fix confirmation — single-class enumeration, recommendation-match vs attack-closure, PR attribution drift, reporter-discovers-bypass
+description: Failure patterns that prevent a candidate patch from being mistaken for a verified closure.
 ---
 
-# Premature Fix Confirmation — Failure Pattern Reference
+# Premature Fix Confirmation
 
-## Pattern 1 — Single-class enumeration
+## Single-class enumeration
 
-PATTERN: Analysis identifies one primitive class as "the attack vector" and enumerates exemplars within that class.
-TRIGGER: A vulnerability with multiple primitive classes that achieve the same attacker goal (most sanitization, encoding, and authorization vulns).
-COUNTER: Apply Primitive Class Enumeration (threat-modeling-methodology.md). State the attacker goal; enumerate the full equivalence class; verify the fix scope covers each member.
-GENERALIZED EXAMPLE: A fix filters one family of invisible characters (e.g., bidi controls) to prevent UI spoofing but does not filter the broader whitespace family that achieves the same visual obfuscation goal through different codepoints.
+**Failure:** testing examples from one input family while missing equivalent primitive classes that achieve the attacker goal.
 
-## Pattern 2 — Recommendation-match ≠ attack-closure
+**Control:** state the goal, enumerate the canonical primitive class and variants, freeze one adversarial test per declared class, and report unenumerated members as uncertainty. See [threat-modeling-methodology.md](threat-modeling-methodology.md).
 
-PATTERN: Verifier confirms "fix implements the recommendation" without constructing inputs the fix is supposed to handle.
-TRIGGER: Any fix-verification task that begins from "is this fixed by PR X?" rather than "what inputs defeat this fix?"
-COUNTER: Apply Invariant + Adversarial Test Contract (step-2-agent-prompts.md FINDER 3). For every input class in the contract, run the fix and verify the output. A satisfied recommendation with a failed contract test means the fix is incomplete.
-GENERALIZED EXAMPLE: A recommendation says "collapse runs of more than N consecutive separator characters." Implementation uses a counter that resets on any non-separator character. Recommendation satisfied (counter present, cap is N). Attack not closed (interleaved benign character defeats counter).
+## Recommendation match is not attack closure
 
-## Pattern 3 — PR attribution drift
+**Failure:** confirming that code contains a suggested guard without observing whether it blocks the attack.
 
-PATTERN: An issue is closed against a cited fix PR, but the actual closure was effected by a different PR (often earlier, often broader). Or the cited PR contains unrelated changes that share a tracker ticket.
-TRIGGER: Multi-PR fix flows where defense-in-depth, refactors, and primary mitigations all attach to one ticket.
-COUNTER: PR Attribution Audit (fix-verification-mode.md). For each cited PR, confirm it contains the code change that closes the original PoC; flag PRs that are unrelated or defense-in-depth.
-GENERALIZED EXAMPLE: A vulnerability is closed against PR-B in a ticket. PR-B adds extraction of nested structures inside a parser. The original PoC was already blocked by PR-A (an earlier PR that added validation rejecting the parser construct outright). PR-B is defense-in-depth, not the primary fix. Closure citation is misleading.
+**Control:** require the Role 3 Invariant + Adversarial Test Contract, a base-revision expected failure, a patched-revision expected pass, benign controls, and the predeclared deterministic oracle. Use [deterministic-validation.md](deterministic-validation.md).
 
-## Pattern 4 — Reporter discovers the bypass
+## Attribution drift
 
-PATTERN: A reporter's second submission identifies a bypass within hours/days of the fix shipping.
-TRIGGER: Fixes shipped without an adversarial bypass-construction step.
-COUNTER: Mandatory --verify-fix before closure (SKILL.md). Adversarial bypass construction (evidence-validation-techniques.md). The reporter's second submission is the cheapest bypass-discovery channel, but it incurs a credibility cost; structured proactive verification at fix-merge time catches the same bypasses without the second round.
-GENERALIZED EXAMPLE: A fix ships to production. A reporter constructs a one-line variant of the original PoC that defeats the fix and submits a follow-up advisory the next day. The variant is in the same primitive class the original analysis enumerated; it was not in the test suite.
+**Failure:** treating a cited PR or commit as the closure when an earlier change, a different change, or no change actually satisfies the contract.
 
-## Cross-references
+**Control:** cite the exact diff and locations that affect the frozen contract; separately label unrelated and defense-in-depth changes. Preserve missing evidence as `INCOMPLETE`.
 
-- Primitive Class Enumeration → references/threat-modeling-methodology.md
-- Invariant + Adversarial Test Contract → references/step-2-agent-prompts.md (FINDER 3)
-- Fix-confirmation bias mechanics → references/confirmation-bias-in-security-review.md
-- Fix-verification mode → references/fix-verification-mode.md
-- Adversarial bypass construction → references/evidence-validation-techniques.md
+## Author self-confirmation and degraded verification
+
+**Failure:** allowing the author to validate its own reasoning, replacing a required cross-provider leg with a single verifier, or resolving disagreement by consensus.
+
+**Control:** pass a cold artifact to separate native and cross-provider verifiers, retain stage provenance, and use Mechanical Reconciliation. An unavailable required leg cannot produce `CROSS-MODEL VERIFIED`. See [cross-model-verification.md](cross-model-verification.md), [orchestrator-contract.md](orchestrator-contract.md), [runtime-claude.md](runtime-claude.md), and [runtime-codex.md](runtime-codex.md).
+
+## Unsafe closure or disclosure
+
+**Failure:** closing, merging, or publicly describing a patch before independent verification and human disclosure review.
+
+**Control:** label output `CANDIDATE PATCH`; require `--verify-fix`, then human merge and disclosure decisions. See [develop-fixes-mode.md](develop-fixes-mode.md) and [fix-verification-mode.md](fix-verification-mode.md).

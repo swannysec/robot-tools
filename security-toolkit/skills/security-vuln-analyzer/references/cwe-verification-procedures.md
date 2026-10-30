@@ -1,215 +1,68 @@
-# CWE Verification Procedures Reference
+# CWE Candidate-Analysis Reference
 
-Per-CWE detection checklists, verification steps, and known mitigations. Use to guide vulnerability analysis when the CWE class is identified.
+Use this reference during discovery to locate evidence, counterevidence, variant families, and deterministic checks. It does not confer `CONFIRMED`, `REFUTED`, or `INCONCLUSIVE`; those results belong only to the two cold Stage 2 verifiers under `cross-model-verification.md`.
 
-## Table of Contents
+A CWE label describes a weakness class, not validity, reachability, impact, or severity. For every candidate, cite the actual source-to-sink path, attacker preconditions, relevant controls, class variants, and remaining uncertainty. A nearby control is counterevidence to test, not automatic refutation.
 
-- [CWE-79: Cross-Site Scripting (XSS)](#cwe-79-cross-site-scripting-xss)
-- [CWE-89: SQL Injection](#cwe-89-sql-injection)
-- [CWE-78: OS Command Injection](#cwe-78-os-command-injection)
-- [CWE-22: Path Traversal](#cwe-22-path-traversal)
-- [CWE-352: Cross-Site Request Forgery (CSRF)](#cwe-352-cross-site-request-forgery-csrf)
-- [CWE-918: Server-Side Request Forgery (SSRF)](#cwe-918-server-side-request-forgery-ssrf)
-- [CWE-287: Improper Authentication](#cwe-287-improper-authentication)
-- [CWE-862: Missing Authorization](#cwe-862-missing-authorization)
-- [CWE-190: Integer Overflow (Rust-relevant)](#cwe-190-integer-overflow-rust-relevant)
-- [CWE-416: Use After Free (Rust unsafe)](#cwe-416-use-after-free-rust-unsafe)
-- [CWE-119: Buffer Overflow (Rust unsafe/FFI)](#cwe-119-buffer-overflow-rust-unsafeffi)
+## Common candidate record
 
-## CWE-79: Cross-Site Scripting (XSS)
-### Detection Patterns
-- Template rendering with unescaped user input (triple-brace in Handlebars, `| safe` in Jinja2, raw HTML insertion in React)
-- String concatenation into HTML response bodies without encoding
-- Reflected parameters echoed directly in server responses
-### Verification Steps
-1. **Reachability Gate**: Trace user-controlled input to the rendering call — confirm no sanitization in the path
-2. **Mitigation Check Gate**: Check for CSP `script-src` directive, auto-escaping template defaults, and sanitizer libraries
-3. Assign CONFIRMED if unsanitized input reaches rendered output; REFUTED if auto-escaping or CSP blocks execution
-### Known Mitigations
-- Context-aware output encoding (HTML, URL, JS, CSS contexts each need distinct encoding)
-- CSP with `script-src 'self'` (no `unsafe-inline`); auto-escaping engines (Tera, Askama, Jinja2 strict)
-### Bypass Techniques (check before REFUTING)
-- Tag mutation (`<ScRiPt>`, `<img/src=x>`, `<svg/onload=>`) to bypass tag filters
-- Event handlers (`onerror`, `onfocus`, `onmouseover`) as script-free vectors
-- JavaScript Unicode escapes (`\u0061lert`) in JS contexts
-- Protocol handlers (`javascript:`, `data:text/html`) in href/src attributes
-- Template literal injection (`${expression}`) in JS contexts
-- DOM-based XSS via `document.location`, `innerHTML`, `eval` sinks
-- SVG/MathML namespace confusion for filter bypass
+For the applicable class, discovery roles should emit:
 
-## CWE-89: SQL Injection
-### Detection Patterns
-- `format!()` or string concatenation in SQL strings passed to `query()` / `execute()`
-- Raw SQL builders accepting unparameterized user input; ORM `.raw()` with interpolated variables
-### Verification Steps
-1. **Reachability Gate**: Confirm user input flows into the SQL string without a parameterized query interface
-2. **Real Impact Gate**: Check whether parameterized queries are available but bypassed
-3. Assign CONFIRMED (High Confidence) if `format!()` builds a query with user input; REFUTED if bind parameters used
-### Known Mitigations
-- Parameterized queries (`sqlx::query!("... $1", param)` in Rust, `?` placeholders elsewhere)
-- ORM query builders enforcing parameterization; least-privilege database users
-### Bypass Techniques (check before REFUTING)
-- Comment injection (`/**/`, `--`, `#`) to break query structure
-- Case variation (`SeLeCt`, `UnIoN`) to bypass keyword filters
-- URL encoding (`%27` for quote, `%2527` for double-encoding)
-- Numeric context — unquoted integers skip string-based filters
-- Time-based blind injection (`SLEEP`, `BENCHMARK`, `pg_sleep`)
-- Nested queries and UNION-based extraction
-- Second-order injection (stored input used later in a different query)
+- exact input source, transformations, guards, sink/observable, and pinned locations;
+- attacker capability and trust boundary;
+- evidence and material counterevidence;
+- primitive class, variants, and canonical enumeration source;
+- distinct validity, reachability, impact, and mitigation/fix-state observations;
+- a predeclared deterministic check and literal result-routing table when one exists.
 
-## CWE-78: OS Command Injection
-### Detection Patterns
-- `Command::new("sh").arg("-c").arg(user_input)` — shell invocation with user-controlled arguments
-- User input reaching `Command` arguments without allowlist validation
-- Python `subprocess` with `shell=True` or direct shell execution with interpolated strings
-### Verification Steps
-1. **Reachability Gate**: Trace input from HTTP param / CLI arg / env var to the `Command` call
-2. **Environment Check Gate**: Determine if the binary runs in a sandboxed container or restricted shell
-3. Assign CONFIRMED if unsanitized input reaches a shell command; INCONCLUSIVE if partial sanitization exists
-### Known Mitigations
-- Pass arguments as discrete `arg()` calls, never through a shell interpreter
-- Allowlist validation of permitted values; avoid `sh -c` — invoke binaries directly
-### Bypass Techniques (check before REFUTING)
-- Command chaining with `;`, `|`, `||`, `&&`, and newline characters
-- Command substitution via `$()` and backticks
-- Whitespace bypass using `${IFS}`, tab characters, `{cat,/etc/passwd}`
-- Keyword bypass with `ca\t`, `c$@at`, `/???/c?t`, string concatenation
-- Hex/octal encoding (`\x63\x61\x74` for `cat`)
-- Environment variable abuse (`$PATH` manipulation, `$HOME` injection)
+## CWE-79: Cross-site scripting
 
-## CWE-22: Path Traversal
-### Detection Patterns
-- `Path::join(user_input)` or `PathBuf::push(user_input)` without canonicalization and prefix check
-- File-serving endpoints resolving `../` against a document root; archive extraction without path validation (zip slip)
-### Verification Steps
-1. **Reachability Gate**: Confirm user-controlled path segments reach filesystem operations
-2. **Mitigation Check Gate**: Check for `canonicalize()` followed by `starts_with(allowed_root)`
-3. Assign CONFIRMED if traversal can escape the intended root; REFUTED if canonicalize + prefix check is present
-### Known Mitigations
-- `canonicalize()` then `starts_with()` against the allowed base directory
-- Reject components containing `..` or absolute prefixes; container filesystem isolation (defense in depth)
-### Bypass Techniques (check before REFUTING)
-- Encoded traversal sequences (`%2e%2e%2f`, `%2e%2e/`, `..%2f`)
-- Double-encoding (`%252e%252e%252f` after double decode)
-- Null byte truncation (`%00`) to strip file extension checks
-- Windows-specific backslash traversal (`..\..\\`)
-- Symlink following when file operations don't resolve link targets
-- Unicode normalization bypass (overlong UTF-8 encoding of `.`)
+Look for untrusted values reaching HTML, attribute, URL, CSS, JavaScript, SVG/MathML, template, or DOM execution contexts. Record the rendering context and the exact encoding or sanitization applied there. Test alternative tags, event attributes, protocol handlers, namespace changes, DOM sinks, and encoding/normalization variants supported by the parser.
 
-## CWE-352: Cross-Site Request Forgery (CSRF)
-### Detection Patterns
-- State-mutating endpoints (POST/PUT/DELETE) lacking CSRF token validation middleware
-- `SameSite=None` on session cookies without additional token checks; forms missing hidden CSRF fields
-### Verification Steps
-1. **Mitigation Check Gate**: Verify CSRF middleware is registered and covers all state-mutating routes
-2. **Environment Check Gate**: Check `SameSite` cookie attribute — `Strict` or `Lax` reduces risk
-3. Assign CONFIRMED if no token enforcement on state-mutating endpoints; REFUTED if CSRF middleware is active
-### Known Mitigations
-- Synchronizer token pattern (server-generated, validated per state-mutating request)
-- `SameSite=Strict` or `Lax` on session cookies; custom request headers for API calls
-### Bypass Techniques (check before REFUTING)
-- Subdomain takeover enabling attacker-controlled origin with valid SameSite
-- JSON content-type with no CSRF check (if server accepts JSON via form)
-- Flash/PDF cross-origin request submission (legacy)
-- Clickjacking combined with token auto-fill
-- Login CSRF (force victim into attacker's session)
+Auto-escaping, a sanitizer, Trusted Types, and CSP are separate controls. CSP alone does not refute XSS: document the effective policy, response owner, inline/eval allowances, browser context, and whether the injection still changes executable or security-sensitive markup.
 
-## CWE-918: Server-Side Request Forgery (SSRF)
-### Detection Patterns
-- HTTP client calls (`reqwest::get()`, `hyper::Client`) with user-controlled URLs
-- URL params passed to webhook dispatchers, image proxies, or internal service fetchers
-- DNS rebinding where URL validation occurs before resolution
-### Verification Steps
-1. **Reachability Gate**: Trace user-supplied URL to an outbound HTTP request
-2. **Mitigation Check Gate**: Check for URL allowlisting, RFC 1918/link-local IP blocking, DNS pinning
-3. Assign CONFIRMED if arbitrary URLs trigger internal requests; INCONCLUSIVE if partial validation exists
-### Known Mitigations
-- URL allowlist (permitted schemes, hosts, ports); block private/loopback/metadata IPs post-resolution
-- Network-level egress filtering (firewall rules, service mesh policies)
-### Bypass Techniques (check before REFUTING)
-- Alternative IP representations (`0x7f000001`, `2130706433`, octal for 127.0.0.1)
-- DNS rebinding — domain resolves to internal IP after initial allowlist check
-- HTTP redirect chains from allowed domain to internal target
-- IPv6 representations (`[::1]`, `[::ffff:127.0.0.1]`)
-- Protocol smuggling via `gopher://`, `dict://`, `file://` handlers
-- URL parsing discrepancies between validator and HTTP client
-- Cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`)
+## CWE-89: SQL injection
 
-## CWE-287: Improper Authentication
-### Detection Patterns
-- Endpoints missing authentication middleware or guard annotations
-- JWT validation skipping signature verification or accepting `alg: none`
-- Password comparison using non-constant-time equality (`==` instead of `constant_time_eq`)
-### Verification Steps
-1. **Mitigation Check Gate**: Verify auth middleware is applied globally or per-route for protected resources
-2. **Real Impact Gate**: Confirm unauthenticated access reaches sensitive data or operations
-3. Assign CONFIRMED if protected routes are accessible without valid credentials; REFUTED if coverage is complete
-### Known Mitigations
-- Global auth middleware with explicit opt-out only for public routes
-- JWT configured to reject `none` algorithm; constant-time credential comparison
-### Bypass Techniques (check before REFUTING)
-- JWT `alg: none` or `alg: HS256` with public key as HMAC secret
-- Token confusion (ID token used as access token, or vice versa)
-- Password reset token reuse or predictability
-- Session fixation (pre-authentication session adopted post-login)
-- OAuth redirect manipulation to steal authorization codes
-- Timing attacks on credential comparison revealing valid usernames
+Trace untrusted data into query structure, identifiers, operators, ordering, fragments, raw-query APIs, and second-order stored values. Parameter binding is strong counterevidence only for values actually passed through bind parameters; identifiers and raw fragments may require allowlisted construction. Include numeric contexts, alternate comments/encoding, nested queries, and parser/driver differences in the variant family.
 
-## CWE-862: Missing Authorization
-### Detection Patterns
-- Endpoints authenticating callers but not checking resource ownership or role permissions
-- Direct object references (`/api/users/{id}/records`) without ownership validation
-- Admin operations lacking role checks beyond authentication
-### Verification Steps
-1. **Reachability Gate**: Confirm authenticated user can access another user's resources or escalate roles
-2. **Mitigation Check Gate**: Check for RBAC/ABAC middleware, ownership guards, or policy enforcement points
-3. Assign CONFIRMED if privilege escalation is possible; REFUTED if authorization gates every access path
-### Known Mitigations
-- Deny-by-default authorization with explicit per-endpoint grants
-- Resource-level ownership checks scoped to authenticated user's ID; centralized policy enforcement
-### Bypass Techniques (check before REFUTING)
-- IDOR via sequential/predictable IDs in URL parameters
-- Mass assignment — setting `role` or `is_admin` via unexpected request fields
-- HTTP method override (`X-HTTP-Method-Override: DELETE` on a GET endpoint)
-- Parameter pollution (duplicate params with different values parsed differently)
-- GraphQL nested query escalation (accessing related objects without authorization)
-- JWT claim manipulation (changing `role` or `sub` in unsigned/weakly-signed tokens)
+## CWE-78: OS command injection
 
-## CWE-190: Integer Overflow (Rust-relevant)
-### Detection Patterns
-- Arithmetic on `u32`/`u64`/`usize`/signed types in Rust release builds (wraps silently)
-- User-controlled numeric input in size calculations, allocation lengths, or loop bounds
-- `as` casts that truncate values (e.g., `u64 as u32`)
-### Verification Steps
-1. **Reachability Gate**: Confirm user-controlled integers reach unchecked arithmetic operations
-2. **Environment Check Gate**: Debug mode panics on overflow; release mode wraps — determine build profile
-3. Assign CONFIRMED (Moderate Confidence) if unchecked arithmetic on user input in release; REFUTED if `checked_*`/`saturating_*` used
-### Known Mitigations
-- `checked_add()`, `checked_mul()`, `saturating_sub()` for untrusted inputs
-- `#[deny(clippy::arithmetic_side_effects)]` at crate level; `TryFrom`/`TryInto` over `as` casts
+Distinguish direct process argument arrays from shell evaluation. Trace executable selection, each argument, environment variables, current directory, wrapper scripts, and any later shell or interpreter parsing. Include command separators, substitutions, whitespace and environment expansion, platform-specific quoting, option injection, and executable/PATH substitution where supported. A sandbox or restricted account changes impact and reachability; it does not erase the injection primitive.
 
-## CWE-416: Use After Free (Rust unsafe)
-### Detection Patterns
-- `unsafe` blocks dereferencing raw pointers after the owning value is dropped or moved
-- FFI boundaries where Rust passes a pointer to C code that retains it beyond the object's lifetime
-- Manual `drop()` followed by raw pointer access in the same scope
-### Verification Steps
-1. **Reachability Gate**: Trace raw pointer lifetimes in `unsafe` blocks against owning allocations
-2. **Mitigation Check Gate**: Check for Miri (`cargo +nightly miri test`) in CI
-3. Assign CONFIRMED (High Confidence) if dereference provably occurs post-drop; INCONCLUSIVE if ambiguous
-### Known Mitigations
-- Minimize `unsafe` — prefer `Arc`, `Rc`, `Pin` over raw pointers
-- Run Miri in CI; encapsulate raw pointer usage in small, auditable modules with documented invariants
+## CWE-22: Path traversal and link escape
 
-## CWE-119: Buffer Overflow (Rust unsafe/FFI)
-### Detection Patterns
-- `unsafe` blocks using `get_unchecked()` / `get_unchecked_mut()` or raw pointer arithmetic
-- FFI calls passing Rust buffers to C without length params or with mismatched lengths
-- `std::slice::from_raw_parts()` with an incorrect length argument
-### Verification Steps
-1. **Reachability Gate**: Confirm user-controlled data influences buffer sizes or offsets in `unsafe`/FFI code
-2. **Mitigation Check Gate**: Check for bounds validation before `unsafe` access; Miri/AddressSanitizer in CI
-3. Assign CONFIRMED if out-of-bounds access is reachable; REFUTED if bounds checks precede all unsafe indexing
-### Known Mitigations
-- Safe indexing (`slice.get()`) over `get_unchecked()` where performance permits
-- Validate lengths/offsets at FFI boundary; enable AddressSanitizer and Miri in CI
+Trace the raw path through decoding, normalization, joining, authorization, open/create/rename/extract operations, and every link-following boundary. Enumerate absolute paths, parent components, alternate separators, double decoding, Unicode/case behavior, symlinks/junctions, archive link entries, replacement races, and time-of-check/time-of-use windows.
+
+Lexical cleaning is not filesystem authorization. `canonicalize` plus a prefix comparison is material counterevidence only for the exact object and operation proven race-safe; it may fail for non-existent destinations, later replacement, links introduced after the check, platform path semantics, or a separate final open.
+
+## CWE-352: Cross-site request forgery
+
+Inventory every state-changing route and its accepted methods/content types. Trace credential attachment and verify token, Origin/Referer, custom-header, or same-site enforcement for each route. Cookie `SameSite`, CSRF middleware, CORS, and clickjacking controls are distinct. Include login CSRF, subdomain/site relationships, method override, alternate content types, and routes omitted from middleware.
+
+## CWE-918: Server-side request forgery
+
+Trace user influence over scheme, host, port, path, redirects, proxy selection, DNS resolution, and the final connection address. Enumerate alternate IP forms, IPv4/IPv6 mappings, DNS rebinding, redirect chains, parser discrepancies, non-HTTP schemes, metadata endpoints, and proxy/environment behavior. Host allowlists and private-range blocking must be checked after every resolution/redirect step they claim to govern.
+
+## CWE-287: Improper authentication
+
+Map protected resources and every authentication entry point. Record middleware coverage, token type/audience/issuer/signature/expiry checks, session transitions, reset and OAuth flows, credential comparison, and fail-open paths. Include algorithm/token confusion, session fixation, reset reuse, redirect manipulation, and route-specific opt-outs. Authentication evidence does not establish authorization.
+
+## CWE-862: Missing authorization
+
+For each operation, record caller identity, target object/tenant, required action, policy decision, and enforcement point. Include indirect/nested object access, bulk and GraphQL operations, method overrides, mass assignment, duplicate parameters, background jobs, and service-to-service paths. Central middleware is counterevidence only when its coverage and object/action semantics resolve for the cited path.
+
+## CWE-190: Integer overflow and truncation
+
+Trace untrusted or cross-boundary numeric values through conversions and arithmetic used for sizes, offsets, quotas, durations, allocations, and loop bounds. Record concrete types and build overflow behavior. Include signedness changes, narrowing casts, multiplication/addition order, unit conversion, and platform-width differences. Checked/saturating operations are counterevidence only if their error or saturation behavior preserves the security invariant.
+
+## CWE-416: Use after free and lifetime violations
+
+Trace allocation ownership, raw-pointer creation, moves/drops, callbacks, async/thread transfer, and each dereference. For FFI, document who retains and frees memory and whether callbacks can outlive the Rust owner. `Arc`, `Pin`, safe wrappers, `SAFETY` invariants, Miri, and sanitizers are evidence to inspect; their presence alone does not prove the cited path safe.
+
+## CWE-119: Out-of-bounds memory access
+
+Trace attacker-controlled lengths/offsets through raw pointer arithmetic, unchecked indexing, `from_raw_parts`, layout calculations, and FFI calls. Record allocation size, element size, alignment, provenance, integer conversions, and bounds checks on the exact path. Include zero-length, wraparound, unit mismatch, platform-width, and caller/callee length disagreements. Safe indexing or dynamic tooling is counterevidence only for the operations and inputs it actually covers.
+
+## Verification boundary
+
+Discovery returns candidate observations under `discovery-contract.md`. Stage 1 independently records location observations without the proposition. Stage 2 alone returns `CONFIRMED`, `REFUTED`, or `INCONCLUSIVE`. If a control appears complete, preserve its evidence and the class members tested; do not turn that observation into a verifier result during discovery.

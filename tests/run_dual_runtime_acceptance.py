@@ -67,6 +67,11 @@ SECURITY_VULN_ANALYZER_ROLE_TYPES = {
     "verifier-stage2-result.schema.json": "verifier_stage2",
     "computation-result.schema.json": "computation",
 }
+SECURITY_VULN_ANALYZER_SCHEMAS["fix-verifier-stage2-result.schema.json"] = (
+    SECURITY_VULN_ANALYZER_SCHEMAS["verifier-stage2-result.schema.json"]
+    | {"closure_recommendation", "closure_conditions"}
+)
+SECURITY_VULN_ANALYZER_ROLE_TYPES["fix-verifier-stage2-result.schema.json"] = "verifier_stage2"
 PORTABLE_VALIDATOR = (
     ROOT
     / "workflow-toolkit"
@@ -1505,7 +1510,7 @@ def security_discovery_post_schema_errors(payload: Mapping[str, Any]) -> list[st
     return errors
 
 
-def security_verifier_post_schema_errors(payload: Mapping[str, Any]) -> list[str]:
+def security_verifier_post_schema_errors(payload: Mapping[str, Any], *, fix_mode: bool = False) -> list[str]:
     """Apply the analyzer's verdict-dependent, non-semantic completeness checks."""
     if payload.get("status") != "COMPLETE":
         return []
@@ -1551,6 +1556,18 @@ def security_verifier_post_schema_errors(payload: Mapping[str, Any]) -> list[str
         )
         if not has_citation and not has_nonblank_text:
             errors.append("inconclusive stage 2 is vacuous")
+    if fix_mode:
+        recommendation = payload.get("closure_recommendation")
+        conditions = payload.get("closure_conditions")
+        if recommendation == "CONDITIONAL YES" and not conditions:
+            errors.append("conditional closure lacks a tracked condition")
+        if recommendation == "YES" and conditions:
+            errors.append("unconditional closure has residual conditions")
+        for condition in conditions or []:
+            if any(not condition[field].strip(" \t\r\n\f\v") for field in (
+                "residual_scope_or_uncertainty", "tracking_reference", "owner", "acceptance_required"
+            )):
+                errors.append("closure condition has a blank field")
     return errors
 
 
@@ -1873,6 +1890,17 @@ def portable_security_vuln_analyzer_case(workspace: Path) -> dict[str, Any]:
 
     stage1 = schemas["verifier-stage1-result.schema.json"]
     stage2 = schemas["verifier-stage2-result.schema.json"]
+    fix_stage2 = schemas["fix-verifier-stage2-result.schema.json"]
+    ordinary_fix_fields = json.loads(json.dumps(fix_stage2))
+    for field in ("closure_recommendation", "closure_conditions"):
+        ordinary_fix_fields["properties"].pop(field)
+        ordinary_fix_fields["required"].remove(field)
+    if ordinary_fix_fields != stage2:
+        raise AssertionError("fix Stage 2 schema changed the ordinary verification contract")
+    if fix_stage2["properties"]["closure_recommendation"].get("enum") != [
+        "YES", "CONDITIONAL YES", "NO", "INCONCLUSIVE"
+    ]:
+        raise AssertionError("fix Stage 2 schema lacks the literal closure recommendations")
     if "verification_result" in stage1.get("properties", {}):
         raise AssertionError("stage 1 verifier schema must be observation-only and forbid a final result")
     stage2_result = stage2.get("properties", {}).get("verification_result", {})

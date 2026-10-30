@@ -1,4 +1,4 @@
-"""Synthetic source-extraction acceptance; no target code or providers execute."""
+"""Synthetic analyzer acceptance; no target code or providers execute."""
 
 import copy
 import hashlib
@@ -8,11 +8,16 @@ import runpy
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest import mock
+
+from tests.run_dual_runtime_acceptance import security_verifier_post_schema_errors
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / 'security-toolkit/skills/security-vuln-analyzer/scripts/source-citations.py'
 MODULE = runpy.run_path(str(SCRIPT))
+CHECKS = runpy.run_path(str(SCRIPT.with_name('deterministic-check.py')))
 PIN = 'a' * 40
 
 
@@ -131,6 +136,91 @@ class SourceCitationTest(unittest.TestCase):
         self.assertEqual(output.read_bytes(), saved)
         self.assertEqual(raw.read_bytes(), encode(self.raw))
         self.assertEqual(sources.read_bytes(), encode(self.registry))
+
+
+class DeterministicCheckTest(unittest.TestCase):
+    def test_physical_lines_ignore_unicode_and_control_separators(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / 'source.rs'
+            for newline in (b'\n', b'\r\n', b'\r'):
+                with self.subTest(newline=newline):
+                    first = 'let s = "\u2028\u2029\u0085\v\f\x1c\x1d\x1e";'.encode()
+                    source.write_bytes(first + newline + b'physical second' + newline + b'last')
+                    self.assertEqual(CHECKS['normalized_line_slice'](source, 1, 1), first + b'\n')
+                    self.assertEqual(CHECKS['normalized_line_slice'](source, 2, 2), b'physical second\n')
+                    self.assertEqual(CHECKS['normalized_line_slice'](source, 3, 3), b'last')
+                    with self.assertRaisesRegex(CHECKS['RequestError'], 'exceeds'):
+                        CHECKS['normalized_line_slice'](source, 4, 4)
+                    registry = {'sources': [{'repository': 'example', 'revision': PIN, 'root': str(root),
+                        'files': [{'relative_path': 'source.rs', 'sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+                                   'allowed_ranges': [[1, 3]]}]}]}
+                    raw = {'evidence': [{'source_kind': 'repository', 'repository': 'example', 'revision': PIN,
+                        'relative_path': 'source.rs', 'start_line': 2, 'end_line': 2, 'quote': '', 'artifact_id': ''}]}
+                    registry_bytes = encode(registry)
+                    extracted = MODULE['extract_citations'](encode(raw), registry_bytes, hashlib.sha256(registry_bytes).hexdigest())
+                    self.assertEqual(extracted['artifact']['evidence'][0]['quote'].encode(), b'physical second' + newline)
+
+    def test_windows_rejected_before_any_child_or_pipe_reader_starts(self):
+        routing = [{'literal_result': 'PASSED', 'final_status': 'DISPUTED'}]
+        proposition = 'The synthetic test observes its registered result.'
+        request = {'packet_revision': 'fixture', 'candidate_id': 'fixture', 'proposition': proposition,
+            'check_id': 'fixture', 'check_kind': 'FROZEN_TEST_REFERENCE', 'repository': 'example',
+            'target_revision': PIN, 'routing_table': routing, 'registry_sha256': 'b' * 64, 'frozen_test_id': 'fixture'}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            registry = {'tests': {'fixture': {'repository': 'example', 'revision': PIN,
+                'proposition_sha256': CHECKS['normalized_proposition_digest'](proposition), 'routing_table': routing,
+                'argv': [sys.executable, '-c', 'print("safe")'], 'working_directory': '.', 'timeout_seconds': 1,
+                'expected_exit_status': 0, 'environment': {}}}}
+            result = CHECKS['base_result'](request, routing)
+            function = CHECKS['run_frozen_test']
+            with mock.patch.dict(function.__globals__, {'os': SimpleNamespace(name='nt')}), \
+                    mock.patch.object(function.__globals__['subprocess'], 'Popen') as popen, \
+                    mock.patch.object(function.__globals__['selectors'], 'DefaultSelector') as selector:
+                function(request, root, registry, 'b' * 64, result)
+            popen.assert_not_called()
+            selector.assert_not_called()
+            self.assertEqual(result['status'], 'FAILED')
+            self.assertEqual(result['literal_check_result'], 'NOT_RUN')
+            self.assertEqual(result['executed_argv'], [])
+            self.assertIn('POSIX', result['bounded_output'])
+
+
+class FixClosureTest(unittest.TestCase):
+    def setUp(self):
+        self.payload = {'role_type': 'verifier_stage2', 'status': 'COMPLETE',
+            'verification_result': 'INCONCLUSIVE', 'affected_gates': ['mitigation_or_fix_state'],
+            'evidence': [], 'counterevidence': [], 'remaining_assumptions': [],
+            'uncertainty': ['Synthetic fixture; no target behavior was executed.'],
+            'closure_recommendation': 'CONDITIONAL YES', 'closure_conditions': [{
+                'residual_scope_or_uncertainty': 'Synthetic residual scope.',
+                'tracking_reference': 'fixture-condition-1', 'owner': 'fixture owner',
+                'acceptance_required': 'Human must accept the recorded residual.'}]}
+
+    def test_conditional_closure_requires_tracked_nonblank_conditions(self):
+        self.assertEqual(security_verifier_post_schema_errors(self.payload, fix_mode=True), [])
+        for field in self.payload['closure_conditions'][0]:
+            with self.subTest(field=field):
+                payload = copy.deepcopy(self.payload)
+                payload['closure_conditions'][0][field] = ' \t\r\n\f\v'
+                self.assertIn('closure condition has a blank field',
+                              security_verifier_post_schema_errors(payload, fix_mode=True))
+        self.payload['closure_conditions'] = []
+        self.assertIn('conditional closure lacks a tracked condition',
+                      security_verifier_post_schema_errors(self.payload, fix_mode=True))
+
+    def test_unconditional_closure_cannot_hide_residual_conditions(self):
+        self.payload['closure_recommendation'] = 'YES'
+        self.assertIn('unconditional closure has residual conditions',
+                      security_verifier_post_schema_errors(self.payload, fix_mode=True))
+        self.payload['closure_conditions'] = []
+        self.assertEqual(security_verifier_post_schema_errors(self.payload, fix_mode=True), [])
+
+    def test_fix_conditions_do_not_replace_ordinary_verifier_checks(self):
+        self.payload['verification_result'] = 'CONFIRMED'
+        self.assertIn('confirmed stage 2 lacks supporting evidence',
+                      security_verifier_post_schema_errors(self.payload, fix_mode=True))
 
 
 if __name__ == '__main__':

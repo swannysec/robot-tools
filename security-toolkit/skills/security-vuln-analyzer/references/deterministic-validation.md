@@ -16,6 +16,8 @@ Only two check kinds are accepted:
   `MATCHED` or `NOT_MATCHED`. The role supplies only repository, revision, canonical
   relative path, positive line range, and expected lowercase digest. This check validates
   artifact identity only. Every routing-table entry for it must preserve `DISPUTED`.
+  Source lines are delimited by CR, LF, or CRLF bytes, matching the citation extractor;
+  Unicode and other control separators inside a physical line do not increment the line number.
 - `FROZEN_TEST_REFERENCE`: name a `frozen_test_id` registered before discovery. The
   registry, not a model result, contains the executable and argument vector, working
   directory, timeout, environment allowlist, expected exit/output oracle, and tool
@@ -43,6 +45,10 @@ satisfy that oracle. Keep stderr as labeled diagnostic output in the bounded res
 
 The host must run the adapter in the runtime guide's read-only, network-denied temporary
 environment; the portable script cannot create an operating-system sandbox itself.
+Frozen-test execution requires POSIX process groups and selectable subprocess pipes.
+On native Windows or another unsupported platform, it returns `FAILED` / `NOT_RUN`
+before launching a test child, with empty `executed_argv`. No Windows frozen-test capability
+is claimed; a required fix oracle that cannot run leaves verification `INCOMPLETE`.
 
 For `SOURCE_SLICE_SHA256`, `frozen_test_id` is empty. For `FROZEN_TEST_REFERENCE`, path,
 line, and digest fields use the registry's frozen values or the schema's empty/zero

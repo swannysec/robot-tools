@@ -97,6 +97,7 @@ Skills activate automatically via trigger phrases:
 
 - Claude Code or Codex/ChatGPT Desktop as the host harness
 - Both the Claude Code and Codex CLIs, authenticated and authorized for the repository, when cross-model verification is required
+- POSIX process groups and selectable subprocess pipes for frozen-test execution; native Windows is rejected before a test launches, and an unavailable required fix oracle leaves verification `INCOMPLETE`
 - Git
 - GitHub CLI (`gh`) only for GitHub-backed inputs or landing workflows
 

@@ -18,7 +18,7 @@ import unicodedata
 
 
 ADAPTER_NAME = "security-vuln-analyzer-deterministic-check"
-ADAPTER_VERSION = "1.0.0"
+ADAPTER_VERSION = "1.0.1"
 MAX_OUTPUT_BYTES = 65_536
 FINAL_STATUSES = {
     "CROSS-MODEL VERIFIED",
@@ -91,14 +91,15 @@ def normalized_line_slice(path: Path, start_line: int, end_line: int) -> bytes:
     if start_line < 1 or end_line < start_line:
         raise RequestError("line range must be positive and ordered")
     try:
-        raw = path.read_bytes().decode("utf-8")
+        raw = path.read_bytes()
+        raw.decode("utf-8")
     except (OSError, UnicodeError) as error:
         raise RequestError(f"source slice is not readable UTF-8: {error}") from error
-    normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
     lines = normalized.splitlines(keepends=True)
     if end_line > len(lines):
         raise RequestError("line range exceeds source file")
-    return "".join(lines[start_line - 1 : end_line]).encode("utf-8")
+    return b"".join(lines[start_line - 1 : end_line])
 
 
 def normalized_proposition_digest(proposition: str) -> str:
@@ -234,17 +235,12 @@ def run_frozen_test(
     selector = None
     group_terminated = False
     try:
-        popen_options: dict[str, Any] = {}
-        if os.name == "posix":
-            popen_options["start_new_session"] = True
-        elif os.name == "nt":
-            popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
+        if os.name != "posix":
             result.update(
                 {
                     "status": "FAILED",
                     "frozen_test_id": frozen_test_id,
-                    "bounded_output": "process-group isolation is unavailable",
+                    "bounded_output": "frozen-test execution requires POSIX process groups and selectable pipes",
                     "exit_status": -1,
                     "literal_check_result": "NOT_RUN",
                 }
@@ -256,7 +252,7 @@ def run_frozen_test(
             env=dict(environment),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            **popen_options,
+            start_new_session=True,
         )
         if process.stdout is None or process.stderr is None:
             raise RequestError("frozen test output pipe is unavailable")

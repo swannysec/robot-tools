@@ -19,7 +19,7 @@ Require a specific stable finding ID and frozen test identifiers/hashes before t
 
 Freeze two separate cold verification packets. The Stage 1 packet is observation-only: it contains only the pinned base and candidate revisions, precise predeclared locations and scope, and generic comparison questions. It contains no normalized proposition, finding conclusion, author reasoning, discovery output, contract, patch diff, test/oracle material, or verifier output.
 
-In a fresh Stage 2 execution, provide a separate packet containing the normalized proposition, patch diff, frozen contract, tests, and deterministic oracle, cited evidence and counterevidence, primitive-class enumeration, and bounded context. Do not provide any Stage 1 artifact or other verifier work; exclude author reasoning, discovery consensus, agent identities, and counts.
+Before independent verification, freeze the Stage 2 normalized proposition as the positive assertion that the named candidate satisfies the frozen fix contract. Thus shared `REFUTED` means that assertion was refuted and routes to `NO`; do not reuse the analysis-mode vulnerability proposition. In a fresh Stage 2 execution, provide a separate packet containing the normalized proposition, patch diff, frozen contract, tests, and deterministic oracle, cited evidence and counterevidence, primitive-class enumeration, and bounded context. Do not provide any Stage 1 artifact or other verifier work; exclude author reasoning, discovery consensus, agent identities, and counts.
 
 ## Procedure
 
@@ -33,16 +33,19 @@ Use [deterministic-validation.md](deterministic-validation.md) for literal evide
 
 ## Result
 
-For every finding, preserve stable IDs, status, provenance, evidence, counterevidence, assumptions, uncertainty, four-gate state, and the literal test evidence state. The only closure outcomes are:
+For every finding, preserve stable IDs, status, provenance, evidence, counterevidence, assumptions, uncertainty, four-gate state, and the literal test evidence state. For Stage 2 in `--verify-fix` (including verification invoked by `--develop-fix`), both verifiers must use `schemas/fix-verifier-stage2-result.schema.json`. Ordinary analysis continues to use `schemas/verifier-stage2-result.schema.json`. The fix schema retains every ordinary Stage 2 field and requires `closure_recommendation` (`YES`, `CONDITIONAL YES`, `NO`, or `INCONCLUSIVE`) and `closure_conditions` (an array of objects). Each condition requires string fields `residual_scope_or_uncertainty`, `tracking_reference`, `owner`, and `acceptance_required`. The verifier supplies this information; the orchestrator preserves it verbatim and does not infer it. After schema validation, mechanically require at least one condition for `CONDITIONAL YES` and an empty `closure_conditions` array for `YES`. Reject any condition field that is empty after trimming ASCII whitespace. A violation makes the result `MALFORMED`; apply the normal identical-packet retry and then `INCOMPLETE` if unrepaired. The existing Stage 2 verdict-dependent citation and cardinality checks still apply. Recommendations and conditions are role-scoped; never merge or discard them.
 
-- `YES`: the contract's deterministic oracle is satisfied, independent verification reconciles as allowed, and no contract-supported bypass remains demonstrated.
-- `CONDITIONAL YES`: the oracle is satisfied, but explicit residual scope or uncertainty requires tracked human acceptance. This is not a claim of complete coverage.
-- `NO`: a reproducible contract-supported bypass or failed gate prevents closure.
-- `DISPUTED`: complete verifiers split and the unique predeclared deterministic oracle is absent, conflicting, unexecutable, or non-resolving. The issue does not close.
-- `INCOMPLETE`: a mandatory role, stage, provider capability, schema, citation, revision, or execution artifact is unavailable or invalid.
-- `NOT VERIFIED`: all mandatory artifacts are complete, but both Stage 2 verifiers are `INCONCLUSIVE`.
+The oracle state is `SATISFIED` only when the accepted, revision-bound predeclared fix oracle and all its required base, patched, control, sink-coverage, and regression executions have valid recorded results satisfying their frozen expectations. It is `FAILED` when a valid execution contradicts a frozen expectation. It is `UNAVAILABLE` when the oracle, binding, required execution, or valid result is missing, invalid, unexecutable, or unresolved. A written but unrun test is not a satisfied oracle. Preserve the literal results and evidence state; do not infer the state from verifier prose.
 
-Mechanical mapping from the shared final status is exhaustive: `CROSS-MODEL VERIFIED` plus a satisfied fix oracle permits `YES` or evidence-bounded `CONDITIONAL YES`; `REFUTED` or a demonstrated bypass maps to `NO`; `DISPUTED` maps to `DISPUTED`; `NOT VERIFIED` maps to `NOT VERIFIED`; and `INCOMPLETE` maps to `INCOMPLETE`. Agents supply the closure recommendation fields; the orchestrator applies only this lookup.
+Apply the following ordered rules mechanically, after normal schema, citation, revision, mandatory artifact and shared reconciliation checks. Missing or invalid mandatory artifacts route to shared `INCOMPLETE` before closure routing, including when the shared verdict would otherwise be `REFUTED`. The first matching rule determines the closure outcome:
+
+1. Shared `INCOMPLETE`, `DISPUTED`, or `NOT VERIFIED` maps to the same outcome, regardless of recommendations or oracle state.
+2. If one recommendation is `NO` and the other differs, return `DISPUTED`. Preserve both records and the oracle evidence; do not select a verifier's recommendation or interpret prose to resolve the conflict.
+3. Shared `REFUTED`, two `NO` recommendations, or a `FAILED` oracle maps to `NO`.
+4. An `UNAVAILABLE` oracle maps to `INCOMPLETE`.
+5. With shared `CROSS-MODEL VERIFIED` and a `SATISFIED` oracle: two `YES` recommendations map to `YES`; any pair consisting only of `YES` and `CONDITIONAL YES` with at least one `CONDITIONAL YES` maps to `CONDITIONAL YES`, preserving all conditional records for tracked human acceptance; two `INCONCLUSIVE` recommendations map to `NOT VERIFIED`; and one `INCONCLUSIVE` with a different recommendation maps to `DISPUTED`.
+
+No other combination is a closure recommendation: invalid or missing values are `MALFORMED` and, after retry, `INCOMPLETE`. A verifier must use `NO` for a demonstrated contract-supported bypass or failed gate and cite its evidence; it must not recommend `YES` where such evidence remains. The orchestrator does not decide whether prose demonstrates a bypass or whether conditions are persuasive. `YES` requires unanimous `YES` and the satisfied oracle; `CONDITIONAL YES` requires the satisfied oracle and the recorded conditions. `NO`, `DISPUTED`, `INCOMPLETE`, and `NOT VERIFIED` do not close the issue.
 
 `YES` and `CONDITIONAL YES` are recommendations for human closure only. They do not authorize an autonomous merge, issue closure, or disclosure action.
 

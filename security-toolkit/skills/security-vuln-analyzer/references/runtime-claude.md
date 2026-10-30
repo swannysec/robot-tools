@@ -82,7 +82,7 @@ fresh ephemeral execution rooted at the target repository, with:
 - model `gpt-6.1-sol`;
 - reasoning effort `high`;
 - sandbox `read-only`;
-- the applicable role-specific schema resolved from the skill directory (`schemas/discovery-result.schema.json`, `schemas/verifier-stage1-result.schema.json`, `schemas/verifier-stage2-result.schema.json`, or `schemas/computation-result.schema.json`);
+- the applicable role-specific schema resolved from the skill directory (`schemas/discovery-result.schema.json`, `schemas/verifier-stage1-result.schema.json`, `schemas/verifier-stage2-result.schema.json`, `schemas/fix-verifier-stage2-result.schema.json`, or `schemas/computation-result.schema.json`);
 - user and project instruction loading disabled when supported;
 - no writable directory added; and
 - an explicit environment allowlist excluding Anthropic credentials and host session indicators.
@@ -118,3 +118,5 @@ and routes the split to `DISPUTED`.
 - Do not change the claim, reveal other outputs, or add coaching on retry.
 - After the retry fails, preserve the role status and render an `INCOMPLETE` run.
 - A single verifier can provide analysis, but cannot confer `CROSS-MODEL VERIFIED`.
+
+For Stage 2 fix verification, including verification invoked by `--develop-fix`, bind `schemas/fix-verifier-stage2-result.schema.json` for both providers; use `schemas/verifier-stage2-result.schema.json` for ordinary analysis. Apply the fix-mode semantic checks and routing in [fix-verification-mode.md](fix-verification-mode.md).

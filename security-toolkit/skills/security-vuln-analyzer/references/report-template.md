@@ -87,6 +87,10 @@ Remaining assumptions/uncertainty:
 
 Never include agent identities, vote counts, consensus language, or raw verifier outputs. Do not prune evidence, counterevidence, assumptions, uncertainty, or deterministic checks on relevance grounds.
 
+## Fix verification record
+
+For `--verify-fix` and verification invoked by `--develop-fix`, preserve the two role-scoped `closure_recommendation` and `closure_conditions` values, shared reconciliation status, frozen oracle identity and literal execution results, oracle state (`SATISFIED`, `FAILED`, or `UNAVAILABLE`), and mechanically routed closure outcome. Preserve conditional tracking references, owners, and acceptance requirements verbatim. Follow [fix-verification-mode.md](fix-verification-mode.md).
+
 ## Candidate patch record
 
 Only for `--develop-fix`, using [develop-fixes-mode.md](develop-fixes-mode.md):

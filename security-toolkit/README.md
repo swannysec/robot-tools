@@ -95,6 +95,10 @@ Skills activate automatically via trigger phrases:
 
 ## Requirements
 
+The analyzer carries role-scoped CVSS, EPSS, and KEV records and versioned fix contracts
+through its discovery schema into reports and fix handoffs. Missing data uses explicit
+unscored or unretrieved states; report rendering does not infer assessments from prose.
+
 - Claude Code or Codex/ChatGPT Desktop as the host harness
 - Both the Claude Code and Codex CLIs, authenticated and authorized for the repository, when cross-model verification is required
 - POSIX process groups and selectable subprocess pipes for frozen-test execution; native Windows is rejected before a test launches, and an unavailable required fix oracle leaves verification `INCOMPLETE`

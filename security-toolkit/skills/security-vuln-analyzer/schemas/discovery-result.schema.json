@@ -18,7 +18,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["role_local_id", "normalized_proposition", "proposed_disposition", "affects_security_claim", "locations", "context_dependencies", "evidence", "counterevidence", "assumptions", "uncertainty", "attacker_preconditions", "reachability_trace", "affected_boundary", "primitive_class", "variant_family", "enumerated_variants", "enumeration_source", "validity", "reachability", "impact", "mitigation_or_fix_state", "confidence", "priority", "deterministic_checks", "invariant_test_contract"],
+        "required": ["role_local_id", "normalized_proposition", "proposed_disposition", "affects_security_claim", "locations", "context_dependencies", "evidence", "counterevidence", "assumptions", "uncertainty", "attacker_preconditions", "reachability_trace", "affected_boundary", "primitive_class", "variant_family", "enumerated_variants", "enumeration_source", "validity", "reachability", "impact", "mitigation_or_fix_state", "confidence", "priority", "scoring", "deterministic_checks", "invariant_test_contract"],
         "properties": {
           "role_local_id": {"type": "string"},
           "normalized_proposition": {"type": "string"},
@@ -43,19 +43,22 @@
           "mitigation_or_fix_state": {"type": "string"},
           "confidence": {"type": "string"},
           "priority": {"type": "string"},
+          "scoring": {"$ref": "#/$defs/scoring"},
           "deterministic_checks": {"type": "array", "items": {"$ref": "#/$defs/deterministic_check"}},
           "invariant_test_contract": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["applicable", "invariant", "adversarial_input_classes", "expected_secure_behavior", "sink_or_observable", "deterministic_oracle", "benign_control"],
+            "required": ["applicable", "version", "invariant", "adversarial_input_classes", "expected_secure_behavior", "sink_or_observable", "deterministic_oracle", "benign_control", "implementation_pitfalls"],
             "properties": {
               "applicable": {"type": "boolean"},
+              "version": {"type": "string"},
               "invariant": {"type": "string"},
               "adversarial_input_classes": {"type": "array", "items": {"type": "string"}},
               "expected_secure_behavior": {"type": "string"},
               "sink_or_observable": {"type": "string"},
               "deterministic_oracle": {"type": "string"},
-              "benign_control": {"type": "string"}
+              "benign_control": {"type": "string"},
+              "implementation_pitfalls": {"type": "array", "items": {"type": "string"}}
             }
           }
         }
@@ -63,6 +66,41 @@
     }
   },
   "$defs": {
+    "scoring": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cvss_v4", "epss", "kev"],
+      "properties": {"cvss_v4": {"$ref": "#/$defs/cvss_v4"}, "epss": {"$ref": "#/$defs/epss"}, "kev": {"$ref": "#/$defs/kev"}}
+    },
+    "cvss_v4": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "vector", "score", "score_type", "calculator_version", "inputs", "rationale", "evidence"],
+      "properties": {
+        "status": {"type": "string", "enum": ["SCORED", "NOT SCORED", "NOT APPLICABLE"]},
+        "vector": {"type": "string"}, "score": {"type": ["number", "null"]}, "score_type": {"type": "string"},
+        "calculator_version": {"type": "string"}, "inputs": {"type": "array", "items": {"type": "string"}},
+        "rationale": {"type": "string"}, "evidence": {"type": "array", "items": {"$ref": "#/$defs/citation"}}
+      }
+    },
+    "epss": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "cve", "probability", "percentile", "retrieved_at_utc", "version", "rationale", "evidence"],
+      "properties": {
+        "status": {"type": "string", "enum": ["RETRIEVED", "NO CVE", "NOT RETRIEVED", "NOT APPLICABLE"]},
+        "cve": {"type": "string"}, "probability": {"type": ["number", "null"]}, "percentile": {"type": ["number", "null"]},
+        "retrieved_at_utc": {"type": "string"}, "version": {"type": "string"},
+        "rationale": {"type": "string"}, "evidence": {"type": "array", "items": {"$ref": "#/$defs/citation"}}
+      }
+    },
+    "kev": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "cve", "membership", "retrieved_at_utc", "version", "rationale", "evidence"],
+      "properties": {
+        "status": {"type": "string", "enum": ["RETRIEVED", "NO CVE", "NOT RETRIEVED", "NOT APPLICABLE"]},
+        "cve": {"type": "string"}, "membership": {"type": "string", "enum": ["LISTED", "NOT LISTED", "UNKNOWN"]},
+        "retrieved_at_utc": {"type": "string"}, "version": {"type": "string"},
+        "rationale": {"type": "string"}, "evidence": {"type": "array", "items": {"$ref": "#/$defs/citation"}}
+      }
+    },
     "location": {
       "type": "object", "additionalProperties": false,
       "required": ["repository", "revision", "relative_path", "start_line", "end_line"],

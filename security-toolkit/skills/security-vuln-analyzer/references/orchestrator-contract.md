@@ -57,6 +57,8 @@ Role status is one of `COMPLETE`, `MALFORMED`, `FAILED`, or `MISSING`. On a mand
 
 Schema-valid JSON is not automatically a complete role result. Apply the literal post-schema cardinality table in `cross-model-verification.md`. An empty Stage 1 record, a `CONFIRMED` verdict without an affected gate and supporting citation, a `REFUTED` verdict without an affected gate and counterevidence citation, or a vacuous `INCONCLUSIVE` result has effective status `MALFORMED`. This check counts fields and validates citation structure; it does not weigh evidence.
 
+For discovery, also apply the scoring sentinels and contract version/pitfalls checks in `discovery-contract.md` and `scoring-frameworks.md` before declaring a role complete. Preserve each role's structured `scoring` and `invariant_test_contract` records verbatim; never backfill missing fields or select between assessments.
+
 For each discovery `SOURCE_SLICE_SHA256` check, reject any routing-table entry whose `final_status` is not `DISPUTED` as `MALFORMED`. Apply this literal post-schema check before candidate dispatch; the computation adapter independently enforces the same restriction. Keep conditional schema keywords out of the shared response schemas because providers accept different subsets.
 
 ## Mechanical Reconciliation

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from tests.run_dual_runtime_acceptance import security_verifier_post_schema_errors
+from tests.run_dual_runtime_acceptance import security_cvss_v4_vector_is_complete, security_discovery_metadata_errors, security_verifier_post_schema_errors
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / 'security-toolkit/skills/security-vuln-analyzer/scripts/source-citations.py'
@@ -221,6 +221,105 @@ class FixClosureTest(unittest.TestCase):
         self.payload['verification_result'] = 'CONFIRMED'
         self.assertIn('confirmed stage 2 lacks supporting evidence',
                       security_verifier_post_schema_errors(self.payload, fix_mode=True))
+
+
+class DiscoveryMetadataTest(unittest.TestCase):
+    def setUp(self):
+        root = SCRIPT.parents[4]
+        self.payload = json.loads((root / 'tests/fixtures/security-vuln-analyzer/discovery-report-metadata.json').read_text())
+        self.candidate = self.payload['candidates'][0]
+        self.scoring = self.candidate['scoring']
+
+    def test_required_schema_fields_match_the_reporting_and_fix_handoff_contract(self):
+        schema = json.loads((SCRIPT.parents[1] / 'schemas/discovery-result.schema.json').read_text())
+        candidate = schema['properties']['candidates']['items']
+        self.assertIn('scoring', candidate['required'])
+        contract = candidate['properties']['invariant_test_contract']
+        self.assertTrue({'version', 'implementation_pitfalls'} <= set(contract['required']))
+        for name in ('scoring', 'cvss_v4', 'epss', 'kev'):
+            record = schema['$defs'][name]
+            self.assertFalse(record['additionalProperties'])
+            self.assertEqual(set(record['required']), set(record['properties']))
+            expected = self.scoring if name == 'scoring' else self.scoring[name]
+            self.assertEqual(set(record['required']), set(expected))
+        report = (SCRIPT.parents[1] / 'references/report-template.md').read_text()
+        for name, fields in self.scoring.items():
+            for field in fields:
+                self.assertIn('candidate.scoring.' + name + '.' + field, report)
+        for field in ('version', 'implementation_pitfalls'):
+            self.assertIn('candidate.invariant_test_contract.' + field, report)
+        self.assertEqual(security_discovery_metadata_errors(self.payload), [])
+
+    def test_report_metadata_survives_quotation_extraction_without_reconciliation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            data = b'Synthetic evidence.\n'
+            (root / 'source.rs').write_bytes(data)
+            registry = {'sources': [{'repository': 'example', 'revision': PIN, 'root': str(root),
+                'files': [{'relative_path': 'source.rs', 'sha256': hashlib.sha256(data).hexdigest(), 'allowed_ranges': [[1, 1]]}]}]}
+            citation = {'source_kind': 'repository', 'repository': 'example', 'revision': PIN,
+                'relative_path': 'source.rs', 'start_line': 1, 'end_line': 1, 'quote': '',
+                'observation': 'Role-authored rationale remains unchanged.', 'artifact_id': ''}
+            self.scoring['cvss_v4']['evidence'] = [citation]
+            raw = copy.deepcopy(self.payload)
+            registry_bytes = encode(registry)
+            result = MODULE['extract_citations'](encode(raw), registry_bytes, hashlib.sha256(registry_bytes).hexdigest())
+            expected = copy.deepcopy(raw)
+            expected['candidates'][0]['scoring']['cvss_v4']['evidence'][0]['quote'] = data.decode()
+            self.assertEqual(result['artifact'], expected)
+            self.assertEqual(self.payload, raw)
+            self.assertEqual(security_discovery_metadata_errors(result['artifact']), [])
+
+    def test_unknown_signals_do_not_invent_zeroes_or_negative_membership(self):
+        self.scoring['cvss_v4'].update(status='NOT SCORED', score=None)
+        self.scoring['epss'].update(status='NO CVE', cve='', probability=None, percentile=None, retrieved_at_utc='', version='')
+        self.scoring['kev'].update(status='NOT RETRIEVED', membership='UNKNOWN', retrieved_at_utc='', version='')
+        self.assertEqual(security_discovery_metadata_errors(self.payload), [])
+        self.scoring['epss']['probability'] = 0
+        self.scoring['kev']['membership'] = 'NOT LISTED'
+        errors = security_discovery_metadata_errors(self.payload)
+        self.assertIn('unretrieved EPSS has numeric values', errors)
+        self.assertIn('unretrieved KEV asserts membership', errors)
+
+    def test_scored_and_retrieved_data_require_typed_provenance(self):
+        self.scoring['cvss_v4']['evidence'] = []
+        self.scoring['epss']['retrieved_at_utc'] = '2099-01-01T01:00:00+01:00'
+        self.scoring['kev']['cve'] = ''
+        errors = security_discovery_metadata_errors(self.payload)
+        self.assertIn('scored CVSS lacks required typed metadata', errors)
+        self.assertIn('epss lacks retrieval metadata', errors)
+        self.assertIn('kev lacks retrieval metadata', errors)
+
+    def test_numeric_bounds_nulls_and_rationale_presence(self):
+        for value in (-0.1, 1.1, float('inf'), float('nan'), True):
+            with self.subTest(value=value):
+                self.scoring['epss']['probability'] = value
+                self.assertIn('retrieved EPSS has invalid numeric values', security_discovery_metadata_errors(self.payload))
+        self.scoring['epss'].update(probability=0, percentile=None)
+        self.assertEqual(security_discovery_metadata_errors(self.payload), [])
+        self.scoring['epss']['rationale'] = ' \t'
+        self.assertIn('epss lacks a rationale', security_discovery_metadata_errors(self.payload))
+
+    def test_cvss_vectors_require_complete_ordered_metrics_and_valid_values(self):
+        vector = self.scoring['cvss_v4']['vector']
+        for invalid in ('CVSS:4.0/', 'CVSS:4.0/not-a-vector', vector.replace('/AT:N', ''),
+                        vector.replace('/AV:N', '/AV:Z'), vector + '/E:A/E:P', vector + '/U:red',
+                        vector.replace('/AV:N/AC:L', '/AC:L/AV:N'), vector + '/CR:H/E:P'):
+            with self.subTest(invalid=invalid):
+                self.scoring['cvss_v4']['vector'] = invalid
+                self.assertIn('scored CVSS lacks required typed metadata', security_discovery_metadata_errors(self.payload))
+        for valid in (vector, vector + '/E:X/MSI:S/MSA:S/U:Red',
+                      'CVSS:4.0/AV:L/AC:H/AT:N/PR:N/UI:A/VC:N/VI:N/VA:L/SC:H/SI:H/SA:H/CR:H/IR:H/AR:M/MAV:N/MAC:L/MAT:P/MPR:L/MUI:A/MVC:N/MVI:H/MVA:L/MSC:L/MSI:S/MSA:H'):
+            with self.subTest(valid=valid):
+                self.assertTrue(security_cvss_v4_vector_is_complete(valid))
+
+    def test_applicable_contract_requires_version_and_preserves_pitfalls(self):
+        self.candidate['invariant_test_contract']['version'] = ' \t'
+        self.assertIn('applicable contract lacks a version', security_discovery_metadata_errors(self.payload))
+        self.candidate['invariant_test_contract'].update(applicable=False, version='', implementation_pitfalls=[])
+        self.assertEqual(security_discovery_metadata_errors(self.payload), [])
+        self.candidate['invariant_test_contract']['implementation_pitfalls'] = ['Unfrozen residual.']
+        self.assertIn('inapplicable contract has version or pitfalls', security_discovery_metadata_errors(self.payload))
 
 
 if __name__ == '__main__':

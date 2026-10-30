@@ -21,7 +21,7 @@ One finding and shared root-cause variant family use one branch and one contract
 
 Dispatch a separate native-model fix author at High effort: `claude-opus-5-5` in Claude Code or `gpt-6.1-sol` in Codex/ChatGPT. The independent fix verifiers use the same host/model matrix as analysis; neither verifier may be the author agent.
 
-1. Freeze the contract and all test definitions before editing production code. Record contract version, base revision, test IDs/hashes, and author provenance.
+1. Freeze the contract and all test definitions before editing production code. Record the contract version, source artifact and hash of the full contract, base revision, test IDs/hashes, and author provenance. Bind the handoff to both version and artifact hash; a matching version alone does not establish identical content. The orchestrator may validate the hash but does not adjudicate contract compatibility.
 2. Author one regression test for each declared adversarial input class plus declared benign/negative controls. Test the untouched base revision first: exploit tests must fail as expected; benign controls must retain their expected behavior.
 3. Prove the test reaches the cited sink/observable using the frozen deterministic method and oracle. Record `TEST_OBSERVED`, `TEST_WRITTEN_NOT_RUN`, or `TEST_UNVALIDATED` accurately; written tests alone are not validation.
 4. Make the smallest root-cause patch on an isolated branch. Do not expand scope, alter frozen tests, or substitute a compensating control for the declared invariant without returning the finding to human review.
@@ -40,7 +40,7 @@ Use an isolated branch and the host's enforced sandbox. Phase 1 permits only dep
 Render, without inventing missing values:
 
 ```text
-Finding ID, contract version, base/patched revisions, branch:
+Finding ID, contract version, full contract source artifact/hash, base/patched revisions, branch:
 Author role/provider/exact model/effort and attempt status:
 Frozen test IDs/hashes and source revision:
 Per input class: base expected/actual; patched expected/actual; pass/fail; test evidence state:

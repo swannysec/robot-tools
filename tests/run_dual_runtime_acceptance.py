@@ -8,6 +8,7 @@ import concurrent.futures
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import selectors
@@ -21,6 +22,7 @@ import threading
 import time
 import tarfile
 import unicodedata
+from datetime import datetime, timedelta
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -1510,6 +1512,92 @@ def security_discovery_post_schema_errors(payload: Mapping[str, Any]) -> list[st
     return errors
 
 
+def security_cvss_v4_vector_is_complete(vector: str) -> bool:
+    """Literal FIRST v4.0 Table 23 grammar; does not calculate a score."""
+    base = (
+        ("AV", "[NALP]"), ("AC", "[LH]"), ("AT", "[NP]"), ("PR", "[NLH]"),
+        ("UI", "[NPA]"), ("VC", "[HLN]"), ("VI", "[HLN]"), ("VA", "[HLN]"),
+        ("SC", "[HLN]"), ("SI", "[HLN]"), ("SA", "[HLN]"),
+    )
+    optional = (
+        ("E", "[XAPU]"), ("CR", "[XHML]"), ("IR", "[XHML]"), ("AR", "[XHML]"),
+        ("MAV", "[XNALP]"), ("MAC", "[XLH]"), ("MAT", "[XNP]"), ("MPR", "[XNLH]"),
+        ("MUI", "[XNPA]"), ("MVC", "[XNLH]"), ("MVI", "[XNLH]"), ("MVA", "[XNLH]"),
+        ("MSC", "[XNLH]"), ("MSI", "[XNLHS]"), ("MSA", "[XNLHS]"),
+        ("S", "[XNP]"), ("AU", "[XNY]"), ("R", "[XAUI]"), ("V", "[XDC]"),
+        ("RE", "[XLMH]"), ("U", "(?:X|Clear|Green|Amber|Red)"),
+    )
+    pattern = r"CVSS:4\.0" + "".join(f"/{name}:{values}" for name, values in base)
+    pattern += "".join(f"(?:/{name}:{values})?" for name, values in optional)
+    return re.fullmatch(pattern, vector) is not None
+
+
+def security_discovery_metadata_errors(payload: Mapping[str, Any]) -> list[str]:
+    """Check structured scoring/contract sentinels without interpreting role judgments."""
+    if payload.get("status") != "COMPLETE":
+        return []
+    errors: list[str] = []
+
+    def nonblank(value: str) -> bool:
+        return bool(value.strip(" \t\r\n\f\v"))
+
+    def bounded_number(value: Any, maximum: float) -> bool:
+        return type(value) in (int, float) and 0 <= value <= maximum and math.isfinite(value)
+
+    def utc_timestamp(value: str) -> bool:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return "T" in value and parsed.utcoffset() == timedelta(0)
+        except ValueError:
+            return False
+
+    for candidate in payload["candidates"]:
+        contract = candidate["invariant_test_contract"]
+        if contract["applicable"]:
+            if not nonblank(contract["version"]):
+                errors.append("applicable contract lacks a version")
+        elif contract["version"] != "" or contract["implementation_pitfalls"]:
+            errors.append("inapplicable contract has version or pitfalls")
+        if any(not nonblank(item) for item in contract["implementation_pitfalls"]):
+            errors.append("contract has a blank pitfall")
+        scoring = candidate["scoring"]
+        for name, record in scoring.items():
+            if not nonblank(record["rationale"]):
+                errors.append(name + " lacks a rationale")
+        cvss = scoring["cvss_v4"]
+        if cvss["status"] == "SCORED":
+            if (not security_cvss_v4_vector_is_complete(cvss["vector"]) or not bounded_number(cvss["score"], 10)
+                or not nonblank(cvss["score_type"]) or not nonblank(cvss["calculator_version"])
+                or not cvss["inputs"] or any(not nonblank(item) for item in cvss["inputs"])
+                or not any(security_citation_has_required_shape(item) for item in cvss["evidence"])):
+                errors.append("scored CVSS lacks required typed metadata")
+        elif cvss["score"] is not None:
+            errors.append("unscored CVSS has a numeric score")
+        for name in ("epss", "kev"):
+            signal = scoring[name]
+            if signal["status"] == "RETRIEVED":
+                if (not re.fullmatch(r"CVE-[0-9]{4}-[0-9]{4,}", signal["cve"])
+                    or not utc_timestamp(signal["retrieved_at_utc"])
+                    or not any(security_citation_has_required_shape(item) for item in signal["evidence"])):
+                    errors.append(name + " lacks retrieval metadata")
+                if name == "epss":
+                    if (not bounded_number(signal["probability"], 1)
+                        or (signal["percentile"] is not None and not bounded_number(signal["percentile"], 1))):
+                        errors.append("retrieved EPSS has invalid numeric values")
+                elif signal["membership"] == "UNKNOWN":
+                    errors.append("retrieved KEV has unknown membership")
+            else:
+                if signal["retrieved_at_utc"] != "" or signal["version"] != "":
+                    errors.append(name + " has metadata without retrieval")
+                if name == "epss" and (signal["probability"] is not None or signal["percentile"] is not None):
+                    errors.append("unretrieved EPSS has numeric values")
+                if name == "kev" and signal["membership"] != "UNKNOWN":
+                    errors.append("unretrieved KEV asserts membership")
+                if signal["status"] == "NO CVE" and signal["cve"] != "":
+                    errors.append(name + " NO CVE has an identifier")
+    return errors
+
+
 def security_verifier_post_schema_errors(payload: Mapping[str, Any], *, fix_mode: bool = False) -> list[str]:
     """Apply the analyzer's verdict-dependent, non-semantic completeness checks."""
     if payload.get("status") != "COMPLETE":
@@ -1843,7 +1931,7 @@ def portable_security_vuln_analyzer_case(workspace: Path) -> dict[str, Any]:
         "attacker_preconditions", "reachability_trace", "affected_boundary", "primitive_class",
         "variant_family", "enumerated_variants", "enumeration_source", "validity", "reachability",
         "impact", "mitigation_or_fix_state", "confidence", "priority", "deterministic_checks",
-        "invariant_test_contract",
+        "invariant_test_contract", "scoring",
     }
     if not isinstance(candidate_properties, dict) or not detailed_candidate_fields <= set(candidate_properties):
         raise AssertionError("discovery schema lacks the detailed candidate contract")
@@ -1851,6 +1939,16 @@ def portable_security_vuln_analyzer_case(workspace: Path) -> dict[str, Any]:
         raise AssertionError("discovery schema does not require the detailed candidate contract")
     if "candidate_id" in candidate_properties:
         raise AssertionError("discovery roles must not assign orchestrator candidate IDs")
+    contract = candidate_properties["invariant_test_contract"]
+    if not {"version", "implementation_pitfalls"} <= set(contract.get("required", [])):
+        raise AssertionError("discovery contract lacks version/pitfalls for fix handoff")
+    for name in ("scoring", "cvss_v4", "epss", "kev"):
+        record = discovery["$defs"][name]
+        if record.get("additionalProperties") is not False or set(record["required"]) != set(record["properties"]):
+            raise AssertionError(f"discovery {name} does not carry its complete strict metadata")
+    metadata_fixture = json.loads((SECURITY_VULN_ANALYZER_FIXTURES / "discovery-report-metadata.json").read_text())
+    if security_discovery_metadata_errors(metadata_fixture):
+        raise AssertionError("discovery report metadata fixture violates its sentinel contract")
     base_pin, changed_pin, supporting_pin = "1" * 40, "2" * 40, "3" * 40
     primary_target = {"base": base_pin, "changed": changed_pin}
     supporting_repositories = {"supporting": supporting_pin}

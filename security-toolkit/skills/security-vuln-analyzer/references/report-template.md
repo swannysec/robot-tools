@@ -38,9 +38,7 @@ Mitigation/fix state:
 Confidence:
 Priority and rationale:
 
-CVSS v4.0 vector/score/rationale (or NOT SCORED):
-EPSS: CVE, value, percentile, retrieval timestamp UTC, model/data version (or NOT APPLICABLE/NOT RETRIEVED):
-KEV: membership, retrieval timestamp UTC, catalog/version (or NOT RETRIEVED):
+Scoring: see role-scoped field projection below.
 
 Evidence:
 Material counterevidence:
@@ -49,6 +47,18 @@ Deterministic checks and predeclared oracle:
 Test evidence state: STATICALLY_CONFIRMED | TEST_WRITTEN_NOT_RUN | TEST_OBSERVED | TEST_UNVALIDATED
 Role and verifier-stage provenance and status for all four verifier-stage artifacts:
 ```
+
+Render the following exact fields for each role record, preserving states, numbers, metadata, rationale, and citations without calculation, score selection, or extracting missing fields from prose:
+
+| Report field | Source field |
+|---|---|
+| CVSS v4 | `candidate.scoring.cvss_v4.status`, `candidate.scoring.cvss_v4.vector`, `candidate.scoring.cvss_v4.score`, `candidate.scoring.cvss_v4.score_type`, `candidate.scoring.cvss_v4.calculator_version`, `candidate.scoring.cvss_v4.inputs`, `candidate.scoring.cvss_v4.rationale`, `candidate.scoring.cvss_v4.evidence` |
+| EPSS | `candidate.scoring.epss.status`, `candidate.scoring.epss.cve`, `candidate.scoring.epss.probability`, `candidate.scoring.epss.percentile`, `candidate.scoring.epss.retrieved_at_utc`, `candidate.scoring.epss.version`, `candidate.scoring.epss.rationale`, `candidate.scoring.epss.evidence` |
+| KEV | `candidate.scoring.kev.status`, `candidate.scoring.kev.cve`, `candidate.scoring.kev.membership`, `candidate.scoring.kev.retrieved_at_utc`, `candidate.scoring.kev.version`, `candidate.scoring.kev.rationale`, `candidate.scoring.kev.evidence` |
+| Contract version | `candidate.invariant_test_contract.version` |
+| Implementation pitfalls | `candidate.invariant_test_contract.implementation_pitfalls` |
+
+An empty pitfalls array means none were supplied; it does not establish that there are no risks.
 
 `TEST_WRITTEN_NOT_RUN` is not an observed result. Use the definitions and literal result states in [deterministic-validation.md](deterministic-validation.md).
 
@@ -96,7 +106,7 @@ For `--verify-fix` and verification invoked by `--develop-fix`, preserve the two
 Only for `--develop-fix`, using [develop-fixes-mode.md](develop-fixes-mode.md):
 
 ```text
-Candidate patch — finding ID, contract version, target revision:
+Candidate patch — finding ID, contract version, full contract source artifact and hash, target revision:
 Author provenance; independent verifier provenance:
 Branch and frozen-test IDs/hashes:
 Unpatched and patched results per contract class:

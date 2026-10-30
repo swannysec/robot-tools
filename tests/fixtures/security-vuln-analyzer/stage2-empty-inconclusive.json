@@ -1,0 +1,18 @@
+{
+  "role_type": "verifier_stage2",
+  "status": "COMPLETE",
+  "provider": "fixture",
+  "model": "fixture",
+  "effort": "high",
+  "packet_revision": "fixture",
+  "pinned_revisions": [],
+  "candidate_id": "SVA-fixture",
+  "normalized_proposition": "fixture",
+  "verification_result": "INCONCLUSIVE",
+  "affected_gates": [],
+  "evidence": [],
+  "counterevidence": [],
+  "remaining_assumptions": [],
+  "uncertainty": [],
+  "check_evidence": []
+}

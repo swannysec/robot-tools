@@ -21,7 +21,7 @@ Security investigation and analysis tools.
 
 **Skills:**
 - `secret-scanning-investigator` - Investigate GitHub secret scanning alerts with evidence-based analysis
-- `security-vuln-analyzer` - Multi-agent vulnerability analysis with adversarial verification, ICD 203 analytic standards, CWE-specific procedures, confirmation bias mitigation, deterministic validation, primitive class enumeration, `--verify-fix` mode (mandatory bypass construction before issue closure), and `--develop-fix` mode (Rust-first v1 — authors a human-gated candidate patch: validated regression tests + minimum fix on a branch, then mandatory `--verify-fix` handoff)
+- `security-vuln-analyzer` - Portable evidence-led vulnerability analysis for Claude Code and Codex/ChatGPT Desktop. Uses three isolated discovery roles, mandatory cold native and cross-provider verification for security claims, deterministic dispute checks, a non-judgmental orchestrator, and retained `--verify-fix` and human-gated `--develop-fix` modes.
 - `gha-hardening` - GitHub Actions security hardening — permissions, secrets, OIDC, attack patterns, supply chain, detection tools, runner security, incident response
 - `vanta` - Vanta compliance operations — posture analysis, audit readiness, vulnerability management, personnel compliance, flexible reporting, and direct API operations
 - `vercel-forensics` - Preservation-first forensic evidence collection and analysis for Vercel incidents — read-only collection across Vercel + GitHub, redaction, SHA-256 manifest + software WORM freeze, 8-section findings report, and rotation-worklist CSV handoff to subinium/metapod
@@ -101,9 +101,10 @@ Skills marked with `agents/openai.yaml` conform to [Portable Skill Profile v1](.
 An optional distributor may use another host-recognized shared skill root, such as
 `.agents/skills`, when it verifies that destination against the active desktop build.
 
-`research-toolkit/skills/kcap` and `research-toolkit/skills/starduster` are portable
-skills. Both work without hplumb; hplumb may distribute either complete package but is
-never a runtime dependency.
+`research-toolkit/skills/kcap`, `research-toolkit/skills/starduster`, and
+`security-toolkit/skills/security-vuln-analyzer` are Portable Skill Profile v1
+packages. All three work without hplumb; hplumb may distribute any complete package
+but is never a runtime dependency.
 
 Run the noninteractive proof-of-concept acceptance suite with:
 

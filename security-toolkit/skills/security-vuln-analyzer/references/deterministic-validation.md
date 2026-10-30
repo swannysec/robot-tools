@@ -1,103 +1,117 @@
-# Step 3.7 Deterministic Validation — VALIDATOR Agent
+# Deterministic validation
 
-Prompt template for the Step 3.7 deterministic validation agent. This agent uses tools (Bash, Read, Grep, Glob) to mechanically verify findings — it does NOT perform open-ended security analysis.
+Deterministic validation checks a declared proposition against a predeclared oracle. It
+does not discover findings, weigh evidence, select a winner, or supply missing judgment.
+The orchestrator runs the packaged non-model adapter `scripts/deterministic-check.py`
+to execute them. The result must be a
+file digest or frozen-test observation, not model interpretation. A discovery or verifier
+role never supplies shell text, an executable, or arguments.
 
-**This is a VALIDATOR agent, not a FINDER or VERIFIER.** Finders discover (Step 2). Verifiers challenge (Step 3.5). The validator confirms via deterministic tool output only.
+## Typed checks and preventive boundary
 
-## Agent Configuration
+Only two check kinds are accepted:
 
-```
-subagent_type: general-purpose
-model: sonnet
-```
+- `SOURCE_SLICE_SHA256`: read the named line slice from the named pinned revision,
+  normalize line endings to LF, hash the exact UTF-8 bytes with SHA-256, and return
+  `MATCHED` or `NOT_MATCHED`. The role supplies only repository, revision, canonical
+  relative path, positive line range, and expected lowercase digest. This check validates
+  artifact identity only. Every routing-table entry for it must preserve `DISPUTED`.
+- `FROZEN_TEST_REFERENCE`: name a `frozen_test_id` registered before discovery. The
+  registry, not a model result, contains the executable and argument vector, working
+  directory, timeout, environment allowlist, expected exit/output oracle, and tool
+  version and result-to-status table. Return `PASSED`, `FAILED`, or `UNRESOLVED`.
 
-**Why `model: sonnet`:** This agent performs mechanical verification — reading files, running SAST tools, checking HTTP headers. Research shows extended reasoning on deterministic tasks follows an inverted U-curve where more thinking degrades accuracy (When More is Less, Feb 2025). Models may "abandon a correct initial answer in favor of further, often incorrect, exploration" (Don't Overthink It, May 2025). Sonnet provides sufficient reasoning for Job 2 disagreement resolution without the overthinking risk.
+Invoke the adapter with a JSON request, an immutable checkout path, and, for a frozen
+test, the frozen JSON registry. The executable, arguments, oracle, routing table, and
+SHA-256 of the exact NFC- and LF-normalized proposition the test measures are all
+registered before discovery. Record the SHA-256 of the complete registry bytes in every
+discovery packet and do not modify the registry after dispatch. The adapter verifies the
+registry digest, proposition binding, checkout `HEAD`, path containment, and routing-table identity, records adapter
+name and version, and emits `schemas/computation-result.schema.json`. It rejects every other kind
+and every inconsistent sentinel combination. It
+never invokes a shell or evaluates metacharacters. It runs a frozen test as the exact
+argument vector in an immutable checkout or temporary copy of the pinned revision, with
+network denied, an empty or allowlisted environment, a bounded timeout and streaming
+output capture, and
+writes limited to its temporary directory. The target repository and skill package stay
+read-only. The executed argument vector is recorded in the result but cannot come from
+the role output.
 
-## Prompt Template
+Capture stdout and stderr separately and enforce the output limit across both streams.
+The registry's `expected_stdout_sha256` hashes only stdout bytes; matching stderr cannot
+satisfy that oracle. Keep stderr as labeled diagnostic output in the bounded result.
 
-```
-prompt: |
-  You are a deterministic validation agent. You have two jobs:
+The host must run the adapter in the runtime guide's read-only, network-denied temporary
+environment; the portable script cannot create an operating-system sandbox itself.
 
-  JOB 1 — VALIDATE SURVIVING FINDINGS:
-  For each finding below, verify the cited evidence by reading the actual files and running relevant tools. Return a validation status per finding.
+For `SOURCE_SLICE_SHA256`, `frozen_test_id` is empty. For `FROZEN_TEST_REFERENCE`, path,
+line, and digest fields use the registry's frozen values or the schema's empty/zero
+sentinels. A role-emitted test ID absent from the pre-discovery registry is unexecutable.
 
-  [Insert CONFIRMED findings with their evidence citations]
+Only a pre-discovery `FROZEN_TEST_REFERENCE` whose frozen proposition hash exactly matches
+the disputed proposition may resolve a verifier split. A source digest cannot do so. Do not invent a
+check after seeing verifier results. If the packet has no suitable check,
+the check cannot execute, or its oracle does not decide the disputed proposition, return
+`UNRESOLVED`. Mechanical Reconciliation then preserves `DISPUTED`.
 
-  JOB 2 — RESOLVE VERIFIER DISAGREEMENTS:
-  For each disagreement below, one verifier said CONFIRMED and the other said REFUTED (or both said INCONCLUSIVE). Run the deterministic check that settles it.
+## Result schema
 
-  [Insert disagreements with both verifiers' verdicts and reasoning]
+For each proposition return:
 
-  JOB 3 — CLASS COVERAGE CHECK (filtering-class fixes only):
-  When the fix involves filtering against a primitive class (e.g., Unicode property, SQL metacharacters, library gadget inventory, protocol primitives), run the Class Coverage Check from this file's appendix and report any class members the fix misses.
+- finding/candidate ID and proposition;
+- `MATCHED`, `NOT_MATCHED`, `PASSED`, `FAILED`, `UNRESOLVED`, or `NOT_RUN`;
+- check kind and ID, adapter name/version, tool version, pinned revision, bounded result, and adapter-recorded
+  argument vector when a frozen test ran;
+- the byte-preserved predeclared routing table; and
+- no security conclusion beyond that literal result.
 
-  ENVIRONMENT CONTEXT:
-  [Insert Step 3.5+ environment context from Step 1 — includes available tools, framework, deployment info]
+`TEST_WRITTEN` is not evidence that behavior was observed. Reports distinguish:
 
-  VALIDATION APPROACH:
-  - Read cited file:line references and verify the code matches the description
-  - Run available SAST tools (semgrep, cargo audit, cargo clippy) if relevant
-  - Run HTTP checks (curl -sI) for header/config findings
-  - Run dependency audit tools for SCA findings
-  - Do NOT perform open-ended analysis — check only what the findings claim
-
-  OUTPUT FORMAT:
-  For each finding:
-  - **Finding ID**: [ID]
-  - **Validation Status**: TOOL-CONFIRMED / OBSERVATION-MATCHED / TEST-WRITTEN / REFUTED / NOT-VALIDATED
-  - **Tool/Method Used**: [what you ran or checked]
-  - **Result**: [what the tool/check showed]
-  - **Verdict** (Job 2 only): CONFIRMED / REFUTED / DISPUTED
-  - **Missed Class Members** (Job 3 only): [list of class members the fix's filter does not handle, or "none"]
-```
+- `STATICALLY_CONFIRMED`—source/configuration directly supports the proposition;
+- `TEST_WRITTEN_NOT_RUN`—a test exists but was not observed;
+- `TEST_OBSERVED`—the recorded test ran on the named revision;
+- `TEST_UNVALIDATED`—the test or its provenance cannot be checked.
 
 ## Class Coverage Check
 
-Run this check whenever a fix involves filtering or validating against a primitive class. This is deterministic — file reads and pattern matching against the canonical class source. **No LLM judgment.**
+Use this only when a control claims to cover a named primitive class.
 
-1. **Identify the named class the fix claims to filter.**
-   Examples:
-   - "Unicode `White_Space` property"
-   - "All SQL injection metacharacters per the database engine's quoting rules"
-   - "All deserialization gadgets in library X documented in CWE-502 references"
-   - "All HTTP request smuggling primitives per RFC 7230 §3"
+1. Identify the canonical class source named in the packet, such as a protocol grammar,
+   Unicode property file, database quoting rules, or documented sink inventory.
+2. Enumerate its members without using the candidate control as the source of truth.
+3. For every member, run the same binary recognition/rejection check.
+4. Return members covered, missed, and not testable. Do not infer that an unlisted member
+   is safe.
 
-2. **Read the canonical source for the class.**
-   - Unicode property → read the Unicode Character Database (UCD) `PropList.txt` or the language stdlib's regex property table
-   - SQL metacharacters → read the database driver's escape function source code OR the engine's quoting rules in the spec
-   - Library gadget inventory → read the library's documented sink list OR `cwe-verification-procedures.md` for the relevant CWE
-   - Protocol primitives → read the RFC or the protocol spec's grammar
+## Sink-Coverage Check for `--develop-fix`
 
-3. **Enumerate class members.**
-   Output every member of the class. For Unicode properties this is a fixed codepoint list; for SQL metacharacters it's the character set the engine recognizes; for gadgets it's the named class set; for protocol primitives it's the syntactic constructs.
+An authored regression test must reach the cited sink before it is frozen. For Rust,
+prefer `cargo-llvm-cov` JSON and aggregate all instrumented segments on the sink line:
 
-4. **For each member, deterministically check whether the fix's filter handles it.**
-   Use Grep, file read, or a one-line script. The check is a binary "filter recognizes this member" / "filter does not recognize this member." No reasoning, no inference — pattern match only.
+```bash
+cargo llvm-cov --ignore-run-fail --json --output-path cov.json test
+jq '[.data[].files[]
+     | select(.filename | endswith("src/auth.rs"))
+     | .segments[] | select(.[0] == TARGET_LINE) | .[2]] | max' cov.json
+```
 
-5. **Output: list of class members the fix misses, if any.**
-   Format the output for direct consumption by the Step 3.5 adversarial verifiers — each missed member is a candidate bypass input for the fix.
+`null` or zero is `NOT_REACHED`; a positive maximum is `REACHED`. A line can contain
+multiple coverage segments, so testing one emitted segment is invalid. Record the exact
+file, line, count, command, and tool version.
 
-This check is one of the validator's deterministic jobs. The validator agent's prompt cites this section when filtering-class fixes are in scope.
+Where line coverage is unsuitable, use a recorded Miri/CodeQL execution trace or a
+`trybuild` compile-fail proof for type-state/newtype fixes that deliberately make the
+unsafe call unconstructable. The fallback and its oracle must be frozen before patch
+verification.
 
-## Sink-Coverage Check (develop-fixes)
+## Fix-verification oracle
 
-Invoked by **develop-fixes mode** (`develop-fixes-mode.md`), not by the Step 3.7 validator above. It enforces validity guard (b) — **an authored regression test must demonstrably REACH the finding's `file:line` sink** before the test is frozen. Deterministic — **no LLM judgment**. Primary mechanism: `cargo-llvm-cov` region coverage.
+For a candidate patch, execute the frozen tests against both named revisions:
 
-1. **Run coverage with the authored tests** (in the sandbox gate phase). When measuring against the **unpatched baseline**, the exploit test intentionally FAILS, which makes `cargo-llvm-cov` abort before writing the report — pass `--ignore-run-fail` so the report is still emitted:
-   ```bash
-   cargo llvm-cov --ignore-run-fail --json --output-path cov.json test
-   ```
-2. **Decide REACHED/NOT-REACHED by aggregating the count over the sink line:**
-   ```bash
-   cov=$(jq '[ .data[].files[]
-               | select(.filename | endswith("src/auth.rs"))
-               | .segments[] | select(.[0]==TARGET_LINE) | .[2] ] | max' cov.json)
-   # cov == null => sink line never executed/instrumented => NOT-REACHED (FAIL)
-   # cov  >  0   => REACHED (PASS)
-   ```
-3. **Why aggregate:** a `cargo-llvm-cov` segment is a 6-element array `[line, col, count, hasCount, isRegionEntry, isGapRegion]`, and a single source line carries **multiple** segments (a region entry with a count plus region exits whose count is 0). A bare `select(.[0]==LINE) | .[2]` therefore emits a *stream* containing spurious `0`s — you MUST aggregate (`| max`, or "any segment with count > 0"), never test a single emitted value. *(Shape verified against cargo-llvm-cov 0.8.2 / export `llvm.coverage.json.export` v3.0.1.)*
-4. **Fallbacks** (record the method used in the candidate-patch provenance):
-   - **Miri / CodeQL execution trace** through the sink where llvm-cov is unavailable or flaky (e.g. Windows-gnu).
-   - **`trybuild` compile-fail** when the fix makes the bad call *unconstructable* (type-state / newtype): the sink can no longer be reached at runtime, so assert the previous misuse no longer compiles.
-5. **Output:** `REACHED` (with the observed count) or `NOT-REACHED` (FAIL — the test does not exercise the sink and must be rewritten before freezing).
+- vulnerable/base revision: exploit regression must fail in the expected way;
+- patched revision: exploit regression must pass;
+- benign negative controls and the project regression suite must pass on the patch.
+
+This oracle may resolve whether the frozen contract was satisfied. It cannot prove that
+the contract enumerated every possible bypass; residual or out-of-contract propositions
+remain separately verified or disputed.

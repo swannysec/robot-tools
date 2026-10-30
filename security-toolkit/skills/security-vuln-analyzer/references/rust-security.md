@@ -1,98 +1,47 @@
 # Rust Security Reference
 
-Shared reference for agents analyzing Rust codebases. Covers vulnerability patterns, SAST toolchain, remediation idioms, and web framework security.
+Use this as review guidance, not as a vulnerability predicate. A finding still requires a pinned revision, attacker-reachable path, evidence, counterevidence, and the workflow's independent verification.
 
-## Rust Vulnerability Patterns
+## Unsafe and FFI
 
-| Pattern | CWE | Risk | Detection |
-|---------|-----|------|-----------|
-| `unsafe` blocks without `// SAFETY:` justification | CWE-94 | Memory corruption, undefined behavior | `cargo-geiger`, manual audit |
-| FFI boundaries with unchecked inputs | CWE-94 | Buffer overflow, type confusion | Review `extern "C"` functions |
-| Integer overflow in release builds | CWE-190 | Logic errors, bypasses (Rust wraps in release, panics in debug) | `cargo clippy -W clippy::arithmetic_side_effects` |
-| Use-after-free via raw pointers | CWE-416 | Memory corruption | `cargo-geiger`, `miri` |
-| Unchecked indexing (`slice[i]` without bounds check) | CWE-129 | Panic (DoS in servers) | `cargo clippy -W clippy::indexing_slicing` |
-| `unwrap()` / `expect()` in request handlers | CWE-248 | Panic = DoS for server processes | `cargo clippy -W clippy::unwrap_used` |
-| Unvalidated `serde` deserialization | CWE-502 | Attacker-controlled data shapes, resource exhaustion | Review `#[derive(Deserialize)]` without `#[serde(deny_unknown_fields)]` or size limits |
-| Raw SQL via `format!()` | CWE-89 | SQL injection | Grep for `format!` near `query`/`execute`; use `sqlx::query!` or `diesel` |
-| `std::process::Command` with user input | CWE-78 | OS command injection | Grep for `Command::new` with variable args |
-| `std::path::Path` with user-controlled segments | CWE-22 | Path traversal | Check for `canonicalize()` and prefix validation |
-| Hardcoded secrets (API keys, tokens, passwords) | CWE-798 | Credential exposure | `cargo clippy`, regex scan for key patterns |
+- Treat each `unsafe` block, `unsafe fn`, raw pointer, transmute, layout assumption, and FFI boundary as an invariant boundary. Trace who establishes bounds, validity, alignment, aliasing, lifetime, ownership, threading, and ABI invariants—and who can influence them.
+- Require a nearby, specific `SAFETY:` explanation for nontrivial unsafe code. Missing documentation is normally a clarity and risk-control concern, not proof of memory unsafety.
+- Prefer narrow safe wrappers over exposing raw handles. Keep unsafe operations local; use `#![deny(unsafe_code)]` where a crate should not need them.
+- At FFI boundaries, validate lengths, nullability, enum discriminants, ownership transfer, callbacks, and integer conversions before allocation or pointer arithmetic.
 
-## SAST Toolchain
+## Availability and untrusted data
 
-| Tool | Purpose | Command |
-|------|---------|---------|
-| `cargo audit` | Check dependencies against RustSec advisory database | `cargo audit --json` |
-| `cargo deny` | License compliance + advisory policy + source checks | `cargo deny check` |
-| `cargo clippy` | Lint for security-relevant patterns | `cargo clippy -- -W clippy::unwrap_used -W clippy::indexing_slicing -W clippy::arithmetic_side_effects` |
-| `cargo-geiger` | Measure `unsafe` code surface area (own + deps) | `cargo geiger --output-format ascii` |
-| `cargo-vet` | Supply chain vetting — verify audits for dependencies | `cargo vet` |
-| `cargo-crev` | Code review trust network for crate auditing | `cargo crev verify` |
-| `cargo outdated` | Find dependencies with newer versions available | `cargo outdated -R` |
-| `cargo udeps` | Detect unused dependencies | `cargo +nightly udeps` |
-| `miri` | Detect undefined behavior in unsafe code at runtime | `cargo +nightly miri test` |
-| `proptest` | Property-based testing for fuzzing security-sensitive code | Add `proptest` dev-dependency; write `proptest!` macro tests |
+- An `unwrap`, `expect`, `panic!`, unchecked index, or assertion is security-relevant only when an untrusted or attacker-controlled path can reach it and the failure has a material security effect. Otherwise record it, where useful, as reliability guidance.
+- Use checked arithmetic and explicit conversion checks at size, offset, quota, duration, count, and allocation boundaries. Do not infer safety from debug-only overflow behavior.
+- Bound parser input, recursion/depth, collection growth, decompression, decoded dimensions, frame counts, response bodies, and background work. Validate before allocating when the format permits it.
+- Treat deserialization as shape parsing, not authorization. Enforce semantic validation, limits, and explicit handling of unknown fields where compatibility permits.
 
-## Remediation Idioms
+## Make invalid states difficult to represent
 
-### Type-State Pattern for Auth Flows
-```rust
-// Enforce auth state transitions at compile time
-struct Unauthenticated;
-struct Authenticated { user_id: UserId }
+- Use newtypes for validated identifiers, paths, URLs, tokens, tenant IDs, and externally supplied names. Keep construction private or fallible.
+- Use type-state or capability types where state transitions matter, such as authenticated versus unauthenticated sessions, validated versus raw input, or sealed versus unsealed credentials.
+- Design APIs to be safe by default: restrictive configuration, explicit opt-in to privilege, parameterized interfaces instead of shell strings, and return types that preserve validation state.
 
-struct Session<State> { state: State, /* ... */ }
+## OS, async, and filesystem boundaries
 
-impl Session<Unauthenticated> {
-    fn authenticate(self, creds: Credentials) -> Result<Session<Authenticated>, AuthError> { /* ... */ }
-}
+- For subprocesses, trace executable selection, argument construction, current directory, inherited environment, standard streams, credential exposure, timeouts, output limits, and cancellation. Prefer fixed executables, argument arrays, `env_clear` plus an allowlist where appropriate, and least-privileged child processes.
+- For filesystem paths, distinguish lexical cleaning from authorization. Resolve or open relative to a trusted root; handle symlinks, junctions, case behavior, replacement races, and time-of-check/time-of-use windows. `canonicalize` alone does not make a later path operation race-free.
+- For async code, identify authorization checks separated from use by awaits, cancellation/cleanup gaps, unbounded queues or fan-out, task lifetime, and shared-state races. A lock or atomic is not an authorization proof.
+- Treat network, IPC, extensions, plugins, and local project content as separate trust boundaries; do not assume local content is trusted merely because it is on disk.
 
-impl Session<Authenticated> {
-    fn access_resource(&self) -> Resource { /* ... */ } // Only callable when authenticated
-}
-```
+## Useful evidence tools
 
-### Newtype Pattern for Validated Input
-```rust
-// Prevent use of unvalidated strings
-struct ValidatedEmail(String);
+These tools locate candidates; they do not validate a security conclusion.
 
-impl TryFrom<String> for ValidatedEmail {
-    type Error = ValidationError;
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        if EMAIL_REGEX.is_match(&s) { Ok(Self(s)) } else { Err(ValidationError::InvalidEmail) }
-    }
-}
+| Tool | Useful review signal |
+| --- | --- |
+| `cargo clippy` | Panic-prone operations, suspicious arithmetic, indexing, and API misuse, subject to configured lints. |
+| `cargo audit` / `cargo deny` | Dependency advisory and policy candidates. |
+| `cargo geiger` | Unsafe-code inventory and concentration. |
+| Miri, fuzzing, property tests | Dynamic evidence for selected invariants; coverage and execution conditions must be reported. |
 
-// Use with serde: #[serde(try_from = "String")]
-```
+## Classification guardrails
 
-### Unsafe Code Discipline
-```rust
-#![deny(unsafe_code)] // At crate level — opt-in to unsafe per-module
-
-// When unsafe is required:
-// SAFETY: `ptr` is guaranteed non-null and properly aligned because [specific reason].
-// The referenced data outlives this scope because [specific reason].
-unsafe { *ptr }
-```
-
-## Axum/Tower Security Middleware
-
-```rust
-// Compose security layers with tower::ServiceBuilder
-let app = Router::new()
-    .route("/api/*path", get(handler))
-    .layer(
-        ServiceBuilder::new()
-            .layer(CorsLayer::permissive().allow_origin(AllowOrigin::exact("https://example.com".parse().unwrap())))
-            .layer(SetResponseHeaderLayer::overriding(
-                header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY")))
-            .layer(SetResponseHeaderLayer::overriding(
-                header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")))
-            .layer(SetResponseHeaderLayer::overriding(
-                header::STRICT_TRANSPORT_SECURITY, HeaderValue::from_static("max-age=31536000; includeSubDomains")))
-            .layer(RateLimitLayer::new(100, Duration::from_secs(60)))
-            .layer(middleware::from_fn(auth_middleware))
-    );
-```
+- Missing `SAFETY:` documentation, a safer API opportunity, or a defensive limit can be a hardening or secure-code note without inflating the vulnerability count.
+- A compensating control must be evidenced at the pinned revision and on the actual path; a nearby check is not automatically a control.
+- State whether an assertion is static confirmation, a test written, a test observed, or an unvalidated test claim.

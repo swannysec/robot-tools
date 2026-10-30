@@ -1,0 +1,14 @@
+{
+  "type": "object", "additionalProperties": false,
+  "required": ["role_type", "status", "adapter", "adapter_version", "packet_revision", "candidate_id", "proposition", "check_id", "check_kind", "repository", "target_revision", "relative_path", "start_line", "end_line", "expected_sha256", "registry_sha256", "frozen_test_id", "executed_argv", "tool_version", "bounded_output", "exit_status", "literal_check_result", "routing_table"],
+  "properties": {
+    "role_type": {"type": "string", "enum": ["computation"]}, "status": {"type": "string", "enum": ["COMPLETE", "MALFORMED", "FAILED", "MISSING"]},
+    "adapter": {"type": "string", "enum": ["security-vuln-analyzer-deterministic-check"]}, "adapter_version": {"type": "string"}, "packet_revision": {"type": "string"},
+    "candidate_id": {"type": "string"}, "proposition": {"type": "string"}, "check_id": {"type": "string"},
+    "check_kind": {"type": "string", "enum": ["SOURCE_SLICE_SHA256", "FROZEN_TEST_REFERENCE"]}, "repository": {"type": "string"}, "target_revision": {"type": "string"},
+    "relative_path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}, "expected_sha256": {"type": "string"}, "registry_sha256": {"type": "string"}, "frozen_test_id": {"type": "string"},
+    "executed_argv": {"type": "array", "items": {"type": "string"}}, "tool_version": {"type": "string"}, "bounded_output": {"type": "string"}, "exit_status": {"type": "integer"},
+    "literal_check_result": {"type": "string", "enum": ["MATCHED", "NOT_MATCHED", "PASSED", "FAILED", "UNRESOLVED", "NOT_RUN"]},
+    "routing_table": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["literal_result", "final_status"], "properties": {"literal_result": {"type": "string", "enum": ["MATCHED", "NOT_MATCHED", "PASSED", "FAILED", "UNRESOLVED", "NOT_RUN"]}, "final_status": {"type": "string", "enum": ["CROSS-MODEL VERIFIED", "REFUTED", "DISPUTED", "NOT VERIFIED", "INCOMPLETE"]}}}}
+  }
+}

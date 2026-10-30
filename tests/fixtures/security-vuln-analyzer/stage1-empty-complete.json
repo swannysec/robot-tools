@@ -1,0 +1,14 @@
+{
+  "role_type": "verifier_stage1",
+  "status": "COMPLETE",
+  "provider": "fixture",
+  "model": "fixture",
+  "effort": "high",
+  "packet_revision": "fixture",
+  "pinned_revisions": [],
+  "scope": "fixture",
+  "locations": [],
+  "observations": [],
+  "evidence": [],
+  "counterevidence": []
+}

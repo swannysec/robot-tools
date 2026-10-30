@@ -1,0 +1,15 @@
+{
+  "type": "object", "additionalProperties": false,
+  "required": ["role_type", "status", "provider", "model", "effort", "packet_revision", "pinned_revisions", "scope", "locations", "observations", "evidence", "counterevidence"],
+  "properties": {
+    "role_type": {"type": "string", "enum": ["verifier_stage1"]}, "status": {"type": "string", "enum": ["COMPLETE", "MALFORMED", "FAILED", "MISSING"]},
+    "provider": {"type": "string"}, "model": {"type": "string"}, "effort": {"type": "string", "enum": ["high"]}, "packet_revision": {"type": "string"},
+    "pinned_revisions": {"type": "array", "items": {"type": "string"}}, "scope": {"type": "string"},
+    "locations": {"type": "array", "items": {"$ref": "#/$defs/location"}}, "observations": {"type": "array", "items": {"type": "string"}},
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/citation"}}, "counterevidence": {"type": "array", "items": {"$ref": "#/$defs/citation"}}
+  },
+  "$defs": {
+    "location": {"type": "object", "additionalProperties": false, "required": ["repository", "revision", "relative_path", "start_line", "end_line"], "properties": {"repository": {"type": "string"}, "revision": {"type": "string"}, "relative_path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}}},
+    "citation": {"type": "object", "additionalProperties": false, "required": ["source_kind", "repository", "revision", "relative_path", "start_line", "end_line", "quote", "observation", "artifact_id"], "properties": {"source_kind": {"type": "string", "enum": ["repository", "deterministic_check", "runtime_observation", "authoritative_source"]}, "repository": {"type": "string"}, "revision": {"type": "string"}, "relative_path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}, "quote": {"type": "string"}, "observation": {"type": "string"}, "artifact_id": {"type": "string"}}}
+  }
+}

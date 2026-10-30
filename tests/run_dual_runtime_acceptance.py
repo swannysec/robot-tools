@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Noninteractive acceptance runner for portable research-toolkit skills."""
+"""Noninteractive acceptance runner for Portable Skill Profile v1 packages."""
 
 from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import hashlib
 import io
 import json
 import os
@@ -19,6 +20,7 @@ import tempfile
 import threading
 import time
 import tarfile
+import unicodedata
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -32,6 +34,39 @@ KCAP_DIR = ROOT / "research-toolkit" / "skills" / "kcap"
 KCAP_CLI = KCAP_DIR / "scripts" / "kcap.py"
 STARDUSTER_DIR = ROOT / "research-toolkit" / "skills" / "starduster"
 STARDUSTER_CLI = STARDUSTER_DIR / "scripts" / "starduster.py"
+SECURITY_VULN_ANALYZER_DIR = ROOT / "security-toolkit" / "skills" / "security-vuln-analyzer"
+SECURITY_VULN_ANALYZER_FIXTURES = FIXTURES / "security-vuln-analyzer"
+SECURITY_VULN_ANALYZER_ADAPTER = (
+    SECURITY_VULN_ANALYZER_DIR / "scripts" / "deterministic-check.py"
+)
+SECURITY_VULN_ANALYZER_SCHEMAS = {
+    "discovery-result.schema.json": {
+        "role_type", "status", "provider", "model", "effort", "packet_revision",
+        "pinned_revisions", "scope", "evidence", "counterevidence", "candidates",
+    },
+    "verifier-stage1-result.schema.json": {
+        "role_type", "status", "provider", "model", "effort", "packet_revision",
+        "pinned_revisions", "scope", "locations", "observations", "evidence", "counterevidence",
+    },
+    "verifier-stage2-result.schema.json": {
+        "role_type", "status", "provider", "model", "effort", "packet_revision",
+        "pinned_revisions", "candidate_id", "normalized_proposition", "verification_result",
+        "affected_gates", "evidence", "counterevidence", "remaining_assumptions", "uncertainty",
+        "check_evidence",
+    },
+    "computation-result.schema.json": {
+        "role_type", "status", "adapter", "adapter_version", "packet_revision", "candidate_id",
+        "proposition", "check_id", "check_kind", "repository", "target_revision", "relative_path",
+        "start_line", "end_line", "expected_sha256", "registry_sha256", "frozen_test_id", "executed_argv",
+        "tool_version", "bounded_output", "exit_status", "literal_check_result", "routing_table",
+    },
+}
+SECURITY_VULN_ANALYZER_ROLE_TYPES = {
+    "discovery-result.schema.json": "discovery",
+    "verifier-stage1-result.schema.json": "verifier_stage1",
+    "verifier-stage2-result.schema.json": "verifier_stage2",
+    "computation-result.schema.json": "computation",
+}
 PORTABLE_VALIDATOR = (
     ROOT
     / "workflow-toolkit"
@@ -1362,6 +1397,10 @@ def add_portable_cases(harness: Harness) -> None:
         validator_case("runtime-absolute-paths", 1, "dependencies.package-boundary"),
     )
     harness.case("portable.starduster.source", lambda: portable_source_copy_case(harness.workspace, STARDUSTER_DIR))
+    harness.case(
+        "portable.security-vuln-analyzer.source",
+        lambda: portable_security_vuln_analyzer_case(harness.workspace),
+    )
 
 
 def portable_source_copy_case(workspace: Path, skill_dir: Path) -> dict[str, Any]:
@@ -1393,6 +1432,851 @@ def portable_source_copy_case(workspace: Path, skill_dir: Path) -> dict[str, Any
     }
 
 
+def security_citation_has_required_shape(value: Any) -> bool:
+    """Reject empty or sentinel-only citations before revision-specific validation."""
+    if not isinstance(value, Mapping):
+        return False
+    required = {
+        "source_kind", "repository", "revision", "relative_path", "start_line", "end_line",
+        "quote", "observation", "artifact_id",
+    }
+    if set(value) != required or value.get("source_kind") not in {
+        "repository", "deterministic_check", "runtime_observation", "authoritative_source"
+    }:
+        return False
+    quote = value.get("quote")
+    if not isinstance(quote, str) or not quote:
+        return False
+    if value.get("source_kind") == "repository":
+        return (
+            all(isinstance(value.get(field), str) and value.get(field) for field in (
+                "repository", "revision", "relative_path"
+            ))
+            and isinstance(value.get("start_line"), int)
+            and isinstance(value.get("end_line"), int)
+            and value["start_line"] > 0
+            and value["end_line"] >= value["start_line"]
+            and value.get("artifact_id") == ""
+        )
+    return isinstance(value.get("artifact_id"), str) and bool(value.get("artifact_id"))
+
+
+_PRIMARY_REVISION_UNSET = object()
+
+
+def security_primary_revision(primary_target_pins: Mapping[str, str], explicit: Any = _PRIMARY_REVISION_UNSET) -> str:
+    """Select only among already resolved primary-target pins, before dispatch."""
+    pins = set(primary_target_pins.values())
+    if explicit is not _PRIMARY_REVISION_UNSET:
+        if not isinstance(explicit, str) or explicit not in pins:
+            raise ValueError("explicit primary revision is not a declared primary-target pin")
+        return explicit
+    if "base" in primary_target_pins and "changed" in primary_target_pins:
+        return primary_target_pins["changed"]
+    if len(pins) == 1:
+        return next(iter(pins))
+    raise ValueError("primary revision requires an explicit immutable primary-target pin")
+
+
+def security_discovery_post_schema_errors(payload: Mapping[str, Any]) -> list[str]:
+    """Check the literal discovery-ID boundary without rewriting role prose."""
+    identifiers = {
+        item["role_local_id"] for item in payload.get("candidates", [])
+        if isinstance(item, Mapping) and isinstance(item.get("role_local_id"), str) and item["role_local_id"]
+    }
+    if not identifiers:
+        return []
+    pattern = re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(re.escape(item) for item in sorted(identifiers)) + r")(?![A-Za-z0-9_])")
+    errors: list[str] = []
+
+    def visit(value: Any, path: str) -> None:
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                if key == "role_local_id" or (key == "quote" and value.get("source_kind") == "repository"):
+                    continue
+                visit(item, f"{path}.{key}")
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                visit(item, f"{path}[{index}]")
+        elif isinstance(value, str) and pattern.search(value):
+            errors.append(f"finder-local ID in discovery text: {path}")
+
+    visit(payload, "discovery")
+    return errors
+
+
+def security_verifier_post_schema_errors(payload: Mapping[str, Any]) -> list[str]:
+    """Apply the analyzer's verdict-dependent, non-semantic completeness checks."""
+    if payload.get("status") != "COMPLETE":
+        return []
+
+    errors: list[str] = []
+    role_type = payload.get("role_type")
+    affected_gates = payload.get("affected_gates")
+    if role_type == "verifier_stage1":
+        if not payload.get("locations"):
+            errors.append("complete stage 1 lacks a location")
+        observations = payload.get("observations")
+        if not isinstance(observations, list) or not any(
+            isinstance(item, str) and item.strip(" \t\r\n\f\v") for item in observations
+        ):
+            errors.append("complete stage 1 lacks a nonempty observation")
+        if not any(security_citation_has_required_shape(item) for item in payload.get("evidence", [])):
+            errors.append("complete stage 1 lacks an evidence citation")
+        return errors
+
+    if role_type != "verifier_stage2":
+        return ["unknown verifier role type"]
+    if not isinstance(affected_gates, list) or not affected_gates:
+        errors.append("complete stage 2 lacks an affected gate")
+    result = payload.get("verification_result")
+    if result == "CONFIRMED" and not any(
+        security_citation_has_required_shape(item) for item in payload.get("evidence", [])
+    ):
+        errors.append("confirmed stage 2 lacks supporting evidence")
+    elif result == "REFUTED" and not any(
+        security_citation_has_required_shape(item) for item in payload.get("counterevidence", [])
+    ):
+        errors.append("refuted stage 2 lacks counterevidence")
+    elif result == "INCONCLUSIVE":
+        has_citation = any(
+            security_citation_has_required_shape(item)
+            for field in ("evidence", "counterevidence")
+            for item in payload.get(field, [])
+        )
+        has_nonblank_text = any(
+            isinstance(item, str) and bool(item.strip(" \t\r\n\f\v"))
+            for field in ("remaining_assumptions", "uncertainty")
+            for item in payload.get(field, [])
+        )
+        if not has_citation and not has_nonblank_text:
+            errors.append("inconclusive stage 2 is vacuous")
+    return errors
+
+
+def security_split_routing_result(payload: Mapping[str, Any]) -> str:
+    """Apply only the frozen split-verdict routing rules exercised by fixtures."""
+    records = payload.get("complete_discovery_records")
+    if not isinstance(records, list) or not records:
+        return "DISPUTED"
+
+    checks: list[Mapping[str, Any]] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            return "DISPUTED"
+        declared = record.get("deterministic_checks")
+        if not isinstance(declared, list) or len(declared) != 1 or not isinstance(declared[0], Mapping):
+            return "DISPUTED"
+        checks.append(declared[0])
+
+    normalized_checks = {
+        json.dumps(check, sort_keys=True, separators=(",", ":")) for check in checks
+    }
+    if len(normalized_checks) != 1 or checks[0].get("check_kind") != "FROZEN_TEST_REFERENCE":
+        return "DISPUTED"
+    check = checks[0]
+    request = payload.get("frozen_request")
+    registry_bytes = payload.get("frozen_registry_json")
+    result = payload.get("adapter_result")
+    if not isinstance(request, Mapping) or not isinstance(registry_bytes, str) or not isinstance(result, Mapping):
+        return "DISPUTED"
+    required = SECURITY_VULN_ANALYZER_SCHEMAS["computation-result.schema.json"]
+    if set(result) != required or result.get("role_type") != "computation" or result.get("status") != "COMPLETE":
+        return "DISPUTED"
+    if result.get("adapter") != "security-vuln-analyzer-deterministic-check":
+        return "DISPUTED"
+    string_fields = required - {"start_line", "end_line", "exit_status", "executed_argv", "routing_table"}
+    if any(not isinstance(result.get(field), str) for field in string_fields):
+        return "DISPUTED"
+    if any(type(result.get(field)) is not int for field in ("start_line", "end_line", "exit_status")):
+        return "DISPUTED"
+    if not isinstance(result.get("executed_argv"), list) or not result["executed_argv"] or not all(
+        isinstance(arg, str) and arg for arg in result["executed_argv"]
+    ):
+        return "DISPUTED"
+    if any(not result.get(field) for field in ("adapter_version", "packet_revision", "candidate_id", "proposition", "tool_version")):
+        return "DISPUTED"
+    for field in ("check_id", "check_kind", "repository", "registry_sha256", "frozen_test_id", "routing_table"):
+        if not check.get(field) or check.get(field) != request.get(field) or check.get(field) != result.get(field):
+            return "DISPUTED"
+    if not check.get("revision") or check["revision"] != request.get("target_revision") or check["revision"] != result.get("target_revision"):
+        return "DISPUTED"
+    for field in ("packet_revision", "candidate_id", "proposition"):
+        if not request.get(field) or request[field] != result.get(field) or request[field] != payload.get(field):
+            return "DISPUTED"
+    if hashlib.sha256(registry_bytes.encode("utf-8")).hexdigest() != check["registry_sha256"]:
+        return "DISPUTED"
+    try:
+        registry = json.loads(registry_bytes)
+        frozen = registry["tests"][check["frozen_test_id"]]
+    except (ValueError, KeyError, TypeError):
+        return "DISPUTED"
+    if not isinstance(frozen, Mapping) or frozen.get("repository") != check["repository"] or frozen.get("revision") != check["revision"]:
+        return "DISPUTED"
+    if registry.get("schema_version") != 1 or not isinstance(frozen.get("argv"), list) or not frozen["argv"]:
+        return "DISPUTED"
+    if not all(isinstance(arg, str) and arg for arg in frozen["argv"]) or result["executed_argv"] != frozen["argv"]:
+        return "DISPUTED"
+    if not isinstance(frozen.get("working_directory"), str) or not frozen["working_directory"]:
+        return "DISPUTED"
+    if type(frozen.get("timeout_seconds")) is not int or not 1 <= frozen["timeout_seconds"] <= 600:
+        return "DISPUTED"
+    if not isinstance(frozen.get("environment"), Mapping) or type(frozen.get("expected_exit_status")) is not int:
+        return "DISPUTED"
+    if not isinstance(frozen.get("expected_stdout_sha256"), str) or not frozen.get("tool_version") or result["tool_version"] != frozen["tool_version"]:
+        return "DISPUTED"
+    proposition = unicodedata.normalize("NFC", request["proposition"]).replace("\r\n", "\n").replace("\r", "\n")
+    if frozen.get("proposition_sha256") != hashlib.sha256(proposition.encode("utf-8")).hexdigest():
+        return "DISPUTED"
+    routing_table = check["routing_table"]
+    if not isinstance(routing_table, list) or frozen.get("routing_table") != routing_table:
+        return "DISPUTED"
+    seen: set[str] = set()
+    statuses = {"CROSS-MODEL VERIFIED", "REFUTED", "DISPUTED", "NOT VERIFIED", "INCOMPLETE"}
+    states = {"MATCHED", "NOT_MATCHED", "PASSED", "FAILED", "UNRESOLVED", "NOT_RUN"}
+    for entry in routing_table:
+        if not isinstance(entry, Mapping) or set(entry) != {"literal_result", "final_status"}:
+            return "DISPUTED"
+        key, value = entry["literal_result"], entry["final_status"]
+        if not isinstance(key, str) or key not in states or key in seen or value not in statuses:
+            return "DISPUTED"
+        seen.add(key)
+    literal_result = result.get("literal_check_result")
+    if literal_result not in {"PASSED", "FAILED"}:
+        return "DISPUTED"
+    return next((entry["final_status"] for entry in routing_table if entry["literal_result"] == literal_result), "DISPUTED")
+
+
+def security_hardening_bypasses_dual_verification(payload: Mapping[str, Any]) -> bool:
+    """A non-security note bypasses only with complete, explicitly false discovery output."""
+    records = payload.get("mandatory_discovery_roles")
+    return (
+        payload.get("disposition") in {
+            "hardening or secure-code note",
+            "reliability or maintainability signal",
+        }
+        and isinstance(records, list)
+        and bool(records)
+        and all(
+            isinstance(record, Mapping)
+            and record.get("status") == "COMPLETE"
+            and record.get("affects_security_claim") is False
+            for record in records
+        )
+    )
+
+
+def security_routing_fixture_errors(payload: Mapping[str, Any]) -> list[str]:
+    """Validate deterministic routing fixtures without dispatching a model or payload."""
+    errors: list[str] = []
+
+    malformed = payload.get("malformed_required_role")
+    if not isinstance(malformed, Mapping):
+        errors.append("missing malformed-role fixture")
+    else:
+        attempts = malformed.get("attempts")
+        if attempts != ["MALFORMED", "MALFORMED"] or malformed.get("expected_final_status") != "INCOMPLETE":
+            errors.append("malformed required role must retry once then remain incomplete")
+
+    missing_cross_provider = payload.get("missing_cross_provider")
+    if not isinstance(missing_cross_provider, Mapping) or (
+        missing_cross_provider.get("cross_provider_status") == "COMPLETE"
+        or missing_cross_provider.get("expected_final_status") != "INCOMPLETE"
+    ):
+        errors.append("missing cross-provider leg must remain incomplete")
+
+    split_cases = payload.get("split_verdict_cases")
+    if not isinstance(split_cases, Mapping):
+        errors.append("missing split-verdict fixtures")
+    else:
+        for name, expected in (
+            ("single_identical_typed_check", "REFUTED"),
+            ("source_digest_cannot_resolve", "DISPUTED"),
+            ("missing_check", "DISPUTED"),
+            ("multiple_checks", "DISPUTED"),
+            ("unresolved_check", "DISPUTED"),
+        ):
+            case = split_cases.get(name)
+            if (
+                not isinstance(case, Mapping)
+                or case.get("verifier_stage2_results") != ["CONFIRMED", "REFUTED"]
+                or security_split_routing_result(case) != expected
+            ):
+                errors.append(f"split verdict fixture routes incorrectly: {name}")
+
+    # Start with a valid frozen check, then break one binding at a time.
+    if isinstance(split_cases, Mapping) and isinstance(split_cases.get("single_identical_typed_check"), Mapping):
+        original = split_cases["single_identical_typed_check"]
+        for name, mutate in (
+            ("missing adapter result", lambda case: case.pop("adapter_result")),
+            ("failed adapter", lambda case: case["adapter_result"].update(status="FAILED")),
+            ("missing registry", lambda case: case.pop("frozen_registry_json")),
+            ("missing registry binding", lambda case: case["complete_discovery_records"][0]["deterministic_checks"][0].pop("registry_sha256")),
+            ("wrong revision", lambda case: case["adapter_result"].update(target_revision="different")),
+            ("wrong proposition", lambda case: case["frozen_request"].update(proposition="different")),
+            ("wrong registry digest", lambda case: case["frozen_request"].update(registry_sha256="0" * 64)),
+            ("incomplete result", lambda case: case["adapter_result"].pop("bounded_output")),
+        ):
+            case = json.loads(json.dumps(original))
+            mutate(case)
+            if security_split_routing_result(case) != "DISPUTED":
+                errors.append(f"split verdict accepted {name}")
+        case = json.loads(json.dumps(original))
+        conflicting = case["frozen_request"]["routing_table"] + [{"literal_result": "PASSED", "final_status": "CROSS-MODEL VERIFIED"}]
+        registry = json.loads(case["frozen_registry_json"])
+        registry["tests"]["safe-behavior"]["routing_table"] = conflicting
+        case["frozen_registry_json"] = json.dumps(registry, sort_keys=True)
+        digest = hashlib.sha256(case["frozen_registry_json"].encode("utf-8")).hexdigest()
+        for record in case["complete_discovery_records"]:
+            record["deterministic_checks"][0].update(routing_table=conflicting, registry_sha256=digest)
+        case["frozen_request"].update(routing_table=conflicting, registry_sha256=digest)
+        case["adapter_result"].update(routing_table=conflicting, registry_sha256=digest)
+        if security_split_routing_result(case) != "DISPUTED":
+            errors.append("split verdict accepted conflicting duplicate routing rows")
+
+    note_cases = payload.get("non_security_note_cases")
+    if not isinstance(note_cases, Mapping):
+        errors.append("missing non-security note fixtures")
+    else:
+        for name, expected_bypass in (
+            ("complete_false_hardening", True),
+            ("complete_false_reliability", True),
+            ("incomplete_discovery", False),
+            ("security_affecting_discovery", False),
+        ):
+            case = note_cases.get(name)
+            if not isinstance(case, Mapping) or security_hardening_bypasses_dual_verification(case) != expected_bypass:
+                errors.append(f"non-security note fixture routes incorrectly: {name}")
+
+    source_slice = payload.get("synthetic_source_slice_sha256")
+    if not isinstance(source_slice, Mapping) or source_slice.get("whole_finding_refutation") in (None, "", []):
+        errors.append("synthetic fixture must preserve a whole-finding refutation")
+    elif {
+        "check_kind": source_slice.get("check_kind"),
+        "revision": source_slice.get("revision"),
+        "relative_path": source_slice.get("relative_path"),
+        "start_line": source_slice.get("start_line"),
+        "end_line": source_slice.get("end_line"),
+        "expected_sha256": source_slice.get("expected_sha256"),
+    } != {
+        "check_kind": "SOURCE_SLICE_SHA256",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "relative_path": "src/parser.rs",
+        "start_line": 10,
+        "end_line": 20,
+        "expected_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    }:
+        errors.append("synthetic source-slice fixture differs from the frozen contract")
+    return errors
+
+
+def portable_security_vuln_analyzer_case(workspace: Path) -> dict[str, Any]:
+    """Check the analyzer's offline contracts before exact host copies."""
+    skill_dir = SECURITY_VULN_ANALYZER_DIR
+    if not skill_dir.is_dir():
+        raise AssertionError(f"security-vuln-analyzer package is missing: {skill_dir}")
+
+    schemas: dict[str, dict[str, Any]] = {}
+    for filename, required_fields in SECURITY_VULN_ANALYZER_SCHEMAS.items():
+        path = skill_dir / "schemas" / filename
+        if not path.is_file():
+            raise AssertionError(f"security-vuln-analyzer schema is missing: {path.relative_to(skill_dir)}")
+        try:
+            schema = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            raise AssertionError(f"security-vuln-analyzer schema is invalid JSON: {filename}: {error}") from error
+        if not isinstance(schema, dict) or schema.get("type") != "object":
+            raise AssertionError(f"security-vuln-analyzer schema must define an object: {filename}")
+        if schema.get("additionalProperties") is not False:
+            raise AssertionError(f"security-vuln-analyzer schema must reject undeclared fields: {filename}")
+        properties = schema.get("properties")
+        required = schema.get("required")
+        if not isinstance(properties, dict) or not isinstance(required, list):
+            raise AssertionError(f"security-vuln-analyzer schema lacks properties or required fields: {filename}")
+        missing = required_fields - set(properties)
+        absent_from_required = required_fields - set(required)
+        if missing or absent_from_required:
+            raise AssertionError(
+                f"security-vuln-analyzer schema has an incomplete role contract: {filename}; "
+                f"properties missing={sorted(missing)!r}, required missing={sorted(absent_from_required)!r}"
+            )
+        role_type = properties.get("role_type")
+        status = properties.get("status")
+        effort = properties.get("effort")
+        if not isinstance(role_type, dict) or role_type.get("enum") != [SECURITY_VULN_ANALYZER_ROLE_TYPES[filename]]:
+            raise AssertionError(f"security-vuln-analyzer schema has the wrong role type: {filename}")
+        if not isinstance(status, dict) or status.get("enum") != ["COMPLETE", "MALFORMED", "FAILED", "MISSING"]:
+            raise AssertionError(f"security-vuln-analyzer schema has the wrong role-status enum: {filename}")
+        if filename != "computation-result.schema.json" and (
+            not isinstance(effort, dict) or effort.get("enum") != ["high"]
+        ):
+            raise AssertionError(f"security-vuln-analyzer schema must pin High effort: {filename}")
+        if filename == "computation-result.schema.json":
+            if "provider" in properties or "model" in properties or "effort" in properties:
+                raise AssertionError("computation schema must use adapter provenance, not model provenance")
+        schemas[filename] = schema
+
+    discovery = schemas["discovery-result.schema.json"]
+    candidates = discovery.get("properties", {}).get("candidates", {})
+    candidate_properties = candidates.get("items", {}).get("properties", {}) if isinstance(candidates, dict) else {}
+    candidate_required = candidates.get("items", {}).get("required", []) if isinstance(candidates, dict) else []
+    detailed_candidate_fields = {
+        "role_local_id", "normalized_proposition", "proposed_disposition", "affects_security_claim",
+        "locations", "context_dependencies", "evidence", "counterevidence", "assumptions", "uncertainty",
+        "attacker_preconditions", "reachability_trace", "affected_boundary", "primitive_class",
+        "variant_family", "enumerated_variants", "enumeration_source", "validity", "reachability",
+        "impact", "mitigation_or_fix_state", "confidence", "priority", "deterministic_checks",
+        "invariant_test_contract",
+    }
+    if not isinstance(candidate_properties, dict) or not detailed_candidate_fields <= set(candidate_properties):
+        raise AssertionError("discovery schema lacks the detailed candidate contract")
+    if not isinstance(candidate_required, list) or not detailed_candidate_fields <= set(candidate_required):
+        raise AssertionError("discovery schema does not require the detailed candidate contract")
+    if "candidate_id" in candidate_properties:
+        raise AssertionError("discovery roles must not assign orchestrator candidate IDs")
+    base_pin, changed_pin, supporting_pin = "1" * 40, "2" * 40, "3" * 40
+    primary_target = {"base": base_pin, "changed": changed_pin}
+    supporting_repositories = {"supporting": supporting_pin}
+    if security_primary_revision(primary_target, base_pin) != base_pin:
+        raise AssertionError("a valid explicit primary revision was ignored")
+    if security_primary_revision(primary_target) != changed_pin or security_primary_revision({"target": base_pin}) != base_pin:
+        raise AssertionError("primary revision did not use the frozen comparison/single-pin rule")
+    for explicit in (None, "", supporting_repositories["supporting"], base_pin + ".." + changed_pin):
+        try:
+            security_primary_revision(primary_target, explicit)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("an invalid explicit primary revision fell back to a declared changed pin")
+    try:
+        security_primary_revision({"older": base_pin, "newer": changed_pin})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("ambiguous primary-target pins were selected without explicit input")
+    citation = discovery.get("$defs", {}).get("citation", {})
+    citation_fields = {
+        "source_kind", "repository", "revision", "relative_path", "start_line", "end_line",
+        "quote", "observation", "artifact_id",
+    }
+    if not isinstance(citation, dict) or citation.get("additionalProperties") is not False:
+        raise AssertionError("discovery schema lacks a strict structured citation object")
+    if set(citation.get("required", ())) != citation_fields:
+        raise AssertionError("discovery schema citation fields differ from the mechanical contract")
+    deterministic_check = discovery.get("$defs", {}).get("deterministic_check", {})
+    check_properties = deterministic_check.get("properties", {}) if isinstance(deterministic_check, dict) else {}
+    if "command_or_method" in check_properties:
+        raise AssertionError("discovery checks must not contain model-emitted commands")
+    check_kind = check_properties.get("check_kind", {}) if isinstance(check_properties, dict) else {}
+    if set(check_kind.get("enum", ())) != {"SOURCE_SLICE_SHA256", "FROZEN_TEST_REFERENCE"}:
+        raise AssertionError("discovery schema permits an unsupported deterministic-check kind")
+
+    stage1 = schemas["verifier-stage1-result.schema.json"]
+    stage2 = schemas["verifier-stage2-result.schema.json"]
+    if "verification_result" in stage1.get("properties", {}):
+        raise AssertionError("stage 1 verifier schema must be observation-only and forbid a final result")
+    stage2_result = stage2.get("properties", {}).get("verification_result", {})
+    if not isinstance(stage2_result, dict) or set(stage2_result.get("enum", ())) != {
+        "CONFIRMED", "REFUTED", "INCONCLUSIVE"
+    }:
+        raise AssertionError("stage 2 verifier schema must allow only CONFIRMED, REFUTED, or INCONCLUSIVE")
+
+    identity_fixture = {
+        "candidates": [{"role_local_id": "R1-C1", "evidence": [{
+            "source_kind": "repository", "quote": "// R1-C1 is literal source text", "observation": "The named function checks the input.",
+        }], "assumptions": [], "enumerated_variants": []}],
+    }
+    if security_discovery_post_schema_errors(identity_fixture):
+        raise AssertionError("literal repository quote was incorrectly treated as finder identity")
+    for field in ("observation", "assumptions", "enumerated_variants"):
+        leaking = json.loads(json.dumps(identity_fixture))
+        if field == "observation":
+            leaking["candidates"][0]["evidence"][0][field] = "The same sink as R1-C1."
+        else:
+            leaking["candidates"][0][field] = ["The same sink as R1-C1."]
+        if not security_discovery_post_schema_errors(leaking):
+            raise AssertionError(f"discovery finder-local ID escaped the {field} check")
+    bounded_identity = json.loads(json.dumps(identity_fixture))
+    bounded_identity["candidates"][0]["assumptions"] = ["R1-C10 and xR1-C1 are different ASCII tokens."]
+    if security_discovery_post_schema_errors(bounded_identity):
+        raise AssertionError("finder-local ID matching ignored literal ASCII token boundaries")
+
+    negative_fixtures = {
+        "stage1-empty-complete.json": {
+            "complete stage 1 lacks a location",
+            "complete stage 1 lacks a nonempty observation",
+            "complete stage 1 lacks an evidence citation",
+        },
+        "stage2-empty-confirmed.json": {
+            "complete stage 2 lacks an affected gate",
+            "confirmed stage 2 lacks supporting evidence",
+        },
+        "stage2-empty-refuted.json": {
+            "complete stage 2 lacks an affected gate",
+            "refuted stage 2 lacks counterevidence",
+        },
+        "stage2-empty-inconclusive.json": {
+            "complete stage 2 lacks an affected gate",
+            "inconclusive stage 2 is vacuous",
+        },
+        "stage2-whitespace-inconclusive.json": {
+            "inconclusive stage 2 is vacuous",
+        },
+    }
+    for filename, expected_errors in negative_fixtures.items():
+        fixture_path = SECURITY_VULN_ANALYZER_FIXTURES / filename
+        payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+        errors = set(security_verifier_post_schema_errors(payload))
+        if errors != expected_errors:
+            raise AssertionError(
+                f"security-vuln-analyzer post-schema fixture produced the wrong errors: "
+                f"{filename}: {sorted(errors)!r}"
+            )
+
+    routing_fixture_path = SECURITY_VULN_ANALYZER_FIXTURES / "routing-acceptance.json"
+    routing_fixture = json.loads(routing_fixture_path.read_text(encoding="utf-8"))
+    routing_errors = security_routing_fixture_errors(routing_fixture)
+    if routing_errors:
+        raise AssertionError(
+            "security-vuln-analyzer routing fixture produced errors: " + "; ".join(routing_errors)
+        )
+
+    skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    claude_runtime = (skill_dir / "references" / "runtime-claude.md").read_text(encoding="utf-8")
+    codex_runtime = (skill_dir / "references" / "runtime-codex.md").read_text(encoding="utf-8")
+    orchestrator_contract = (skill_dir / "references" / "orchestrator-contract.md").read_text(
+        encoding="utf-8"
+    )
+    exact_mapping = (
+        "| Claude Code | `claude-opus-5-5`, High | `gpt-6.1-sol`, High |",
+        "| Codex/ChatGPT | `gpt-6.1-sol`, High | `claude-opus-5-5`, High |",
+    )
+    if not all(row in skill_text for row in exact_mapping):
+        raise AssertionError("security-vuln-analyzer host/model mapping differs from the required matrix")
+    runtime_requirements = (
+        (claude_runtime, "`claude-opus-5-5`", "`gpt-6.1-sol`"),
+        (codex_runtime, "`gpt-6.1-sol`", "`claude-opus-5-5`"),
+    )
+    if any(native not in text or cross_provider not in text for text, native, cross_provider in runtime_requirements):
+        raise AssertionError("security-vuln-analyzer runtime adapters do not preserve the required model mapping")
+
+    fail_closed_rules = (
+        "Never replace a missing cross-provider leg with a same-family model.",
+        "fail closed as `INCOMPLETE`",
+        "Stage 2 may not replace Stage 1",
+        "With zero, multiple, unregistered, unbound, or source-digest-only checks/tables, route `DISPUTED`.",
+        "A role may not be substituted.",
+    )
+    combined_contracts = "\n".join((skill_text, claude_runtime, codex_runtime, orchestrator_contract))
+    if not all(rule in combined_contracts for rule in fail_closed_rules):
+        raise AssertionError("security-vuln-analyzer legacy or routing behavior does not fail closed")
+    if "security-role-result.schema.json" in skill_text:
+        raise AssertionError("security-vuln-analyzer still routes roles through the legacy shared schema")
+
+    if not SECURITY_VULN_ANALYZER_ADAPTER.is_file():
+        raise AssertionError("security-vuln-analyzer deterministic adapter is missing")
+    adapter_fixture = Path(tempfile.mkdtemp(prefix="security-adapter-", dir=workspace))
+    (adapter_fixture / "sample.txt").write_text("safe\nsecond\n", encoding="utf-8")
+    git_environment = dict(os.environ)
+    git_environment.update(
+        {
+            "GIT_AUTHOR_NAME": "Portable Fixture",
+            "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+            "GIT_COMMITTER_NAME": "Portable Fixture",
+            "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+        }
+    )
+    for argv in (
+        ["git", "init", "-q"],
+        ["git", "add", "sample.txt"],
+        ["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture"],
+    ):
+        process = subprocess.run(
+            argv,
+            cwd=adapter_fixture,
+            env=git_environment,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if process.returncode != 0:
+            raise AssertionError(f"security-vuln-analyzer adapter fixture setup failed: {process.stderr}")
+    revision_process = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=adapter_fixture,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    adapter_revision = revision_process.stdout.strip()
+
+    def run_adapter(request: Mapping[str, Any], registry: Mapping[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
+        request_path = adapter_fixture / f"request-{request['check_id']}.json"
+        request_path.write_text(json.dumps(request), encoding="utf-8")
+        argv = [
+            sys.executable,
+            str(SECURITY_VULN_ANALYZER_ADAPTER),
+            "--request",
+            str(request_path),
+            "--checkout",
+            str(adapter_fixture),
+        ]
+        if registry is not None:
+            registry_path = adapter_fixture / f"registry-{request['check_id']}.json"
+            registry_path.write_text(json.dumps(registry), encoding="utf-8")
+            argv.extend(["--registry", str(registry_path)])
+        process = subprocess.run(
+            argv,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            payload = json.loads(process.stdout)
+        except json.JSONDecodeError as error:
+            raise AssertionError(f"security-vuln-analyzer adapter emitted invalid JSON: {process.stdout}") from error
+        return process.returncode, payload
+
+    source_request = {
+        "packet_revision": "adapter-fixture-v1",
+        "candidate_id": "SVA-fixture",
+        "proposition": "The source slice is byte-identical to the frozen fixture.",
+        "check_id": "source-slice",
+        "check_kind": "SOURCE_SLICE_SHA256",
+        "repository": "example",
+        "target_revision": adapter_revision,
+        "relative_path": "sample.txt",
+        "start_line": 1,
+        "end_line": 1,
+        "expected_sha256": hashlib.sha256(b"safe\n").hexdigest(),
+        "routing_table": [
+            {"literal_result": "MATCHED", "final_status": "DISPUTED"},
+            {"literal_result": "NOT_MATCHED", "final_status": "DISPUTED"},
+        ],
+    }
+    source_status, source_result = run_adapter(source_request)
+    if source_status != 0 or source_result.get("literal_check_result") != "MATCHED":
+        raise AssertionError(f"security-vuln-analyzer source adapter failed: {source_result}")
+    if source_result.get("adapter") != "security-vuln-analyzer-deterministic-check":
+        raise AssertionError("security-vuln-analyzer adapter provenance is missing")
+    unsafe_source_request = dict(source_request)
+    unsafe_source_request["check_id"] = "source-slice-unsafe-route"
+    unsafe_source_request["routing_table"] = [
+        {"literal_result": "MATCHED", "final_status": "REFUTED"}
+    ]
+    unsafe_status, unsafe_result = run_adapter(unsafe_source_request)
+    if unsafe_status == 0 or unsafe_result.get("status") != "FAILED":
+        raise AssertionError("source digest was allowed to resolve a security dispute")
+
+    frozen_routing = [
+        {"literal_result": "PASSED", "final_status": "REFUTED"},
+        {"literal_result": "FAILED", "final_status": "DISPUTED"},
+    ]
+    frozen_proposition = "The frozen safe-behavior test observes the registered result."
+    frozen_request = {
+        "packet_revision": "adapter-fixture-v1",
+        "candidate_id": "SVA-fixture",
+        "proposition": frozen_proposition,
+        "check_id": "safe-behavior",
+        "check_kind": "FROZEN_TEST_REFERENCE",
+        "repository": "example",
+        "target_revision": adapter_revision,
+        "frozen_test_id": "safe-behavior",
+        "routing_table": frozen_routing,
+    }
+    frozen_registry = {
+        "schema_version": 1,
+        "tests": {
+            "safe-behavior": {
+                "repository": "example",
+                "revision": adapter_revision,
+                "proposition_sha256": hashlib.sha256(frozen_proposition.encode("utf-8")).hexdigest(),
+                "argv": [sys.executable, "-c", "print('safe')"],
+                "working_directory": ".",
+                "timeout_seconds": 10,
+                "environment": {},
+                "expected_exit_status": 0,
+                "expected_stdout_sha256": hashlib.sha256(b"safe\n").hexdigest(),
+                "tool_version": sys.version.split()[0],
+                "routing_table": frozen_routing,
+            }
+        },
+    }
+    frozen_request["registry_sha256"] = hashlib.sha256(
+        json.dumps(frozen_registry).encode("utf-8")
+    ).hexdigest()
+    frozen_status, frozen_result = run_adapter(frozen_request, frozen_registry)
+    if frozen_status != 0 or frozen_result.get("literal_check_result") != "PASSED":
+        raise AssertionError(f"security-vuln-analyzer frozen-test adapter failed: {frozen_result}")
+    for tag, code, expected_result in (
+        ("stderr-only", "import sys;sys.stderr.write('safe\\n')", "FAILED"),
+        ("separate-streams", "import sys;print('safe');sys.stderr.write('diagnostic\\n')", "PASSED"),
+    ):
+        stream_registry = json.loads(json.dumps(frozen_registry))
+        stream_registry["tests"]["safe-behavior"]["argv"] = [sys.executable, "-c", code]
+        stream_request = dict(frozen_request)
+        stream_request.update({"check_id": tag, "registry_sha256": hashlib.sha256(json.dumps(stream_registry).encode("utf-8")).hexdigest()})
+        stream_status, stream_result = run_adapter(stream_request, stream_registry)
+        if stream_status != 0 or stream_result.get("literal_check_result") != expected_result:
+            raise AssertionError(f"frozen stdout oracle confused stdout and stderr: {tag}: {stream_result}")
+        if tag == "separate-streams" and "diagnostic" not in stream_result.get("bounded_output", ""):
+            raise AssertionError("frozen test stderr diagnostics were discarded")
+    for index, relative_path in enumerate(("./sample.txt", "dir//sample.txt", "sample.txt/")):
+        noncanonical_request = dict(source_request)
+        noncanonical_request.update({"check_id": f"noncanonical-{index}", "relative_path": relative_path})
+        noncanonical_status, noncanonical_result = run_adapter(noncanonical_request)
+        if noncanonical_status == 0 or noncanonical_result.get("status") != "FAILED":
+            raise AssertionError(f"adapter accepted a noncanonical source path: {relative_path}")
+    duplicate_request = dict(frozen_request)
+    duplicate_request["check_id"] = "duplicate-routing"
+    duplicate_request["routing_table"] = frozen_routing + [
+        {"literal_result": "PASSED", "final_status": "CROSS-MODEL VERIFIED"}
+    ]
+    duplicate_registry = json.loads(json.dumps(frozen_registry))
+    duplicate_registry["tests"]["safe-behavior"]["routing_table"] = duplicate_request["routing_table"]
+    duplicate_request["registry_sha256"] = hashlib.sha256(json.dumps(duplicate_registry).encode("utf-8")).hexdigest()
+    duplicate_status, duplicate_result = run_adapter(duplicate_request, duplicate_registry)
+    if duplicate_status == 0 or duplicate_result.get("status") == "COMPLETE":
+        raise AssertionError("security-vuln-analyzer adapter accepted conflicting duplicate routing rows")
+    unrelated_request = dict(frozen_request)
+    unrelated_request["check_id"] = "unrelated-proposition"
+    unrelated_request["proposition"] = "A different proposition must not reuse this oracle."
+    unrelated_status, unrelated_result = run_adapter(unrelated_request, frozen_registry)
+    if unrelated_status == 0 or unrelated_result.get("literal_check_result") != "NOT_RUN":
+        raise AssertionError("a frozen oracle was allowed to resolve an unrelated proposition")
+    tampered_registry = json.loads(json.dumps(frozen_registry))
+    tampered_registry["tests"]["safe-behavior"]["proposition_sha256"] = hashlib.sha256(
+        unrelated_request["proposition"].encode("utf-8")
+    ).hexdigest()
+    tampered_status, tampered_result = run_adapter(unrelated_request, tampered_registry)
+    if tampered_status == 0 or tampered_result.get("literal_check_result") != "NOT_RUN":
+        raise AssertionError("a post-discovery registry edit was allowed to rebind an oracle")
+
+    noisy_proposition = "The adapter enforces its output limit while the child is running."
+    noisy_routing = [
+        {"literal_result": "PASSED", "final_status": "REFUTED"},
+        {"literal_result": "FAILED", "final_status": "DISPUTED"},
+        {"literal_result": "NOT_RUN", "final_status": "DISPUTED"},
+    ]
+    noisy_request = {
+        **frozen_request,
+        "candidate_id": "SVA-noisy-fixture",
+        "proposition": noisy_proposition,
+        "check_id": "noisy-test",
+        "frozen_test_id": "noisy-test",
+        "routing_table": noisy_routing,
+    }
+    noisy_registry = {
+        "schema_version": 1,
+        "tests": {
+            "noisy-test": {
+                "repository": "example",
+                "revision": adapter_revision,
+                "proposition_sha256": hashlib.sha256(noisy_proposition.encode("utf-8")).hexdigest(),
+                "argv": [sys.executable, "-c", "import sys; sys.stdout.write('x' * 70000)"],
+                "working_directory": ".",
+                "timeout_seconds": 10,
+                "environment": {},
+                "expected_exit_status": 0,
+                "expected_stdout_sha256": "",
+                "tool_version": sys.version.split()[0],
+                "routing_table": noisy_routing,
+            }
+        },
+    }
+    noisy_request["registry_sha256"] = hashlib.sha256(
+        json.dumps(noisy_registry).encode("utf-8")
+    ).hexdigest()
+    noisy_status, noisy_result = run_adapter(noisy_request, noisy_registry)
+    if noisy_status == 0 or noisy_result.get("bounded_output") != "output limit exceeded":
+        raise AssertionError("security-vuln-analyzer adapter did not enforce its streaming output limit")
+    combined_registry = json.loads(json.dumps(noisy_registry))
+    combined_registry["tests"]["noisy-test"]["argv"] = [
+        sys.executable, "-c", "import os;os.write(1,b'x'*40000);os.write(2,b'y'*40000)",
+    ]
+    combined_request = dict(noisy_request)
+    combined_request.update({"check_id": "combined-output-limit", "registry_sha256": hashlib.sha256(json.dumps(combined_registry).encode("utf-8")).hexdigest()})
+    combined_status, combined_result = run_adapter(combined_request, combined_registry)
+    if combined_status == 0 or combined_result.get("bounded_output") != "output limit exceeded":
+        raise AssertionError("frozen test output limit was not enforced across stdout and stderr")
+
+    descendant_proposition = "The adapter terminates a silent descendant that retains the output pipe."
+    descendant_routing = [
+        {"literal_result": "PASSED", "final_status": "REFUTED"},
+        {"literal_result": "NOT_RUN", "final_status": "DISPUTED"},
+    ]
+    descendant_request = {
+        **frozen_request,
+        "candidate_id": "SVA-descendant-fixture",
+        "proposition": descendant_proposition,
+        "check_id": "silent-descendant",
+        "frozen_test_id": "silent-descendant",
+        "routing_table": descendant_routing,
+    }
+    descendant_registry = {
+        "schema_version": 1,
+        "tests": {
+            "silent-descendant": {
+                "repository": "example",
+                "revision": adapter_revision,
+                "proposition_sha256": hashlib.sha256(descendant_proposition.encode("utf-8")).hexdigest(),
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    "import subprocess,sys; subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'])",
+                ],
+                "working_directory": ".",
+                "timeout_seconds": 1,
+                "environment": {},
+                "expected_exit_status": 0,
+                "expected_stdout_sha256": "",
+                "tool_version": sys.version.split()[0],
+                "routing_table": descendant_routing,
+            }
+        },
+    }
+    descendant_request["registry_sha256"] = hashlib.sha256(
+        json.dumps(descendant_registry).encode("utf-8")
+    ).hexdigest()
+    descendant_status, descendant_result = run_adapter(descendant_request, descendant_registry)
+    if descendant_status == 0 or descendant_result.get("bounded_output") != "timeout exceeded":
+        raise AssertionError(f"security-vuln-analyzer adapter did not time out the full test process group: {descendant_result}")
+
+    # The child closes all inherited pipes; cleanup must not depend on pipe EOF.
+    marker = adapter_fixture / "detached-descendant-marker"
+    detached_proposition = "The adapter terminates a descendant that closes its output pipes."
+    detached_request = {**frozen_request, "check_id": "detached-descendant", "frozen_test_id": "detached-descendant", "proposition": detached_proposition}
+    detached_registry = json.loads(json.dumps(frozen_registry))
+    detached_entry = detached_registry["tests"].pop("safe-behavior")
+    detached_entry["proposition_sha256"] = hashlib.sha256(detached_proposition.encode("utf-8")).hexdigest()
+    child_code = "import pathlib,time; time.sleep(2); pathlib.Path(%r).write_text('alive')" % str(marker)
+    detached_entry["argv"] = [sys.executable, "-c", "import subprocess,sys; subprocess.Popen([sys.executable,'-c',%r], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); print('child spawned')" % child_code]
+    detached_entry["expected_stdout_sha256"] = hashlib.sha256(b"child spawned\n").hexdigest()
+    detached_registry["tests"]["detached-descendant"] = detached_entry
+    detached_request["registry_sha256"] = hashlib.sha256(json.dumps(detached_registry).encode("utf-8")).hexdigest()
+    detached_status, detached_result = run_adapter(detached_request, detached_registry)
+    if (detached_status != 0 or detached_result.get("status") != "COMPLETE"
+        or detached_result.get("literal_check_result") != "PASSED"
+        or detached_result.get("executed_argv") != detached_entry["argv"]
+        or detached_result.get("bounded_output") != "child spawned\n"):
+        raise AssertionError(f"detached-output fixture did not spawn its child: {detached_result}")
+    time.sleep(3)
+    if marker.exists():
+        raise AssertionError("security-vuln-analyzer adapter left a detached-output descendant running")
+
+    copied = portable_source_copy_case(workspace, skill_dir)
+    return {
+        **copied,
+        "schemas": sorted(schemas),
+        "negative_post_schema_fixtures": sorted(negative_fixtures),
+        "routing_fixture": routing_fixture_path.name,
+        "deterministic_adapter": SECURITY_VULN_ANALYZER_ADAPTER.name,
+        "model_backed_call": False,
+    }
+
+
 def add_deterministic_acceptance_cases(harness: Harness) -> None:
     modules = [
         "tests.acceptance.test_codex_app_server",
@@ -1403,6 +2287,7 @@ def add_deterministic_acceptance_cases(harness: Harness) -> None:
         "tests.acceptance.test_kcap_policy",
         "tests.acceptance.test_kcap_synthesis_policy",
         "tests.acceptance.test_live_provenance",
+        "tests.acceptance.test_security_source_citations",
         "tests.acceptance.test_portable_validator",
         "tests.acceptance.test_starduster_sync",
         "tests.acceptance.test_starduster_rendering",
@@ -3156,8 +4041,13 @@ def hplumb_case(workspace: Path) -> dict[str, Any]:
     authoritative_skills = {
         "kcap": canonical / "skills" / "kcap",
         "starduster": canonical / "skills" / "starduster",
+        "security-vuln-analyzer": canonical / "skills" / "security-vuln-analyzer",
     }
-    for name, source in (("kcap", KCAP_DIR), ("starduster", STARDUSTER_DIR)):
+    for name, source in (
+        ("kcap", KCAP_DIR),
+        ("starduster", STARDUSTER_DIR),
+        ("security-vuln-analyzer", SECURITY_VULN_ANALYZER_DIR),
+    ):
         shutil.copytree(
             source,
             authoritative_skills[name],
@@ -3226,6 +4116,13 @@ def hplumb_case(workspace: Path) -> dict[str, Any]:
             Path("references/runtime-claude.md"), Path("references/runtime-codex.md"),
             Path("scripts/starduster.py"), Path("scripts/starduster_publish.py"), Path("scripts/starduster_render.py"),
             Path("schemas/starduster-synthesis.schema.json"),
+        },
+        "security-vuln-analyzer": {
+            Path("SKILL.md"), Path("agents/openai.yaml"),
+            Path("references/runtime-claude.md"), Path("references/runtime-codex.md"),
+            Path("references/orchestrator-contract.md"), Path("references/discovery-contract.md"),
+            Path("references/cross-model-verification.md"),
+            *{Path("schemas") / filename for filename in SECURITY_VULN_ANALYZER_SCHEMAS},
         },
     }
     copied_file_count = 0

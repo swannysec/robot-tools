@@ -1,0 +1,152 @@
+{
+  "role_type": "discovery",
+  "status": "COMPLETE",
+  "provider": "synthetic",
+  "model": "synthetic",
+  "effort": "high",
+  "packet_revision": "metadata-fixture-v1",
+  "pinned_revisions": [
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  ],
+  "scope": "Public synthetic schema/transport fixture only.",
+  "evidence": [
+    {
+      "source_kind": "authoritative_source",
+      "repository": "",
+      "revision": "",
+      "relative_path": "",
+      "start_line": 0,
+      "end_line": 0,
+      "quote": "Synthetic metadata supplied by the fixture; no external retrieval occurred.",
+      "observation": "This artifact tests field transport only.",
+      "artifact_id": "synthetic-input"
+    }
+  ],
+  "counterevidence": [],
+  "candidates": [
+    {
+      "normalized_proposition": "Synthetic metadata only; no target finding is asserted.",
+      "affected_boundary": "Synthetic metadata only; no target finding is asserted.",
+      "primitive_class": "Synthetic metadata only; no target finding is asserted.",
+      "variant_family": "Synthetic metadata only; no target finding is asserted.",
+      "validity": "Synthetic metadata only; no target finding is asserted.",
+      "reachability": "Synthetic metadata only; no target finding is asserted.",
+      "impact": "Synthetic metadata only; no target finding is asserted.",
+      "mitigation_or_fix_state": "Synthetic metadata only; no target finding is asserted.",
+      "confidence": "Synthetic metadata only; no target finding is asserted.",
+      "priority": "Synthetic metadata only; no target finding is asserted.",
+      "role_local_id": "fixture-1",
+      "proposed_disposition": "reliability or maintainability signal",
+      "affects_security_claim": false,
+      "locations": [],
+      "context_dependencies": [],
+      "evidence": [
+        {
+          "source_kind": "authoritative_source",
+          "repository": "",
+          "revision": "",
+          "relative_path": "",
+          "start_line": 0,
+          "end_line": 0,
+          "quote": "Synthetic metadata supplied by the fixture; no external retrieval occurred.",
+          "observation": "This artifact tests field transport only.",
+          "artifact_id": "synthetic-input"
+        }
+      ],
+      "counterevidence": [],
+      "assumptions": [],
+      "uncertainty": [
+        "No target was analyzed."
+      ],
+      "attacker_preconditions": [],
+      "reachability_trace": [],
+      "enumerated_variants": [],
+      "enumeration_source": [],
+      "deterministic_checks": [],
+      "invariant_test_contract": {
+        "applicable": true,
+        "version": "fixture-contract-v1",
+        "invariant": "Synthetic text remains data.",
+        "adversarial_input_classes": [
+          "Synthetic strings."
+        ],
+        "expected_secure_behavior": "Preserve the supplied literal bytes.",
+        "sink_or_observable": "Fixture output.",
+        "deterministic_oracle": "Literal fixture comparison only.",
+        "benign_control": "Ordinary synthetic text.",
+        "implementation_pitfalls": [
+          "Do not interpret supplied scoring as an observed external lookup."
+        ]
+      },
+      "scoring": {
+        "cvss_v4": {
+          "status": "SCORED",
+          "vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H",
+          "score": 10.0,
+          "score_type": "Base",
+          "calculator_version": "synthetic-fixture",
+          "inputs": [
+            "All metrics are synthetic supplied values."
+          ],
+          "rationale": "Synthetic input tests preservation; no target or security authority was assessed.",
+          "evidence": [
+            {
+              "source_kind": "authoritative_source",
+              "repository": "",
+              "revision": "",
+              "relative_path": "",
+              "start_line": 0,
+              "end_line": 0,
+              "quote": "Synthetic metadata supplied by the fixture; no external retrieval occurred.",
+              "observation": "This artifact tests field transport only.",
+              "artifact_id": "synthetic-input"
+            }
+          ]
+        },
+        "epss": {
+          "status": "RETRIEVED",
+          "cve": "CVE-2099-0001",
+          "probability": 0.2,
+          "percentile": 0.9,
+          "retrieved_at_utc": "2099-01-01T00:00:00Z",
+          "version": "synthetic-fixture",
+          "rationale": "Synthetic supplied metadata; not a real CVE lookup.",
+          "evidence": [
+            {
+              "source_kind": "authoritative_source",
+              "repository": "",
+              "revision": "",
+              "relative_path": "",
+              "start_line": 0,
+              "end_line": 0,
+              "quote": "Synthetic metadata supplied by the fixture; no external retrieval occurred.",
+              "observation": "This artifact tests field transport only.",
+              "artifact_id": "synthetic-input"
+            }
+          ]
+        },
+        "kev": {
+          "status": "RETRIEVED",
+          "cve": "CVE-2099-0001",
+          "membership": "LISTED",
+          "retrieved_at_utc": "2099-01-01T00:00:00Z",
+          "version": "synthetic-fixture",
+          "rationale": "Synthetic supplied metadata; not a real catalog lookup.",
+          "evidence": [
+            {
+              "source_kind": "authoritative_source",
+              "repository": "",
+              "revision": "",
+              "relative_path": "",
+              "start_line": 0,
+              "end_line": 0,
+              "quote": "Synthetic metadata supplied by the fixture; no external retrieval occurred.",
+              "observation": "This artifact tests field transport only.",
+              "artifact_id": "synthetic-input"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

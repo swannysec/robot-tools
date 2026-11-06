@@ -37,6 +37,9 @@ Impact:
 Mitigation/fix state:
 Confidence:
 Priority and rationale:
+Operational disposition, rationale, decision authority/source (or NOT RECORDED):
+Actual change state: patch/PR, merged commit, release/deployment evidence (or UNKNOWN):
+Next action and owner (or NOT ASSIGNED):
 
 Scoring: see role-scoped field projection below.
 
@@ -59,6 +62,13 @@ Render the following exact fields for each role record, preserving states, numbe
 | Implementation pitfalls | `candidate.invariant_test_contract.implementation_pitfalls` |
 
 An empty pitfalls array means none were supplied; it does not establish that there are no risks.
+
+Keep later assessments under the existing finding ID, linked to their revision-specific
+candidate IDs and packets; do not overwrite original evidence or validity. The disposition
+category above describes finding kind. Operational disposition records an attributed
+action such as open, deferred, accepted risk, duplicate, or resolved; do not infer it from
+provider agreement or a passing test. A valid finding can have accepted risk, and a verified
+candidate patch can remain unmerged or undeployed. Record unknown states plainly.
 
 `TEST_WRITTEN_NOT_RUN` is not an observed result. Use the definitions and literal result states in [deterministic-validation.md](deterministic-validation.md).
 
@@ -101,6 +111,26 @@ Never include agent identities, vote counts, consensus language, or raw verifier
 
 For `--verify-fix` and verification invoked by `--develop-fix`, preserve the two role-scoped `closure_recommendation` and `closure_conditions` values, shared reconciliation status, frozen oracle identity and literal execution results, oracle state (`SATISFIED`, `FAILED`, or `UNAVAILABLE`), and mechanically routed closure outcome. Preserve conditional tracking references, owners, and acceptance requirements verbatim. Follow [fix-verification-mode.md](fix-verification-mode.md).
 
+Keep this assessment in the finding bundle, retaining earlier results and explicit
+corrections. Use existing test/run artifacts as evidence; no separate validation ledger is
+required. Include enough for an engineer to decide whether to change the patch or accept it:
+
+```text
+Original finding/revision; base and patched revisions; contract version/artifact hash:
+What change addresses which reported defect/control:
+Checks: original contract | relevant existing regression | supplemental after patch inspection:
+For each check: concern/decision, test ID/hash, registry digest, revision, exact argv/tool version:
+Expected versus observed behavior, execution status, literal assertion result, bounded output reference:
+Corrections to original tests/evidence (retain original artifacts and reasons):
+Credible bypass/sibling paths checked; remaining gaps and their effect on acceptance:
+Role-scoped closure recommendations/conditions and routed outcome:
+Attributed operational disposition; actual patch/merge/release/deployment state; next action/owner:
+```
+
+A timeout after launch is unresolved execution, not `NOT_RUN` or a failed assertion.
+A shared `REFUTED` fix assertion means the fix was rejected, not that the original
+vulnerability was a false positive. Preserve unknowns rather than filling missing values.
+
 ## Candidate patch record
 
 Only for `--develop-fix`, using [develop-fixes-mode.md](develop-fixes-mode.md):
@@ -121,5 +151,7 @@ Status: candidate patch — independent --verify-fix and human merge required
 - Preserve every candidate, whole-finding refutation, role status, and retry record.
 - Keep primary scope separate from supporting-context evidence.
 - Render four gate fields separately; do not replace them with a single verdict.
+- Keep finding kind, validity, operational disposition, verification recommendation, and actual change state distinct.
+- Preserve original evidence and separately label supplemental checks, corrections, interrupted executions, and acceptance-relevant gaps.
 - Do not call a claim `CROSS-MODEL VERIFIED` unless Mechanical Reconciliation permits it.
 - Do not publish vulnerability details, PoCs, contracts, or provenance on public surfaces before disclosure.

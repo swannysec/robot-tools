@@ -2316,7 +2316,10 @@ def portable_security_vuln_analyzer_case(workspace: Path) -> dict[str, Any]:
         json.dumps(noisy_registry).encode("utf-8")
     ).hexdigest()
     noisy_status, noisy_result = run_adapter(noisy_request, noisy_registry)
-    if noisy_status == 0 or noisy_result.get("bounded_output") != "output limit exceeded":
+    if (noisy_status == 0 or noisy_result.get("literal_check_result") != "UNRESOLVED"
+        or not noisy_result.get("bounded_output", "").startswith("output limit exceeded\n")
+        or "x" * 100 not in noisy_result["bounded_output"]
+        or len(noisy_result["bounded_output"].encode("utf-8")) > 65_536):
         raise AssertionError("security-vuln-analyzer adapter did not enforce its streaming output limit")
     combined_registry = json.loads(json.dumps(noisy_registry))
     combined_registry["tests"]["noisy-test"]["argv"] = [
@@ -2325,7 +2328,11 @@ def portable_security_vuln_analyzer_case(workspace: Path) -> dict[str, Any]:
     combined_request = dict(noisy_request)
     combined_request.update({"check_id": "combined-output-limit", "registry_sha256": hashlib.sha256(json.dumps(combined_registry).encode("utf-8")).hexdigest()})
     combined_status, combined_result = run_adapter(combined_request, combined_registry)
-    if combined_status == 0 or combined_result.get("bounded_output") != "output limit exceeded":
+    if (combined_status == 0 or combined_result.get("literal_check_result") != "UNRESOLVED"
+        or not combined_result.get("bounded_output", "").startswith("output limit exceeded\n")
+        or "[stdout]\n" not in combined_result["bounded_output"]
+        or "[stderr]\n" not in combined_result["bounded_output"]
+        or len(combined_result["bounded_output"].encode("utf-8")) > 65_536):
         raise AssertionError("frozen test output limit was not enforced across stdout and stderr")
 
     descendant_proposition = "The adapter terminates a silent descendant that retains the output pipe."
@@ -2367,7 +2374,9 @@ def portable_security_vuln_analyzer_case(workspace: Path) -> dict[str, Any]:
         json.dumps(descendant_registry).encode("utf-8")
     ).hexdigest()
     descendant_status, descendant_result = run_adapter(descendant_request, descendant_registry)
-    if descendant_status == 0 or descendant_result.get("bounded_output") != "timeout exceeded":
+    if (descendant_status == 0 or descendant_result.get("bounded_output") != "timeout exceeded"
+        or descendant_result.get("literal_check_result") != "UNRESOLVED"
+        or descendant_result.get("executed_argv") != descendant_registry["tests"]["silent-descendant"]["argv"]):
         raise AssertionError(f"security-vuln-analyzer adapter did not time out the full test process group: {descendant_result}")
 
     # The child closes all inherited pipes; cleanup must not depend on pipe EOF.

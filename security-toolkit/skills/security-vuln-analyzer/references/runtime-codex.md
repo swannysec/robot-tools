@@ -80,7 +80,7 @@ Before discovery, capture snapshot intake and file hashes once and freeze the in
 
 Do not send deterministic-check execution to a model or a shell. Run the packaged
 `scripts/deterministic-check.py` as described in `deterministic-validation.md`. It accepts only `SOURCE_SLICE_SHA256` fields or a
-`FROZEN_TEST_REFERENCE` present in the pre-discovery registry. For a frozen test, execute
+`FROZEN_TEST_REFERENCE` present in the pre-discovery registry, or a separately frozen supplemental fix-check registry under `deterministic-validation.md`. Supplemental checks preserve `DISPUTED` and cannot resolve a verifier split. For a frozen test, execute
 the registry's argument array directly with no shell in a temporary pinned-revision copy,
 network denied, environment empty or allowlisted, target and package read-only, bounded
 time/output, and writes confined to the temporary directory. A source digest never resolves

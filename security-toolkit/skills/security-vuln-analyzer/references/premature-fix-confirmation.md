@@ -17,6 +17,16 @@ description: Failure patterns that prevent a candidate patch from being mistaken
 
 **Control:** require the Role 3 Invariant + Adversarial Test Contract, a base-revision expected failure, a patched-revision expected pass, benign controls, and the predeclared deterministic oracle. Use [deterministic-validation.md](deterministic-validation.md).
 
+## Original tests pass but a sibling path remains vulnerable
+
+**Failure:** treating the frozen exploit suite as exhaustive, or rewriting it after patch
+inspection so later results appear predeclared.
+
+**Control:** preserve the original contract and results; use bounded supplemental checks
+for source-supported bypasses and sibling paths under [deterministic-validation.md](deterministic-validation.md).
+A demonstrated contract-supported bypass prevents a `YES` recommendation. Record gaps
+and their effect on acceptance; neither a passing sample nor a round cap proves closure.
+
 ## Attribution drift
 
 **Failure:** treating a cited PR or commit as the closure when an earlier change, a different change, or no change actually satisfies the contract.

@@ -18,7 +18,7 @@ import unicodedata
 
 
 ADAPTER_NAME = "security-vuln-analyzer-deterministic-check"
-ADAPTER_VERSION = "1.0.1"
+ADAPTER_VERSION = "1.0.2"
 MAX_OUTPUT_BYTES = 65_536
 FINAL_STATUSES = {
     "CROSS-MODEL VERIFIED",
@@ -234,6 +234,7 @@ def run_frozen_test(
     process = None
     selector = None
     group_terminated = False
+    captured = {"stdout": bytearray(), "stderr": bytearray()}
     try:
         if os.name != "posix":
             result.update(
@@ -254,12 +255,13 @@ def run_frozen_test(
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
+        result.update({"frozen_test_id": frozen_test_id, "executed_argv": argv,
+                       "tool_version": str(frozen.get("tool_version", "unrecorded"))})
         if process.stdout is None or process.stderr is None:
             raise RequestError("frozen test output pipe is unavailable")
         selector = selectors.DefaultSelector()
         selector.register(process.stdout, selectors.EVENT_READ, "stdout")
         selector.register(process.stderr, selectors.EVENT_READ, "stderr")
-        captured = {"stdout": bytearray(), "stderr": bytearray()}
         output_bytes = 0
         deadline = time.monotonic() + timeout_seconds
         limit_exceeded = False
@@ -307,14 +309,12 @@ def run_frozen_test(
                     "executed_argv": argv,
                     "bounded_output": reason,
                     "exit_status": process.returncode if process.returncode is not None else -1,
-                    "literal_check_result": "NOT_RUN",
+                    "literal_check_result": "UNRESOLVED",
                 }
             )
             return
         stdout = bytes(captured["stdout"])
-        stderr = bytes(captured["stderr"])
         output_digest = hashlib.sha256(stdout).hexdigest()
-        bounded = stdout if not stderr else b"[stdout]\n" + stdout + b"\n[stderr]\n" + stderr
         passed = process.returncode == expected_exit_status and (
             not expected_stdout_sha256 or output_digest == expected_stdout_sha256
         )
@@ -323,7 +323,6 @@ def run_frozen_test(
                 "frozen_test_id": frozen_test_id,
                 "executed_argv": argv,
                 "tool_version": str(frozen.get("tool_version", "unrecorded")),
-                "bounded_output": bounded.decode("utf-8", errors="replace"),
                 "exit_status": process.returncode,
                 "literal_check_result": "PASSED" if passed else "FAILED",
             }
@@ -333,10 +332,9 @@ def run_frozen_test(
             {
                 "status": "FAILED",
                 "frozen_test_id": frozen_test_id,
-                "executed_argv": argv,
                 "bounded_output": str(error)[:MAX_OUTPUT_BYTES],
                 "exit_status": -1,
-                "literal_check_result": "NOT_RUN",
+                "literal_check_result": "UNRESOLVED" if process is not None else "NOT_RUN",
             }
         )
     finally:
@@ -350,6 +348,13 @@ def run_frozen_test(
                 process.stderr.close()
         if selector is not None:
             selector.close()
+        stdout, stderr = bytes(captured["stdout"]), bytes(captured["stderr"])
+        bounded = stdout if not stderr else b"[stdout]\n" + stdout + b"\n[stderr]\n" + stderr
+        diagnostic = result["bounded_output"].encode("utf-8")
+        if diagnostic:
+            bounded = diagnostic + (b"\n" + bounded if bounded else b"")
+        rendered = bounded.decode("utf-8", errors="replace").encode("utf-8")
+        result["bounded_output"] = rendered[:MAX_OUTPUT_BYTES].decode("utf-8", errors="ignore")
 
 
 def terminate_process_group(process: subprocess.Popen[bytes]) -> None:

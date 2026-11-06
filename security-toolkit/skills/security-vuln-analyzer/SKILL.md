@@ -105,7 +105,7 @@ Read `references/deterministic-validation.md`. Run `scripts/deterministic-check.
 Route without judgment:
 
 - Both verifiers `CONFIRMED`, with citations and revision checks passing: `CROSS-MODEL VERIFIED`.
-- Both verifiers `REFUTED`, each with non-empty counterevidence whose citations and revisions validate: `REFUTED`; retain as a false-positive record.
+- Both verifiers `REFUTED`, each with non-empty counterevidence whose citations and revisions validate: `REFUTED`; retain as a false-positive record for analysis claims. In fix modes this refutes the fix assertion, not the original vulnerability.
 - Split results: after byte-normalization, dispatch a computation-only check only when all complete discovery records supply the same registered `FROZEN_TEST_REFERENCE`, its proposition hash equals the disputed proposition, and its registry digest and result-to-status table exactly match the pre-discovery packet. A source digest can validate artifact identity but cannot resolve a security claim. With zero, multiple, unregistered, unbound, or source-digest-only checks/tables, route `DISPUTED`.
 - Missing, unexecutable, or non-resolving check: `DISPUTED`.
 - Both complete verifier results `INCONCLUSIVE`: `NOT VERIFIED`; one `INCONCLUSIVE` and one different result: `DISPUTED`.
@@ -122,6 +122,8 @@ Agents, not the orchestrator, provide classification and risk judgments. Use:
 - `references/remediation-patterns.md` for root-cause remediation patterns;
 - `references/premature-fix-confirmation.md` to avoid mistaking a plausible patch for a verified fix.
 
+For fix modes, use the bounded post-patch procedure in `references/deterministic-validation.md`: preserve original checks, reuse existing regressions, and add supplemental checks only for concerns that could change the fix or disposition. Supplemental checks never replace the frozen oracle or resolve a verifier split.
+
 Distinguish static confirmation, test written, test observed, and unvalidated test claims. A test file or proposed command is not evidence that the test passed. Missing secure-code guidance such as a `SAFETY` explanation may remain a valid hardening or clarity concern without being promoted to a vulnerability.
 
 ## Phase 7: Report
@@ -132,7 +134,8 @@ Render `references/report-template.md` without adding security opinions. Report:
 - role and verifier provenance, status, retry, stage, provider, model, and effort;
 - stable IDs and separate validity, reachability, impact, mitigation/fix state, confidence, and priority;
 - four output sections matching the four dispositions;
-- evidence, counterevidence, assumptions, uncertainty, variants, checks, and test-observation state;
+- evidence, counterevidence, assumptions, uncertainty, variants, original versus supplemental checks, literal results and test-observation state;
+- attributed operational disposition and actual patch/merge/release/deployment state separately from finding validity and verification recommendations; use explicit unknowns where no decision or change evidence exists;
 - final status: `CROSS-MODEL VERIFIED`, `REFUTED`, `DISPUTED`, `NOT VERIFIED`, or `INCOMPLETE`;
 - an exact dispute projection for unresolved claims without identities, counts, or consensus language; include every role-emitted evidence, counterevidence, assumption, uncertainty, and check field for that stable ID.
 

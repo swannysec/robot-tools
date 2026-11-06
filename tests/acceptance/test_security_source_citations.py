@@ -139,6 +139,75 @@ class SourceCitationTest(unittest.TestCase):
 
 
 class DeterministicCheckTest(unittest.TestCase):
+    def run_test_check(self, code, *, argv=None):
+        routing = [{'literal_result': state, 'final_status': 'DISPUTED'}
+                   for state in ('PASSED', 'FAILED', 'UNRESOLVED', 'NOT_RUN')]
+        proposition = 'The synthetic test observes its registered result.'
+        request = {'packet_revision': 'fixture', 'candidate_id': 'fixture', 'proposition': proposition,
+            'check_id': 'fixture', 'check_kind': 'FROZEN_TEST_REFERENCE', 'repository': 'example',
+            'target_revision': PIN, 'routing_table': routing, 'frozen_test_id': 'fixture'}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            registry = {'tests': {'fixture': {'repository': 'example', 'revision': PIN,
+                'proposition_sha256': CHECKS['normalized_proposition_digest'](proposition), 'routing_table': routing,
+                'argv': argv or [sys.executable, '-c', code], 'working_directory': '.', 'timeout_seconds': 1,
+                'expected_exit_status': 0, 'environment': {}, 'tool_version': 'fixture-python'}}}
+            digest = hashlib.sha256(encode(registry)).hexdigest()
+            request['registry_sha256'] = digest
+            result = CHECKS['base_result'](request, routing)
+            CHECKS['run_frozen_test'](request, root, registry, digest, result)
+            return result
+
+    def test_completed_assertion_failure_is_not_an_execution_failure(self):
+        for exit_status, expected in ((0, 'PASSED'), (1, 'FAILED')):
+            with self.subTest(exit_status=exit_status):
+                result = self.run_test_check('import sys; print("observed"); sys.exit(%d)' % exit_status)
+                self.assertEqual(result['status'], 'COMPLETE')
+                self.assertEqual(result['literal_check_result'], expected)
+                self.assertEqual(result['exit_status'], exit_status)
+                self.assertEqual(result['bounded_output'], 'observed\n')
+
+    def test_timeout_retains_partial_output_and_is_unresolved(self):
+        code = 'import sys,time; print("reached check", flush=True); print("diagnostic", file=sys.stderr, flush=True); time.sleep(30)'
+        result = self.run_test_check(code)
+        self.assertEqual(result['status'], 'FAILED')
+        self.assertEqual(result['literal_check_result'], 'UNRESOLVED')
+        self.assertEqual(result['executed_argv'], [sys.executable, '-c', code])
+        self.assertEqual(result['tool_version'], 'fixture-python')
+        self.assertIn('timeout exceeded', result['bounded_output'])
+        self.assertIn('[stdout]\nreached check\n', result['bounded_output'])
+        self.assertIn('[stderr]\ndiagnostic\n', result['bounded_output'])
+
+    def test_output_limit_retains_bounded_diagnostics_and_is_unresolved(self):
+        result = self.run_test_check('import sys; sys.stderr.write("diagnostic" * 10000); sys.stderr.flush()')
+        self.assertEqual(result['status'], 'FAILED')
+        self.assertEqual(result['literal_check_result'], 'UNRESOLVED')
+        self.assertIn('output limit exceeded', result['bounded_output'])
+        self.assertIn('[stderr]\ndiagnostic', result['bounded_output'])
+        self.assertLessEqual(len(result['bounded_output'].encode()), CHECKS['MAX_OUTPUT_BYTES'])
+
+    def test_non_utf8_diagnostics_remain_within_rendered_byte_limit(self):
+        result = self.run_test_check('import os; os.write(1, bytes([255]) * 30000)')
+        self.assertEqual(result['status'], 'COMPLETE')
+        self.assertEqual(result['literal_check_result'], 'PASSED')
+        self.assertIn('\ufffd', result['bounded_output'])
+        self.assertLessEqual(len(result['bounded_output'].encode()), CHECKS['MAX_OUTPUT_BYTES'])
+
+    def test_launch_failure_is_not_run_and_has_no_executed_arguments(self):
+        result = self.run_test_check('', argv=['/nonexistent-security-fixture/executable'])
+        self.assertEqual(result['status'], 'FAILED')
+        self.assertEqual(result['literal_check_result'], 'NOT_RUN')
+        self.assertEqual(result['executed_argv'], [])
+
+    def test_capture_failure_after_launch_is_unresolved(self):
+        function = CHECKS['run_frozen_test']
+        with mock.patch.object(function.__globals__['selectors'].DefaultSelector, 'select', side_effect=OSError('fixture capture failure')):
+            result = self.run_test_check('print("observed")')
+        self.assertEqual(result['status'], 'FAILED')
+        self.assertEqual(result['literal_check_result'], 'UNRESOLVED')
+        self.assertTrue(result['executed_argv'])
+        self.assertIn('fixture capture failure', result['bounded_output'])
+
     def test_physical_lines_ignore_unicode_and_control_separators(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

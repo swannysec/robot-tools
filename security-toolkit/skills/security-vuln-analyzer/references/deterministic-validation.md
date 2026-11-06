@@ -9,7 +9,7 @@ role never supplies shell text, an executable, or arguments.
 
 ## Typed checks and preventive boundary
 
-Only two check kinds are accepted:
+Only two check kinds are accepted. The pre-discovery registry below governs claim reconciliation; supplemental fix checks follow the separate execution rules under “Post-patch checks” and cannot resolve a split:
 
 - `SOURCE_SLICE_SHA256`: read the named line slice from the named pinned revision,
   normalize line endings to LF, hash the exact UTF-8 bytes with SHA-256, and return
@@ -52,7 +52,7 @@ is claimed; a required fix oracle that cannot run leaves verification `INCOMPLET
 
 For `SOURCE_SLICE_SHA256`, `frozen_test_id` is empty. For `FROZEN_TEST_REFERENCE`, path,
 line, and digest fields use the registry's frozen values or the schema's empty/zero
-sentinels. A role-emitted test ID absent from the pre-discovery registry is unexecutable.
+sentinels. A role-emitted test ID absent from the applicable frozen registry is unexecutable; only the original pre-discovery registry is eligible for dispute resolution.
 
 Only a pre-discovery `FROZEN_TEST_REFERENCE` whose frozen proposition hash exactly matches
 the disputed proposition may resolve a verifier split. A source digest cannot do so. Do not invent a
@@ -77,6 +77,48 @@ For each proposition return:
 - `TEST_WRITTEN_NOT_RUN`—a test exists but was not observed;
 - `TEST_OBSERVED`—the recorded test ran on the named revision;
 - `TEST_UNVALIDATED`—the test or its provenance cannot be checked.
+
+Execution status and assertion outcome are separate. A completed test whose exit/output
+contradicts its oracle is `COMPLETE` / `FAILED`. A timeout, output-limit stop, or capture
+failure after launch is `FAILED` / `UNRESOLVED`, with the executed arguments and available
+bounded diagnostics retained. A test that never launched is `FAILED` / `NOT_RUN`, with
+empty `executed_argv`. Neither interruption nor launch failure demonstrates a failed
+security assertion. `TEST_OBSERVED` records execution, not a passing assertion; a required
+check without a valid completed result leaves the fix oracle `UNAVAILABLE`.
+
+## Post-patch checks
+
+Before adding a check, the author or verifier identifies the source-supported concern
+and which fix, acceptance, or disposition decision its result could change. Use existing
+project tests and the finding's contract first. Check the reported defect on the base
+where feasible, patched secure behavior, required contract checks, relevant existing
+regressions, and credible bypasses or sibling paths sharing the affected control. State
+why reproduction or a relevant check could not run; static support is not an observed pass.
+
+Preserve the original finding, contract, test definitions, registry, and raw results.
+For a credible concern discovered after the original freeze, use a supplemental check:
+
+- The authorized test author or human registers the existing runner's exact argv, test
+  ID/hash, expected behavior/oracle, tool version, and pinned revision before execution.
+  Reuse the adapter's registry format and sandbox; verifier output cannot supply commands.
+- Freeze a separate registry and retain its digest independently before execution. Label
+  it and its results **supplemental, added after patch inspection** in the existing finding
+  record. All its routing entries must preserve `DISPUTED`; it never replaces the original
+  registry, repairs an original failed oracle, or settles a verifier disagreement.
+- Preserve base and patched observations, benign controls, and any infeasible or uncertain
+  cases. If an original test is wrong, retain it and explain the correction with a separately
+  identified test and result; do not rewrite history or count the old result as a pass.
+- Capture supplemental results before freezing Stage 2 so both independent verifiers see
+  the same identity-free evidence. Later evidence that changes acceptance requires a new
+  frozen packet under the existing cold-verification rules, not an edited retry packet.
+
+Verifiers assess whether a demonstrated bypass defeats the original contract or reveals
+an out-of-contract concern; the orchestrator does not make that judgment. Keep distinct
+findings on their own analysis path and link them rather than silently expanding scope.
+Passing supplemental checks supports only the paths observed. Stop when required checks
+and concrete concerns support the decision, or record the remaining gap and its effect
+on acceptance. Hypothetical variants alone do not require more rounds or artifacts; an
+execution budget ending is not evidence of closure.
 
 ## Class Coverage Check
 

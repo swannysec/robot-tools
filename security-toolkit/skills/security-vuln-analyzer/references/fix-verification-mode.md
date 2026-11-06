@@ -25,8 +25,8 @@ Before independent verification, freeze the Stage 2 normalized proposition as th
 
 1. Audit attribution: cite which change actually closes the original contract and separately label unrelated or defense-in-depth changes.
 2. Run the frozen exploit tests against the untouched base revision, then the patched revision. For each adversarial input class, record expected and actual behavior.
-3. Run the frozen benign/negative controls, sink-coverage check, and project regression suite. Record exact commands, tool versions, revision, exit status, bounded output, and test evidence state.
-4. Construct and test contract-supported variants from the canonical primitive-class enumeration. Unenumerated or uncertain members remain uncertainty, not passing evidence.
+3. Run the frozen benign/negative controls, sink-coverage check, and required project regression suite, including relevant existing regressions for the changed paths. Record exact commands, tool versions, revision, expected/actual behavior, exit status, bounded output, and test evidence state; distinguish an assertion failure from interrupted or unexecuted checks.
+4. Check credible bypasses and sibling paths supported by the affected control and canonical primitive-class enumeration. Reuse existing tests and follow the bounded supplemental-check procedure in [deterministic-validation.md](deterministic-validation.md). Preserve unenumerated, infeasible, or uncertain cases as gaps, not passing evidence.
 5. Run native and cross-provider cold verification under [cross-model-verification.md](cross-model-verification.md). Reconcile mechanically under [orchestrator-contract.md](orchestrator-contract.md); a missing cross-provider leg or mandatory stage is `INCOMPLETE`, never `NOT VERIFIED` or a same-family fallback.
 
 Use [deterministic-validation.md](deterministic-validation.md) for literal evidence states and the predeclared oracle. Runtime mechanics belong to [runtime-claude.md](runtime-claude.md) or [runtime-codex.md](runtime-codex.md).
@@ -46,6 +46,22 @@ Apply the following ordered rules mechanically, after normal schema, citation, r
 5. With shared `CROSS-MODEL VERIFIED` and a `SATISFIED` oracle: two `YES` recommendations map to `YES`; any pair consisting only of `YES` and `CONDITIONAL YES` with at least one `CONDITIONAL YES` maps to `CONDITIONAL YES`, preserving all conditional records for tracked human acceptance; two `INCONCLUSIVE` recommendations map to `NOT VERIFIED`; and one `INCONCLUSIVE` with a different recommendation maps to `DISPUTED`.
 
 No other combination is a closure recommendation: invalid or missing values are `MALFORMED` and, after retry, `INCOMPLETE`. A verifier must use `NO` for a demonstrated contract-supported bypass or failed gate and cite its evidence; it must not recommend `YES` where such evidence remains. The orchestrator does not decide whether prose demonstrates a bypass or whether conditions are persuasive. `YES` requires unanimous `YES` and the satisfied oracle; `CONDITIONAL YES` requires the satisfied oracle and the recorded conditions. `NO`, `DISPUTED`, `INCOMPLETE`, and `NOT VERIFIED` do not close the issue.
+
+Supplemental checks do not change the original oracle state or override these ordered
+rules. A verifier must recommend `NO` for a demonstrated contract-supported bypass even
+when the original suite passes. For an unresolved supplemental concern, use the existing
+`uncertainty` and closure fields to state whether it prevents acceptance: `YES` cannot hide
+an acceptance-relevant gap; `CONDITIONAL YES` requires explicit tracked conditions for human acceptance
+and a `SATISFIED` original oracle; otherwise use `INCONCLUSIVE`. Preserve a concern outside
+the original contract and its proposed disposition without claiming that contract tests
+settled it. The orchestrator retains both assessments and never chooses between them.
+
+Keep the original vulnerability's validity separate from this fix assertion: a shared
+`REFUTED` result here rejects the claimed fix; it does not make the original finding a
+false positive. Append the fix assessment to the existing finding/report record, with
+base/patched revisions, changes, original and supplemental checks, gaps, and next action.
+Record operational disposition and actual merge/release/deployment state only from
+attributed decisions or change evidence; closure recommendations do not establish them.
 
 `YES` and `CONDITIONAL YES` are recommendations for human closure only. They do not authorize an autonomous merge, issue closure, or disclosure action.
 

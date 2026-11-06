@@ -69,7 +69,7 @@ The input is normalized, identity-free claim material: proposition, evidence, co
 |---|---|
 | A mandatory discovery role, verifier stage, provider capability, schema, citation, or revision requirement is not `COMPLETE` | `INCOMPLETE`; never `CROSS-MODEL VERIFIED` |
 | Native and cross-provider verifiers both `CONFIRMED`, with required citations/revision checks passing | `CROSS-MODEL VERIFIED` |
-| Both `REFUTED`; both results contain non-empty counterevidence; and citation/revision checks pass | `REFUTED` (record as a false positive) |
+| Both `REFUTED`; both results contain non-empty counterevidence; and citation/revision checks pass | `REFUTED` (false positive for an analysis claim; a refuted fix assertion follows `fix-verification-mode.md` and does not invalidate the original finding) |
 | Results split and all complete discovery records normalize to exactly one unique `FROZEN_TEST_REFERENCE` whose pre-discovery registry digest, proposition hash, and lookup table all match | Dispatch the packaged computation-only adapter; route its literal result through the registry table |
 | Results split and checks/tables are absent, multiple, or conflicting | `DISPUTED`; execute none |
 | Split has only `SOURCE_SLICE_SHA256`, no check, an unavailable adapter, an unregistered or unexecutable test, or a non-resolving oracle | `DISPUTED` |

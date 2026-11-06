@@ -98,6 +98,11 @@ Skills activate automatically via trigger phrases:
 The analyzer carries role-scoped CVSS, EPSS, and KEV records and versioned fix contracts
 through its discovery schema into reports and fix handoffs. Missing data uses explicit
 unscored or unretrieved states; report rendering does not infer assessments from prose.
+Fix verification retains original tests and adds bounded, source-supported bypass or
+sibling-path checks through the existing runner/registry when they could change a fix or
+acceptance decision. Supplemental checks cannot replace the original oracle or settle a
+verifier split. Reports keep validity, operational disposition, and actual change state
+separate, and distinguish failed assertions from interrupted or unexecuted checks.
 
 - Claude Code or Codex/ChatGPT Desktop as the host harness
 - Both the Claude Code and Codex CLIs, authenticated and authorized for the repository, when cross-model verification is required

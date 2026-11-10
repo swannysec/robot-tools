@@ -49,7 +49,7 @@ Retry: run directory, stage name, and model choice (see "Stage retry")
 
 ## Stage retry
 
-Tell the user how to retry a stage: supply the preserved run directory, the stage name as recorded in provenance, and either "original model" or a named model. The retry reuses that stage's frozen packet unchanged, and every downstream stage is re-run; superseded artifacts stay in the run directory with their labels. A cross-provider leg retried on a model from the native provider remains `INCOMPLETE`.
+Tell the user how to retry a stage: supply the preserved run directory, the stage name as recorded in provenance, and either "original model" or a named model. The retry reuses that stage's frozen packet unchanged; every downstream stage is re-run with packets rebuilt from the replacement artifacts, and superseded artifacts stay in the run directory with their labels. A cross-provider leg retried on a model from the native provider remains `INCOMPLETE`.
 
 ## Decision brief
 

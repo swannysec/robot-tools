@@ -243,7 +243,10 @@ def command_h4(args: argparse.Namespace) -> dict[str, Any]:
                 errors.append(f"{where}: proposed_value_json is not JSON")
                 continue
             if update["field"] != "state":
-                if not any(values_by_record.get(ref, {}).get(update["field"]) == proposed for ref in update["record_refs"]):
+                if proposed is None or not any(
+                    update["field"] in values_by_record.get(ref, {}) and values_by_record[ref][update["field"]] == proposed
+                    for ref in update["record_refs"]
+                ):
                     errors.append(f"{where}: value does not match a cited verified record")
             elif proposed != "draft":
                 errors.append(f"{where}: the only state a draft may propose is draft")

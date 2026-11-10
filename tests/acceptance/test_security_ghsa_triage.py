@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import runpy
@@ -140,6 +141,17 @@ class ReadAdapterTest(Workspace):
         _, record = self.capture("base")
         self.assertEqual((record["raw"]["comments_status"], record["raw"]["comments_count_field"]), ("CAPTURED_INCOMPLETE", 2))
         self.assertEqual(record["advisory"]["comments"][0]["author_login"], "fixture-maintainer")
+
+    def test_comment_failure_keeps_the_capture(self):
+        (self.api / FETCH["Api"].fixture_name(f"repos/{REPO}/security-advisories/{IDS['base']}/comments")).write_text("not json", encoding="utf-8")
+        _, record = self.capture("base")
+        self.assertEqual(record["raw"]["comments_status"], "UNAVAILABLE")
+
+    def test_captures_never_share_a_run_directory(self):
+        first, _ = self.capture("base")
+        second, _ = self.capture("base")
+        self.assertNotEqual(first, second)
+        self.assertTrue((first / "advisory.raw.json").is_file() and (second / "advisory.raw.json").is_file())
 
     def test_run_root_inside_git_work_tree_is_refused(self):
         repo_dir = self.tmp / "work"
@@ -359,6 +371,27 @@ class WriteBackTest(Workspace):
         code, outcome = self.execute([self.item("W1", "set_state_draft", "draft", old="triage")], ["W1"])
         self.assertEqual((code, outcome["items"][0]["status"]), (7, "STOPPED_STATE_NOT_TRIAGE"))
 
+    def test_duplicate_item_ids_are_refused(self):
+        code, outcome = self.execute([self.item("W1", "set_cwe_ids", ["CWE-863"]), self.item("W1", "create_private_fork", "")], ["W1"])
+        self.assertEqual(code, 6)
+        self.assertIn("unique", outcome["refusal"])
+        self.assertNotIn("fixture_calls", outcome)
+
+    def test_null_or_unsupported_values_are_refused(self):
+        code, _ = self.execute([self.item("W1", "set_cvss_vector", None)], ["W1"])
+        self.assertEqual(code, 6)
+        no_vulns = dict(self.record)  # record has no vulnerabilities field at all
+        code, _ = self.execute([self.item("W1", "set_vulnerabilities", [], record=no_vulns)], ["W1"], record=no_vulns)
+        self.assertEqual(code, 6)
+
+    def test_unrelated_change_after_write_stops(self):
+        changed = dict(DATA["advisories"]["base"], severity="critical")  # someone else edits severity
+        write(self.api / self.advisory_name.replace(".json", "_2.json"), changed)
+        code, outcome = self.execute([self.item("W1", "set_cwe_ids", ["CWE-863"]), self.item("W2", "create_private_fork", "")], ["W1", "W2"])
+        self.assertEqual(code, 7)
+        self.assertEqual((outcome["items"][0]["status"], outcome["items"][0]["unexpected_changes"]), ("WRITTEN_THEN_CHANGED", ["severity"]))
+        self.assertEqual(len(outcome["items"]), 1)
+
     def test_change_since_capture_stops(self):
         write(self.api / self.advisory_name, dict(DATA["advisories"]["base"], updated_at="2026-02-01T00:00:00Z"))
         code, outcome = self.execute([self.item("W1", "set_cwe_ids", ["CWE-863"])], ["W1"])
@@ -432,6 +465,11 @@ class H4DraftTest(Workspace):
                                        [{"field": "severity", "proposed_value_json": '"high"', "record_refs": ["F-1"]},
                                         {"field": "cvss_vector_string", "proposed_value_json": '"CVSS:4.0/AV:N"', "record_refs": ["F-1"]}]))
         self.assertTrue(any("both severity and a CVSS vector" in e for e in out["errors"]))
+
+    def test_null_proposal_for_missing_field_is_rejected(self):
+        _, out = self.check(self.draft([{"text": "Thanks.", "record_refs": ["F-1"]}],
+                                       [{"field": "cvss_vector_string", "proposed_value_json": "null", "record_refs": ["F-1"]}]))
+        self.assertTrue(any("does not match a cited verified record" in e for e in out["errors"]))
 
     def test_injected_publish_and_unverified_value_are_rejected(self):
         _, out = self.check(self.draft([{"text": "Thanks.", "record_refs": ["F-1"]}],
@@ -545,12 +583,16 @@ class DedupTest(Workspace):
 
     def d4(self, name, verdict, status="COMPLETE"):
         return write(self.tmp / name, {"role_type": "dedup_d4", "status": status, "provider": name, "model": "fixture", "effort": "high",
-                                       "packet_revision": "fixture", "pair": {}, "verdict": verdict, "control_site_comparison": "",
+                                       "packet_revision": "fixture", "pair": dict(self.PAIR_FIELDS), "verdict": verdict, "control_site_comparison": "",
                                        "evidence": [], "counterevidence": [], "uncertainty": [], "declined_scope": []})
 
-    def computation(self, name, literal):
-        return write(self.tmp / name, {"status": "COMPLETE", "literal_check_result": literal})
+    def computation(self, name, literal, revision=None):
+        return write(self.tmp / name, {"status": "COMPLETE", "literal_check_result": literal, "check_kind": "FROZEN_TEST_REFERENCE",
+                                       "target_revision": revision or name, "proposition": "Y's test passes on X's fix",
+                                       "registry_sha256": "e" * 64})
 
+    PAIR_FIELDS = {"canonical_record_id": "F-X", "other_record_id": "F-Y", "canonical_ghsa_id": IDS["base"],
+                   "other_ghsa_id": IDS["variant"], "other_claim_id": "C1"}
     PAIR = ["--canonical-ghsa", IDS["base"], "--canonical-claim", "C1", "--canonical-record", "F-X",
             "--other-ghsa", IDS["variant"], "--other-claim", "C1", "--other-record", "F-Y"]
 
@@ -585,11 +627,11 @@ class DedupTest(Workspace):
 
     def m4(self, name, result="CONFIRMED"):
         return write(self.tmp / name, {"role_type": "dedup_m4", "status": "COMPLETE", "provider": "fixture", "model": "fixture",
-                                       "effort": "high", "packet_revision": "fixture", "pair": {}, "proposition": "p",
+                                       "effort": "high", "packet_revision": "fixture", "pair": dict(self.PAIR_FIELDS, other_record_id=f"{IDS['variant']}:C1"), "proposition": "p",
                                        "verification_result": result, "evidence": [], "counterevidence": [], "uncertainty": [], "declined_scope": []})
 
     def test_membership_routing(self):
-        m1 = write(self.tmp / "m1r.json", {"result": "PASSED"})
+        m1 = write(self.tmp / "m1r.json", {"result": "PASSED", "x_record_id": "F-X", "y_ghsa_id": IDS["variant"]})
         base, fix = self.computation("b.json", "PASSED"), self.computation("f.json", "PASSED")
         def route_m(providers, results=("CONFIRMED", "CONFIRMED"), m3=(base, fix)):
             args = ["route-m", "--m1", m1, "--m3-base", m3[0], "--m3-fix", m3[1], "--m4", self.m4("a.json", results[0]),
@@ -624,6 +666,48 @@ class DedupTest(Workspace):
         code, _, err = run("ghsa-dedup.py", "relate", "--relation", "RELATED", "--basis", "HUMAN", *bad, "--out", self.tmp / "rel.json")
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads((self.tmp / "rel.json").read_text(encoding="utf-8"))["human_decision"]["decision"], "CONFIRMED")
+
+    def test_d5_requires_distinct_paired_runs(self):
+        base = self.computation("b.json", "PASSED", revision="b" * 40)
+        split = (self.d4("n.json", "SAME_ROOT_CAUSE"), self.d4("c.json", "VARIANT"))
+        _, out = self.route(*split, d5=(base, base))  # the same base result twice is not a fix run
+        self.assertEqual(out["relation"], "UNRESOLVED")
+        other = write(self.tmp / "f.json", dict(json.loads(self.computation("f0.json", "PASSED", revision="f" * 40).read_text()), proposition="different"))
+        _, out = self.route(*split, d5=(base, other))
+        self.assertEqual(out["relation"], "UNRESOLVED")
+
+    def test_artifacts_must_answer_the_requested_pair(self):
+        wrong = write(self.tmp / "wrong.json", dict(json.loads(self.d4("w.json", "SAME_ROOT_CAUSE").read_text()),
+                                                    pair=dict(self.PAIR_FIELDS, other_claim_id="C2")))
+        code, out = self.route(self.d4("n.json", "SAME_ROOT_CAUSE"), wrong)
+        self.assertEqual((code, out["routing"]), (8, "FULL_ANALYSIS"))
+
+    def test_reanchor_finds_symbols_and_shared_sites(self):
+        repo = self.tmp / "target"
+        (repo / "src").mkdir(parents=True)
+        (repo / "src/loader.rs").write_text("fn helper() {}\n\npub fn open_workspace() {}\n", encoding="utf-8")
+        env = dict(os.environ, GIT_AUTHOR_NAME="f", GIT_AUTHOR_EMAIL="f@example.invalid", GIT_COMMITTER_NAME="f", GIT_COMMITTER_EMAIL="f@example.invalid")
+        for argv in (["git", "init", "-q"], ["git", "add", "."], ["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture"]):
+            subprocess.run(argv, cwd=repo, check=True, env=env)
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        anchors = write(self.tmp / "anchors.json", {"anchors": [
+            {"record_id": "F-X", "symbol": "loader::open_workspace", "path": "src/loader.rs", "revision": "old", "line": 3},
+            {"record_id": "F-Y", "symbol": "open_workspace", "path": "src/loader.rs", "revision": "old", "line": 9}]})
+        code, _, err = run("ghsa-dedup.py", "reanchor", "--anchors", anchors, "--checkout", repo, "--revision", head, "--out", self.tmp / "a.json")
+        self.assertEqual(code, 0, err)
+        result = json.loads((self.tmp / "a.json").read_text(encoding="utf-8"))
+        self.assertEqual([(a["status"], a["lines_at_common"]) for a in result["anchors"]], [("FOUND", [3]), ("MOVED", [3])])
+
+    def test_invalidation_is_sticky(self):
+        self.route(self.d4("n.json", "VARIANT"), self.d4("c.json", "VARIANT"))
+        relation = self.tmp / "relation.json"
+        data = json.loads(relation.read_text(encoding="utf-8"))
+        data["depends_on"]["other_body_sha256"] = "a" * 64
+        write(relation, data)
+        run("ghsa-dedup.py", "invalidate", "--relation", relation, "--current", write(self.tmp / "c1.json", {"other_body_sha256": "b" * 64}))
+        _, out, _ = run("ghsa-dedup.py", "invalidate", "--relation", relation, "--current", write(self.tmp / "c2.json", {"other_body_sha256": "a" * 64}))
+        self.assertTrue(json.loads(out)["invalidated"])
+        self.assertIn("other_body_sha256 changed", json.loads(out)["reasons"])
 
     def test_invalidation(self):
         self.route(self.d4("n.json", "VARIANT"), self.d4("c.json", "VARIANT"))

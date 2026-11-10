@@ -35,6 +35,16 @@ API_VERSION = "2022-11-28"
 WRITE_TOKEN_REF_ENV = "SVA_GHSA_WRITE_TOKEN_REF"
 GHSA_ID_PATTERN = re.compile(r"^GHSA(?:-[23456789cfghjmpqrvwx]{4}){3}$")
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$")
+# Top-level advisory fields each operation may change, besides updated_at (GitHub derives
+# severity and the CVSS fields from each other; verified live 2026-11-10).
+EXPECTED_EFFECTS = {
+    "set_state_draft": {"state", "submission"},
+    "set_cwe_ids": {"cwe_ids", "cwes"},
+    "set_cvss_vector": {"cvss_severities", "cvss", "severity"},
+    "set_severity": {"severity", "cvss_severities", "cvss"},
+    "set_vulnerabilities": {"vulnerabilities"},
+    "create_private_fork": {"private_fork"},
+}
 # operation -> (HTTP method, advisory field set by PATCH or "" for the fork endpoint)
 ALLOWED_OPERATIONS = {
     "set_state_draft": ("PATCH", "state"),
@@ -117,8 +127,11 @@ def validate_item(item: dict[str, Any], records: dict[str, dict[str, Any]]) -> N
     elif operation == "create_private_fork":
         if item.get("new_value") not in (None, ""):
             raise Refusal("private-fork creation takes no value")
-    elif not any(record.get("values", {}).get(field) == item.get("new_value") for record in cited):
-        raise Refusal(f"new value for {field} does not equal any cited verified record")
+    else:
+        if item.get("new_value") is None:
+            raise Refusal(f"a null value for {field} is never written; clearing a field is a human decision")
+        if not any(field in record.get("values", {}) and record["values"][field] == item.get("new_value") for record in cited):
+            raise Refusal(f"new value for {field} does not equal a value present in any cited verified record")
 
 
 class Gh:
@@ -201,6 +214,9 @@ def main() -> int:
         records = {r["record_id"]: r for r in records_file.get("records", []) if isinstance(r, dict) and "record_id" in r}
         approved = set(approvals.get("approved_items", []))
         items = plan.get("items", [])
+        item_ids = [item.get("item_id") if isinstance(item, dict) else None for item in items]
+        if any(not isinstance(item_id, str) or not item_id.strip() for item_id in item_ids) or len(set(item_ids)) != len(item_ids):
+            raise Refusal("every plan item needs a unique, non-empty item_id; approvals are per item")
         for item in items:
             validate_item(item, records)  # every item is checked before any write
         operations = {item["operation"] for item in items}
@@ -238,8 +254,11 @@ def main() -> int:
             else:
                 gh.call("POST", f"{advisory_path}/forks")
             after = gh.call("GET", advisory_path)
-            if text_digest(after.get("description") or "") != expected_body:
+            allowed = EXPECTED_EFFECTS[item["operation"]] | {"updated_at"}
+            unexpected = sorted(key for key in set(current) | set(after) if key not in allowed and current.get(key) != after.get(key))
+            if unexpected or text_digest(after.get("description") or "") != expected_body:
                 record["status"] = "WRITTEN_THEN_CHANGED"
+                record["unexpected_changes"] = unexpected
                 results.append(record)
                 exit_code = EXIT_STOPPED
                 break

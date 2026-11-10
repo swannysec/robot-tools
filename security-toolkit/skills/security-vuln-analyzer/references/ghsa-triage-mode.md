@@ -53,8 +53,8 @@ git work tree; the script refuses a run root inside one. Layout:
 
 ```text
 <run-root>/<OWNER>__<REPO>/
-  index/<timestamp>/        queue listings and the cross-advisory index (IDs, hashes, typed literals; never report text)
-  <GHSA-ID>/<run-id>/
+  index/<listing-id>/       queue listings and the cross-advisory index (IDs, hashes, typed literals; never report text)
+  <GHSA-ID>/<run-id>/       (timestamp plus a random suffix, unique per capture)
     intake/                 advisory.raw.json, comments.raw.json, intake-record.json, H1/H2 results and checks
     analysis/               the unchanged analysis-mode artifacts
     dedup/                  relation records for this advisory

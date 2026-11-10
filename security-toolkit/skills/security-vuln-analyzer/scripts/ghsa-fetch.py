@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import subprocess
 import sys
 import unicodedata
@@ -277,9 +278,12 @@ def capture_advisory(api: Api, repository: str, ghsa_id: str) -> tuple[dict[str,
     advisory, raw = api.get_json(f"repos/{repository}/security-advisories/{ghsa_id}")
     if not isinstance(advisory, dict) or advisory.get("ghsa_id") != ghsa_id or raw is None:
         raise FetchError("advisory response does not name the requested GHSA ID")
-    comments, comments_raw = api.get_json(
-        f"repos/{repository}/security-advisories/{ghsa_id}/comments", paginate=True, allow_missing=True
-    )
+    try:  # comments are optional evidence: any failure is recorded as UNAVAILABLE, not fatal
+        comments, comments_raw = api.get_json(
+            f"repos/{repository}/security-advisories/{ghsa_id}/comments", paginate=True, allow_missing=True
+        )
+    except FetchError:
+        comments, comments_raw = None, None
     if isinstance(comments, list) and comments and all(isinstance(page, list) for page in comments):
         comments = [item for page in comments for item in page]
     if comments is not None and not isinstance(comments, list):
@@ -303,7 +307,7 @@ def command_advisory(args: argparse.Namespace, api: Api) -> dict[str, Any]:
     retrieved = utc_now()
     advisory, raw, comments, comments_raw = capture_advisory(api, repository, ghsa_id)
     pinned = pin_revision(api, repository, args.revision, args.tag)
-    run_id = retrieved.replace(":", "").replace("-", "")
+    run_id = retrieved.replace(":", "").replace("-", "") + "-" + secrets.token_hex(4)  # unique per capture
     intake_dir = restricted_dir(repo_dir(run_root, repository) / ghsa_id / run_id / "intake")
     write_private(intake_dir / "advisory.raw.json", raw)
     if comments_raw is not None:
@@ -340,7 +344,8 @@ def command_queue(args: argparse.Namespace, api: Api) -> dict[str, Any]:
     run_root = ensure_run_root(Path(args.run_root))
     retrieved = utc_now()
     states = STATES if args.state == "all" else (args.state,)
-    listing_dir = restricted_dir(repo_dir(run_root, repository) / "index" / retrieved.replace(":", "").replace("-", ""))
+    listing_id = retrieved.replace(":", "").replace("-", "") + "-" + secrets.token_hex(4)  # unique per listing
+    listing_dir = restricted_dir(repo_dir(run_root, repository) / "index" / listing_id)
     entries = []
     listing_digests: dict[str, str] = {}
     for state in states:

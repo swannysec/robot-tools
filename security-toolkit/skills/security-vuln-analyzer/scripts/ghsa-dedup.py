@@ -199,7 +199,7 @@ def command_reanchor(args: argparse.Namespace) -> dict[str, Any]:
         symbol, path = item["symbol"], item["path"]
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_:.]{0,199}", symbol) or ".." in path.split("/") or path.startswith("/"):
             raise UsageError("anchor symbol or path is malformed")
-        found = subprocess.run(["git", "-C", str(checkout), "grep", "-n", "-F", "-w", "-e", symbol.split("::")[-1], "--", path],
+        found = subprocess.run(["git", "-C", str(checkout), "grep", "-h", "-n", "-F", "-w", "-e", symbol.split("::")[-1], "--", path],
                                check=False, stdout=subprocess.PIPE, text=True, timeout=30)
         lines = [int(line.split(":", 1)[0]) for line in found.stdout.splitlines() if line.split(":", 1)[0].isdigit()]
         status = "NOT_FOUND" if not lines else "FOUND" if item.get("line") in lines else "MOVED"
@@ -315,8 +315,21 @@ def command_m1(args: argparse.Namespace) -> dict[str, Any]:
 
 # ---------- routing and relation records ----------
 
-def d4_record(path: str) -> tuple[str, dict[str, Any]]:
+def pair_matches(data: dict[str, Any], args: argparse.Namespace, *, membership: bool = False) -> bool:
+    """The artifact must answer exactly the requested pair; M4's other record is a claim reference."""
+    raw = data.get("pair")
+    pair: dict[str, Any] = raw if isinstance(raw, dict) else {}
+    expected = {"canonical_record_id": args.canonical_record, "canonical_ghsa_id": args.canonical_ghsa,
+                "other_ghsa_id": args.other_ghsa, "other_claim_id": args.other_claim}
+    if not membership:
+        expected["other_record_id"] = args.other_record
+    return all(pair.get(key) == value for key, value in expected.items())
+
+
+def d4_record(path: str, args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     data = load(path)
+    if not pair_matches(data, args):
+        return "NON_COMPLETE", data
     status = data.get("status")
     if data.get("declined_scope"):
         status = "REFUSED"
@@ -332,20 +345,26 @@ def d5_result(base_path: str | None, fix_path: str | None) -> str:
     The base entry's frozen oracle expects the failing exit status, so its literal result
     PASSED means the test failed as expected on base. The fix entry expects success.
     PASSED: failed as expected on base and passed on the fix. FAILED: failed as expected on
-    base and still fails on the fix. Anything else is no result.
+    base and still fails on the fix. Anything else is no result. The two results must be
+    frozen-test runs of the same proposition from the same registry on two different
+    revisions; otherwise there is no result.
     """
     if not base_path or not fix_path:
         return "NONE"
-    results = []
-    for path in (base_path, fix_path):
-        item = load(path)
+    items = [load(path) for path in (base_path, fix_path)]
+    for item in items:
         if item.get("status") != "COMPLETE" or item.get("literal_check_result") not in ("PASSED", "FAILED"):
             return "NONE"
-        results.append(item["literal_check_result"])
-    if results[0] != "PASSED":
+        if item.get("check_kind") != "FROZEN_TEST_REFERENCE":
+            return "NONE"
+    base, fix = items
+    if (not base.get("target_revision") or base.get("target_revision") == fix.get("target_revision")
+            or base.get("proposition") != fix.get("proposition") or not base.get("proposition")
+            or base.get("registry_sha256") != fix.get("registry_sha256") or not base.get("registry_sha256")):
         return "NONE"
-    return "PASSED" if results[1] == "PASSED" else "FAILED"
-
+    if base["literal_check_result"] != "PASSED":
+        return "NONE"
+    return "PASSED" if fix["literal_check_result"] == "PASSED" else "FAILED"
 
 def route_d4_relation(native: str, cross: str, d5: str) -> str | None:
     if "NON_COMPLETE" in (native, cross):
@@ -391,8 +410,8 @@ def command_route_d4(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     if not distinct_providers(args.native_provider, args.cross_provider):
         return {"status": "COMPLETE", "routing": "FULL_ANALYSIS",
                 "reason": "D4 legs are not from two different providers (runtime metadata); no relation recorded"}, EXIT_ROUTED_ELSEWHERE
-    native, native_data = d4_record(args.d4_native)
-    cross, cross_data = d4_record(args.d4_cross)
+    native, native_data = d4_record(args.d4_native, args)
+    cross, cross_data = d4_record(args.d4_cross, args)
     d5 = d5_result(args.d5_base, args.d5_fix)
     relation = route_d4_relation(native, cross, d5)
     if relation is None:
@@ -408,7 +427,9 @@ def command_route_d4(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
 
 
 def command_route_m(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
-    m1 = load(args.m1).get("result")
+    m1_data = load(args.m1)
+    m1_matches = m1_data.get("x_record_id") == args.canonical_record and m1_data.get("y_ghsa_id") == args.other_ghsa
+    m1 = m1_data.get("result") if m1_matches else "NOT_RUN"
     m3 = d5_result(args.m3_base, args.m3_fix)
     providers = args.m4_provider or []
     if len(args.m4) != 2 or len(providers) != 2 or not distinct_providers(providers[0], providers[1]):
@@ -417,7 +438,7 @@ def command_route_m(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     m4 = []
     for path in args.m4:
         data = load(path)
-        ok = data.get("status") == "COMPLETE" and not data.get("declined_scope")
+        ok = data.get("status") == "COMPLETE" and not data.get("declined_scope") and pair_matches(data, args, membership=True)
         m4.append(data.get("verification_result") if ok else "NON_COMPLETE")
     covered = m1 == "PASSED" and m3 == "PASSED" and len(m4) == 2 and all(v == "CONFIRMED" for v in m4)
     membership = {"m1": m1 if m1 in ("PASSED", "FAILED") else "NOT_RUN", "m3": m3 if m3 in ("PASSED", "FAILED") else "NOT_RUN", "m4": m4}
@@ -442,9 +463,12 @@ def command_invalidate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             reasons.append(f"{key} changed")
     if current.get("canonical_final_status") not in (None, "CROSS-MODEL VERIFIED") and relation.get("basis") == "MEMBERSHIP":
         reasons.append("canonical final status changed")
-    relation["invalidated"] = {"is_invalidated": bool(reasons), "reasons": reasons}
+    previous = relation.get("invalidated", {}) if isinstance(relation.get("invalidated"), dict) else {}
+    kept = [reason for reason in previous.get("reasons", []) if reason not in reasons]
+    # An invalidated relation stays invalidated until regenerated from fresh artifacts.
+    relation["invalidated"] = {"is_invalidated": bool(previous.get("is_invalidated")) or bool(reasons), "reasons": kept + reasons}
     dump(args.out or args.relation, relation)
-    return {"status": "COMPLETE", "invalidated": bool(reasons), "reasons": reasons}, EXIT_OK
+    return {"status": "COMPLETE", "invalidated": relation["invalidated"]["is_invalidated"], "reasons": relation["invalidated"]["reasons"]}, EXIT_OK
 
 
 def command_relate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:

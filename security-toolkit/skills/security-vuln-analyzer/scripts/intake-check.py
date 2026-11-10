@@ -248,6 +248,9 @@ def command_h4(args: argparse.Namespace) -> dict[str, Any]:
             elif proposed != "draft":
                 errors.append(f"{where}: the only state a draft may propose is draft")
             scan(update["proposed_value_json"], where)
+        proposed_fields = {update["field"] for update in result["field_updates"]}
+        if {"severity", "cvss_vector_string"} <= proposed_fields:
+            errors.append("draft proposes both severity and a CVSS vector; GitHub derives severity from the vector")
         for draft in result["comment_drafts"]:
             for index, statement in enumerate(draft["statements"]):
                 where = f"{draft['draft_id']}.statements[{index}]"

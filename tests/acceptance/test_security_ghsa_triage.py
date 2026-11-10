@@ -301,7 +301,7 @@ class WriteBackTest(Workspace):
             self.assertNotIn("fixture_calls", outcome)
 
     def test_allowlist_is_exact(self):
-        self.assertEqual(set(WRITEBACK["ALLOWED_OPERATIONS"]), {"set_state_draft", "set_cwe_ids", "set_cvss_vector", "set_vulnerabilities", "create_private_fork"})
+        self.assertEqual(set(WRITEBACK["ALLOWED_OPERATIONS"]), {"set_state_draft", "set_cwe_ids", "set_cvss_vector", "set_severity", "set_vulnerabilities", "create_private_fork"})
         for operation, new in (("set_state_published", "published"), ("set_state_draft", "published")):
             code, _ = self.execute([self.item("W1", operation, new, old="triage")], ["W1"])
             self.assertEqual(code, 6)
@@ -325,6 +325,33 @@ class WriteBackTest(Workspace):
         permitted = dict(fallback, fallback_use_permitted=True)
         code, _ = self.execute([self.item("W1", "set_cwe_ids", ["CWE-863"], record=permitted)], ["W1"], record=permitted)
         self.assertEqual(code, 0)
+
+    def severity_record(self, **values):
+        return {"record_id": "F-S", "final_status": "CROSS-MODEL VERIFIED", "fallback_model": False, "values": values}
+
+    def test_severity_write_without_cvss_vector(self):
+        unscored = json.loads(json.dumps(DATA["advisories"]["base"]))
+        unscored["cvss_severities"]["cvss_v4"] = {"vector_string": None, "score": None}
+        write(self.api / self.advisory_name, unscored)
+        record = self.severity_record(severity="medium")
+        code, outcome = self.execute([self.item("W1", "set_severity", "medium", record=record)], ["W1"], record=record)
+        self.assertEqual((code, outcome["items"][0]["status"]), (0, "WRITTEN"))
+        self.assertEqual([c["body"] for c in outcome["fixture_calls"] if c["method"] == "PATCH"], [{"severity": "medium"}])
+
+    def test_severity_never_clears_a_cvss_vector(self):
+        record = self.severity_record(severity="medium")  # base fixture advisory carries a CVSS v4 vector
+        code, outcome = self.execute([self.item("W1", "set_severity", "medium", record=record)], ["W1"], record=record)
+        self.assertEqual((code, outcome["items"][0]["status"]), (7, "STOPPED_WOULD_CLEAR_CVSS"))
+        self.assertFalse([c for c in outcome["fixture_calls"] if c["method"] != "GET"])
+        vector = self.record["values"]["cvss_vector_string"]
+        both = self.severity_record(severity="medium", cvss_vector_string=vector)
+        code, outcome = self.execute([self.item("W1", "set_cvss_vector", vector, record=both),
+                                      self.item("W2", "set_severity", "medium", record=both)], ["W1", "W2"], record=both)
+        self.assertEqual(code, 6)
+        self.assertIn("both severity and a CVSS vector", outcome["refusal"])
+        bad = self.severity_record(severity="urgent")
+        code, _ = self.execute([self.item("W1", "set_severity", "urgent", record=bad)], ["W1"], record=bad)
+        self.assertEqual(code, 6)
 
     def test_accept_to_draft_requires_current_triage_state(self):
         drafted = dict(DATA["advisories"]["base"], state="draft")
@@ -399,6 +426,12 @@ class H4DraftTest(Workspace):
     def test_other_unpublished_advisory_id_is_rejected(self):
         _, out = self.check(self.draft([{"text": f"Same as {IDS['unpublished_other']}.", "record_refs": ["F-1"]}]))
         self.assertTrue(any("unpublished" in e for e in out["errors"]))
+
+    def test_draft_proposing_severity_and_cvss_is_rejected(self):
+        _, out = self.check(self.draft([{"text": "Thanks.", "record_refs": ["F-1"]}],
+                                       [{"field": "severity", "proposed_value_json": '"high"', "record_refs": ["F-1"]},
+                                        {"field": "cvss_vector_string", "proposed_value_json": '"CVSS:4.0/AV:N"', "record_refs": ["F-1"]}]))
+        self.assertTrue(any("both severity and a CVSS vector" in e for e in out["errors"]))
 
     def test_injected_publish_and_unverified_value_are_rejected(self):
         _, out = self.check(self.draft([{"text": "Thanks.", "record_refs": ["F-1"]}],

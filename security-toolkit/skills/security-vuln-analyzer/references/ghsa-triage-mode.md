@@ -154,7 +154,11 @@ user whether to proceed to write-back, using a decision brief. If the user agree
    capture, and records each result.
 
 Allowed operations: accept a triage advisory to draft (`PATCH state=draft`); update
-`cwe_ids`, `cvss_vector_string`, or `vulnerabilities`; create the temporary private fork.
+`cwe_ids`, `cvss_vector_string`, `severity`, or `vulnerabilities`; create the temporary
+private fork. GitHub derives `severity` from a CVSS vector and clears the vector when
+`severity` is set, so propose `severity` only when the verified record has no CVSS vector:
+the writer refuses a plan that sets both and stops a severity write when the advisory
+already has a vector (including a reporter's), which would otherwise be erased.
 Never automated, and refused by the script: publish, close, CVE request, collaborator
 changes, credit changes, and posting comments. Reporter comments are drafts only; a human
 posts them.
@@ -165,9 +169,9 @@ explicitly permits that use for that result ([orchestrator-contract.md](orchestr
 **Live behavior (verified 2026-11-10 on a maintainer-created draft advisory):**
 
 - `cwe_ids`, `cvss_vector_string`, and `vulnerabilities` updates apply as sent. A CVSS 4.0
-  vector is accepted even when the advisory already has a `severity`; GitHub stores it in
-  `cvss_severities.cvss_v4` with a computed score and leaves `severity` unchanged. Write-back
-  does not touch `severity`, so a reporter-chosen severity stays until a human edits it.
+  vector is stored in `cvss_severities.cvss_v4` with a computed score, and GitHub sets
+  `severity` from that score (a 9.3 vector changed `severity` to `critical`). Setting
+  `severity` directly cleared the CVSS v4 vector and score.
 - Private-fork creation returned at once and the advisory's `private_fork` named a private
   repository `<repo>-ghsa-<id>`; GitHub documents that the fork may take up to five minutes
   to become usable.
@@ -204,7 +208,7 @@ they are recorded as proposed, never applied automatically.
 
 | Final status | Proposed action |
 |---|---|
-| `CROSS-MODEL VERIFIED` | Accept to draft; propose CWE, CVSS, and affected versions from the verified records |
+| `CROSS-MODEL VERIFIED` | Accept to draft; propose CWE, CVSS (which sets severity), and affected versions from the verified records; propose severity only when no CVSS vector was scored |
 | `REFUTED` | Draft a reporter comment explaining the refutation with citations; closing stays manual |
 | `DISPUTED` | No write; present the dispute packet for human review |
 | `NOT VERIFIED` | No write; request evidence or schedule deeper review |

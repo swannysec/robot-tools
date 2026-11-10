@@ -2,9 +2,12 @@
 """Execute a hashed, per-item human-approved GHSA write plan.
 
 Allowed operations only: accept a triage advisory to draft, update `cwe_ids`,
-`cvss_vector_string`, or `vulnerabilities`, and create the temporary private fork.
+`cvss_vector_string`, `severity`, or `vulnerabilities`, and create the temporary private fork.
 Publish, close, CVE requests, collaborator and credit changes, and comment posting are
 refused. Every value must equal a verified report record whose digest the plan names.
+GitHub derives `severity` from a CVSS vector and clears the vector when `severity` is set
+(verified 2026-11-10), so a severity update is refused alongside a CVSS update and stopped
+when the live advisory already has a CVSS vector.
 Before each write the advisory is re-fetched; any change since capture stops the run.
 
 The write token is read only here, through `op read "$SVA_GHSA_WRITE_TOKEN_REF"` (a
@@ -37,6 +40,7 @@ ALLOWED_OPERATIONS = {
     "set_state_draft": ("PATCH", "state"),
     "set_cwe_ids": ("PATCH", "cwe_ids"),
     "set_cvss_vector": ("PATCH", "cvss_vector_string"),
+    "set_severity": ("PATCH", "severity"),
     "set_vulnerabilities": ("PATCH", "vulnerabilities"),
     "create_private_fork": ("POST", ""),
 }
@@ -48,6 +52,7 @@ FORBIDDEN_OPERATIONS = {
     "set_credits": "credit changes are a human decision",
     "post_comment": "reporter comments are drafts; a human posts them",
 }
+SEVERITIES = ("critical", "high", "medium", "low")
 EXIT_OK = 0
 EXIT_USAGE = 2
 EXIT_REFUSED = 6
@@ -107,6 +112,8 @@ def validate_item(item: dict[str, Any], records: dict[str, dict[str, Any]]) -> N
             raise Refusal("the only state this script sets is draft")
         if item.get("old_value") != "triage":
             raise Refusal("accept-to-draft applies only to a triage advisory")
+    elif operation == "set_severity" and item.get("new_value") not in SEVERITIES:
+        raise Refusal("severity must be critical, high, medium, or low")
     elif operation == "create_private_fork":
         if item.get("new_value") not in (None, ""):
             raise Refusal("private-fork creation takes no value")
@@ -144,6 +151,17 @@ class Gh:
         if process.returncode != 0:
             raise RuntimeError(f"{method} {path} failed: {process.stderr.decode('utf-8', errors='replace').strip()[-300:]}")
         return json.loads(process.stdout.decode("utf-8") or "{}")
+
+
+def has_cvss_vector(advisory: dict[str, Any]) -> bool:
+    raw = advisory.get("cvss_severities")
+    severities: dict[str, Any] = raw if isinstance(raw, dict) else {}
+    for version in ("cvss_v3", "cvss_v4"):
+        entry = severities.get(version)
+        if isinstance(entry, dict) and entry.get("vector_string"):
+            return True
+    legacy = advisory.get("cvss")
+    return isinstance(legacy, dict) and bool(legacy.get("vector_string"))
 
 
 def read_token() -> str:
@@ -185,6 +203,9 @@ def main() -> int:
         items = plan.get("items", [])
         for item in items:
             validate_item(item, records)  # every item is checked before any write
+        operations = {item["operation"] for item in items}
+        if {"set_severity", "set_cvss_vector"} <= operations:
+            raise Refusal("a plan may not set both severity and a CVSS vector; GitHub derives severity from the vector")
         captured = plan.get("captured", {})
         expected_updated, expected_body = captured.get("updated_at"), captured.get("body_sha256")
         gh = Gh(args.api_fixtures, "" if args.api_fixtures else read_token())
@@ -203,6 +224,11 @@ def main() -> int:
                 break
             if item["operation"] == "set_state_draft" and current.get("state") != "triage":
                 record["status"] = "STOPPED_STATE_NOT_TRIAGE"
+                results.append(record)
+                exit_code = EXIT_STOPPED
+                break
+            if item["operation"] == "set_severity" and has_cvss_vector(current):
+                record["status"] = "STOPPED_WOULD_CLEAR_CVSS"
                 results.append(record)
                 exit_code = EXIT_STOPPED
                 break

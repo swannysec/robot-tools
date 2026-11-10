@@ -65,6 +65,7 @@
               "state",
               "cwe_ids",
               "cvss_vector_string",
+              "severity",
               "vulnerabilities"
             ]
           },

@@ -222,7 +222,7 @@ Canonical rule or override reason; human decision; invalidation state and reason
 ```text
 Write plan — plan SHA-256, advisory, items (operation, old value, new value, supporting record IDs and digests):
 Approvals — per item, approved at, through the harness question prompt:
-Results — per item: WRITTEN | NOT_APPROVED | STOPPED_CHANGED_SINCE_CAPTURE | STOPPED_STATE_NOT_TRIAGE | refused (reason):
+Results — per item: WRITTEN | NOT_APPROVED | STOPPED_CHANGED_SINCE_CAPTURE | STOPPED_STATE_NOT_TRIAGE | STOPPED_WOULD_CLEAR_CVSS | refused (reason):
 Comment drafts — draft IDs, records mentioned, highlighted wording; posted by a human: yes | no:
 ```
 

@@ -7,7 +7,9 @@ description: Independent, cold-artifact verification of a candidate or shipped f
 
 Use this mode to test whether a named fix closes a confirmed finding's frozen Invariant + Adversarial Test Contract. It is disproof-biased: the question is “what input defeats this fix?”, not “does this patch resemble the recommendation?” The fix author never verifies its own work.
 
-Use High effort for both verifier stages. In Claude Code, dispatch `claude-opus-5-5` natively and `gpt-6.1-sol` cross-provider; in Codex/ChatGPT, dispatch `gpt-6.1-sol` natively and `claude-opus-5-5` cross-provider. Any discovery needed to reconstruct a missing contract uses the host's native model at High effort.
+Use High effort for both verifier stages, with the host-adaptive selection in `SKILL.md` and the runtime guide: the native verifier uses the host's analysis-tier model, and the cross-provider verifier uses the other provider's default or the `--cross-model` override. Any discovery needed to reconstruct a missing contract uses the host's analysis-tier model at High effort.
+
+Every packet in this mode carries the `--develop-fix` / `--verify-fix` authorization statement from [orchestrator-contract.md](orchestrator-contract.md), after the repository authorization check passes. The execution prohibition there applies: the only permitted execution is the frozen adversarial-input regression tests, benign controls, regression suite, coverage, and mutation checks run by the packaged adapter in the sandbox; never execute, compile, adapt, or register reporter-supplied proof-of-concept code, payloads, or exploit scripts.
 
 ## Invocation, fresh-session bootstrap, and preflight
 
@@ -24,7 +26,7 @@ Before independent verification, freeze the Stage 2 normalized proposition as th
 ## Procedure
 
 1. Audit attribution: cite which change actually closes the original contract and separately label unrelated or defense-in-depth changes.
-2. Run the frozen exploit tests against the untouched base revision, then the patched revision. For each adversarial input class, record expected and actual behavior.
+2. Run the frozen adversarial-input regression tests against the untouched base revision, then the patched revision. For each adversarial input class, record expected and actual behavior.
 3. Run the frozen benign/negative controls, sink-coverage check, and required project regression suite, including relevant existing regressions for the changed paths. Record exact commands, tool versions, revision, expected/actual behavior, exit status, bounded output, and test evidence state; distinguish an assertion failure from interrupted or unexecuted checks.
 4. Check credible bypasses and sibling paths supported by the affected control and canonical primitive-class enumeration. Reuse existing tests and follow the bounded supplemental-check procedure in [deterministic-validation.md](deterministic-validation.md). Preserve unenumerated, infeasible, or uncertain cases as gaps, not passing evidence.
 5. Run native and cross-provider cold verification under [cross-model-verification.md](cross-model-verification.md). Reconcile mechanically under [orchestrator-contract.md](orchestrator-contract.md); a missing cross-provider leg or mandatory stage is `INCOMPLETE`, never `NOT VERIFIED` or a same-family fallback.

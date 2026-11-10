@@ -41,20 +41,24 @@ SECURITY_VULN_ANALYZER_FIXTURES = FIXTURES / "security-vuln-analyzer"
 SECURITY_VULN_ANALYZER_ADAPTER = (
     SECURITY_VULN_ANALYZER_DIR / "scripts" / "deterministic-check.py"
 )
+SECURITY_VULN_ANALYZER_AUTHORIZATION = (
+    SECURITY_VULN_ANALYZER_DIR / "scripts" / "repo-authorization.py"
+)
 SECURITY_VULN_ANALYZER_SCHEMAS = {
     "discovery-result.schema.json": {
         "role_type", "status", "provider", "model", "effort", "packet_revision",
-        "pinned_revisions", "scope", "evidence", "counterevidence", "candidates",
+        "pinned_revisions", "scope", "evidence", "counterevidence", "candidates", "declined_scope",
     },
     "verifier-stage1-result.schema.json": {
         "role_type", "status", "provider", "model", "effort", "packet_revision",
         "pinned_revisions", "scope", "locations", "observations", "evidence", "counterevidence",
+        "declined_scope",
     },
     "verifier-stage2-result.schema.json": {
         "role_type", "status", "provider", "model", "effort", "packet_revision",
         "pinned_revisions", "candidate_id", "normalized_proposition", "verification_result",
         "affected_gates", "evidence", "counterevidence", "remaining_assumptions", "uncertainty",
-        "check_evidence",
+        "check_evidence", "declined_scope",
     },
     "computation-result.schema.json": {
         "role_type", "status", "adapter", "adapter_version", "packet_revision", "candidate_id",
@@ -1604,6 +1608,8 @@ def security_verifier_post_schema_errors(payload: Mapping[str, Any], *, fix_mode
         return []
 
     errors: list[str] = []
+    if payload.get("declined_scope"):
+        errors.append("complete result declined part of its assigned scope")
     role_type = payload.get("role_type")
     affected_gates = payload.get("affected_gates")
     if role_type == "verifier_stage1":
@@ -1657,6 +1663,40 @@ def security_verifier_post_schema_errors(payload: Mapping[str, Any], *, fix_mode
             )):
                 errors.append("closure condition has a blank field")
     return errors
+
+
+def security_effective_role_status(payload: Mapping[str, Any]) -> str:
+    """Classify completeness and refusal mechanically; never weigh the content."""
+    if payload.get("declined_scope"):
+        return "REFUSED"
+    if payload.get("status") != "COMPLETE":
+        return str(payload.get("status"))
+    return "MALFORMED" if security_verifier_post_schema_errors(payload) else "COMPLETE"
+
+
+def security_attempt_outcome(attempts: Any) -> tuple[str, bool]:
+    """Apply the single shared retry budget to MALFORMED, FAILED, and REFUSED attempts."""
+    retryable = {"MALFORMED", "FAILED", "REFUSED"}
+    if not isinstance(attempts, list) or not 1 <= len(attempts) <= 2:
+        return "INCOMPLETE", False
+    if attempts[0] == "COMPLETE":
+        return ("COMPLETE", False) if len(attempts) == 1 else ("INCOMPLETE", False)
+    if attempts[0] not in retryable or len(attempts) != 2:
+        return "INCOMPLETE", attempts[-1] == "REFUSED"
+    if attempts[1] == "COMPLETE":
+        return "COMPLETE", False
+    return "INCOMPLETE", attempts[1] == "REFUSED"
+
+
+def security_fallback_routing(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Label a reported model change; only a native-provider cross leg becomes INCOMPLETE."""
+    fell_back = record.get("actual_model") != record.get("requested_model")
+    native_cross = record.get("leg") == "cross_provider" and record.get("actual_provider") == record.get("native_provider")
+    return {
+        "final_status": "INCOMPLETE" if native_cross else "COMPUTED",
+        "label": "fallback model" if fell_back else "",
+        "canonical_eligible": (not fell_back) or (record.get("user_permission") is True and not native_cross),
+    }
 
 
 def security_split_routing_result(payload: Mapping[str, Any]) -> str:
@@ -1838,6 +1878,37 @@ def security_routing_fixture_errors(payload: Mapping[str, Any]) -> list[str]:
         case["adapter_result"].update(routing_table=conflicting, registry_sha256=digest)
         if security_split_routing_result(case) != "DISPUTED":
             errors.append("split verdict accepted conflicting duplicate routing rows")
+
+    refusal_cases = payload.get("refusal_and_fallback_cases")
+    if not isinstance(refusal_cases, Mapping):
+        errors.append("missing refusal and fallback fixtures")
+    else:
+        for name in ("refused_then_complete", "refused_twice", "malformed_then_refused"):
+            case = refusal_cases.get(name)
+            if not isinstance(case, Mapping) or security_attempt_outcome(case.get("attempts")) != (
+                case.get("expected_role_status"), case.get("expected_refusal_flag")
+            ):
+                errors.append(f"refusal retry fixture routes incorrectly: {name}")
+        declined = refusal_cases.get("declined_scope_result")
+        if not isinstance(declined, Mapping) or security_effective_role_status(declined.get("payload", {})) != declined.get(
+            "expected_effective_status"
+        ):
+            errors.append("non-empty declined_scope did not make the result REFUSED")
+        for name in (
+            "cross_provider_native_fallback", "native_classifier_fallback", "native_classifier_fallback_permitted",
+            "cross_provider_reroute_same_provider", "no_fallback",
+        ):
+            case = refusal_cases.get(name)
+            if not isinstance(case, Mapping):
+                errors.append(f"missing fallback fixture: {name}")
+                continue
+            routed = security_fallback_routing(case)
+            if routed != {
+                "final_status": case.get("expected_final_status"),
+                "label": case.get("expected_label"),
+                "canonical_eligible": case.get("expected_canonical_eligible"),
+            }:
+                errors.append(f"fallback fixture routes incorrectly: {name}")
 
     note_cases = payload.get("non_security_note_cases")
     if not isinstance(note_cases, Mapping):
@@ -2098,6 +2169,34 @@ def portable_security_vuln_analyzer_case(workspace: Path) -> dict[str, Any]:
         raise AssertionError("security-vuln-analyzer legacy or routing behavior does not fail closed")
     if "security-role-result.schema.json" in skill_text:
         raise AssertionError("security-vuln-analyzer still routes roles through the legacy shared schema")
+
+    if not SECURITY_VULN_ANALYZER_AUTHORIZATION.is_file():
+        raise AssertionError("security-vuln-analyzer authorization check is missing")
+    for response_name, expected_exit, expected_basis, expected_check in (
+        ("repo-permission-push.json", 0, "push", ""),
+        ("repo-permission-pull.json", 4, "", "repository_permission"),
+    ):
+        process = subprocess.run(
+            [sys.executable, "-I", str(SECURITY_VULN_ANALYZER_AUTHORIZATION), "--repo", "example-owner/example-repo",
+             "--response-json", str(SECURITY_VULN_ANALYZER_FIXTURES / response_name)],
+            check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30,
+        )
+        outcome = json.loads(process.stdout or "{}")
+        if (
+            process.returncode != expected_exit
+            or outcome.get("authorized") is not (expected_exit == 0)
+            or outcome.get("basis") != expected_basis
+            or outcome.get("failed_check") != expected_check
+            or not outcome.get("reason")
+        ):
+            raise AssertionError(f"security-vuln-analyzer authorization check misrouted {response_name}: {outcome!r}")
+    process = subprocess.run(
+        [sys.executable, "-I", str(SECURITY_VULN_ANALYZER_AUTHORIZATION), "--repo", "other-owner/example-repo",
+         "--response-json", str(SECURITY_VULN_ANALYZER_FIXTURES / "repo-permission-push.json")],
+        check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30,
+    )
+    if process.returncode != 4 or json.loads(process.stdout or "{}").get("failed_check") != "repository_identity":
+        raise AssertionError("security-vuln-analyzer authorization check accepted a response for another repository")
 
     if not SECURITY_VULN_ANALYZER_ADAPTER.is_file():
         raise AssertionError("security-vuln-analyzer deterministic adapter is missing")
@@ -4257,6 +4356,7 @@ def hplumb_case(workspace: Path) -> dict[str, Any]:
             Path("references/runtime-claude.md"), Path("references/runtime-codex.md"),
             Path("references/orchestrator-contract.md"), Path("references/discovery-contract.md"),
             Path("references/cross-model-verification.md"),
+            Path("scripts/deterministic-check.py"), Path("scripts/repo-authorization.py"),
             *{Path("schemas") / filename for filename in SECURITY_VULN_ANALYZER_SCHEMAS},
         },
     }

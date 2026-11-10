@@ -156,8 +156,8 @@ verification.
 
 For a candidate patch, execute the frozen tests against both named revisions:
 
-- vulnerable/base revision: exploit regression must fail in the expected way;
-- patched revision: exploit regression must pass;
+- vulnerable/base revision: adversarial-input regression tests must fail in the expected way;
+- patched revision: adversarial-input regression tests must pass;
 - benign negative controls and the project regression suite must pass on the patch.
 
 This oracle may resolve whether the frozen contract was satisfied. It cannot prove that

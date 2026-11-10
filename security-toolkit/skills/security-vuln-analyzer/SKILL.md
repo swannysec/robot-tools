@@ -26,14 +26,18 @@ Select the current harness from an explicit host declaration when the harness ex
 - Claude Code: `references/runtime-claude.md`
 - Codex or ChatGPT Desktop: `references/runtime-codex.md`
 
-The required mapping is:
+The expected models are:
 
 | Host | Native discovery, fix author, and verifier | Cross-provider verifier |
 |---|---|---|
 | Claude Code | `claude-opus-5-5`, High | `gpt-6.1-sol`, High |
 | Codex/ChatGPT | `gpt-6.1-sol`, High | `claude-opus-5-5`, High |
 
-Before dispatch, establish executable availability where applicable, authentication, exact model selection, High reasoning effort, structured-output support, read isolation, explicit working directory, and authorization to share the frozen verification packet with the other provider. Never replace a missing cross-provider leg with a same-family model. If mandatory preflight fails, preserve an incomplete analysis and do not label any claim `CROSS-MODEL VERIFIED`.
+Selection adapts to the orchestrating host. The analysis tier (discovery, fix author, native verifier) uses the orchestrating model and its provider; the orchestrator may identify its own model from its context or harness metadata, and stops to ask the user if that model is not the expected one for its host. The cross-provider verifier uses the runtime guide's default for the other provider, or the model the user names with `--cross-model <model>`, which must belong to the other provider. Intake roles use the runtime guide's intake model.
+
+Before dispatch, run the authorization check in `references/orchestrator-contract.md` (`scripts/repo-authorization.py`) and stop with its stated reason if it fails. Establish executable availability where applicable, authentication, model selection, High reasoning effort, structured-output support, read isolation, explicit working directory, and authorization to share the frozen verification packet with the other provider. Show every selected model in the preflight summary; interactive runs require the user's confirmation before dispatch. Never replace a missing cross-provider leg with a same-family model. If mandatory preflight fails, preserve an incomplete analysis and do not label any claim `CROSS-MODEL VERIFIED`.
+
+Model fallbacks and safety refusals are handled under `references/orchestrator-contract.md`. In brief: a provider-side model switch is disclosed as a role fallback with a decision brief offering to accept the result, retry with the original model, or retry with a user-selected model; a refusal (`REFUSED`, including a non-empty `declined_scope`) gets one identical-packet retry and then a refusal flag with the affected claims `INCOMPLETE`.
 
 ## Phase 1: Capture and pin
 
@@ -65,7 +69,7 @@ Use fresh agent context. In Codex, set `fork_turns: none`. No discovery agent ma
 
 Each role must return the schema defined in `discovery-contract.md`, including evidence, counterevidence, assumptions, uncertainty, primitive class, variant family, proposed disposition, `affects_security_claim`, context dependencies, structured `scoring`, and deterministic checks. Apply its literal post-schema checks for finder-local IDs, scoring sentinels, and contract version/pitfalls before verification. Roles emit `quote: ""` for repository citations; derive exact quotations using `references/source-citations.md` before completion checks or downstream use. Role 3 emits the versioned Invariant + Adversarial Test Contract when a security candidate depends on a control or remediation invariant.
 
-Wait for the discovery barrier. Accept only `COMPLETE`, `MALFORMED`, `FAILED`, or `MISSING`. Retry a mandatory malformed or failed role once with the same frozen contract. Require all three roles to be effectively `COMPLETE` after full-schema and citation validation before any verifier dispatch, including Stage 1. If a role remains non-complete, preserve its parseable evidence without interpretation and end the run `INCOMPLETE`. Never fill, reinterpret, or substitute for the role.
+Wait for the discovery barrier. Accept only `COMPLETE`, `MALFORMED`, `FAILED`, or `MISSING`, plus the orchestrator-recorded `REFUSED`. Retry a mandatory malformed, failed, or refused role once with the same frozen contract. Require all three roles to be effectively `COMPLETE` after full-schema and citation validation before any verifier dispatch, including Stage 1. If a role remains non-complete, preserve its parseable evidence without interpretation and end the run `INCOMPLETE`. Never fill, reinterpret, or substitute for the role.
 
 ## Phase 3: Mechanical candidate preparation
 
@@ -94,9 +98,9 @@ Run both verifiers in two stages:
 1. **Independent location analysis:** supply the pre-discovery mechanical intake packet, scope, generic observation questions, and an observation-only schema. Do not reveal the proposed proposition or conclusion, discovery output, identities, counts, or the other verifier's work. Stage 1 returns cited observations, not a security verdict.
 2. **Normalized challenge:** in a fresh execution, supply the same identity-free proposition, cited evidence and counterevidence, assumptions, uncertainty, primitive-class information, and the exact byte-preserved role-scoped set of all emitted deterministic checks and routing tables. Do not select or merge them, and do not include either Stage 1 artifact or the other verifier's work.
 
-Each Stage 2 verifier returns `CONFIRMED`, `REFUTED`, or `INCONCLUSIVE` with gate-level evidence and counterevidence. Track all four provider/stage artifacts. Retry a malformed or failed stage once with the same frozen packet. A verifier may not be replaced, Stage 2 may not replace Stage 1, and all four artifacts must be `COMPLETE` before reconciliation.
+Each Stage 2 verifier returns `CONFIRMED`, `REFUTED`, or `INCONCLUSIVE` with gate-level evidence and counterevidence. Track all four provider/stage artifacts. Retry a malformed, failed, or refused stage once with the same frozen packet. A verifier may not be replaced, Stage 2 may not replace Stage 1, and all four artifacts must be `COMPLETE` before reconciliation.
 
-If the cross-provider process, authentication, requested model, isolation, structured output, or sharing authorization is unavailable, fail closed as `INCOMPLETE`. Preserve useful collected material, but confer no verified status.
+If the cross-provider process, authentication, other-provider model, isolation, structured output, or sharing authorization is unavailable, fail closed as `INCOMPLETE`. A cross-provider leg served by another model from the other provider is a disclosed role fallback; one served by the native provider is `INCOMPLETE`. Preserve useful collected material, but confer no verified status.
 
 ## Phase 5: Deterministic checks and Mechanical Reconciliation
 
@@ -161,14 +165,16 @@ Load references by phase rather than reading the entire package automatically:
 - Scoring and remediation: `references/scoring-frameworks.md`, `references/compliance-frameworks.md`, `references/remediation-patterns.md`
 - Output and retained modes: `references/report-template.md`, `references/fix-verification-mode.md`, `references/develop-fixes-mode.md`
 
-Use the role-specific schemas `schemas/discovery-result.schema.json`, `schemas/verifier-stage1-result.schema.json`, `schemas/verifier-stage2-result.schema.json`, `schemas/fix-verifier-stage2-result.schema.json`, and `schemas/computation-result.schema.json`, plus the packaged non-model adapter `scripts/deterministic-check.py`. Resolve each path from this skill directory before launching a child process; the target repository working directory does not change schema resolution. Use the fix Stage 2 schema for `--verify-fix` and verification invoked by `--develop-fix`; use the ordinary Stage 2 schema for analysis. All paths are package-relative. Do not fetch missing references from GitHub, a plugin cache, or another installed copy. A missing required reference or adapter makes the affected phase `INCOMPLETE`.
+Use the role-specific schemas `schemas/discovery-result.schema.json`, `schemas/verifier-stage1-result.schema.json`, `schemas/verifier-stage2-result.schema.json`, `schemas/fix-verifier-stage2-result.schema.json`, and `schemas/computation-result.schema.json`, plus the packaged non-model adapters `scripts/deterministic-check.py` and `scripts/repo-authorization.py`. Resolve each path from this skill directory before launching a child process; the target repository working directory does not change schema resolution. Use the fix Stage 2 schema for `--verify-fix` and verification invoked by `--develop-fix`; use the ordinary Stage 2 schema for analysis. All paths are package-relative. Do not fetch missing references from GitHub, a plugin cache, or another installed copy. A missing required reference or adapter makes the affected phase `INCOMPLETE`.
 
 ## Non-negotiable boundaries
 
 1. The orchestrator does not make, refute, modify, rank, or resolve security judgments.
 2. Discovery roles and verifiers remain isolated at their phase barriers.
-3. Security claims require both specified model families; no silent fallback is allowed.
+3. Security claims require both specified model families; no silent fallback is allowed, and every model fallback is disclosed.
 4. Evidence and counterevidence remain attached to the pinned revision.
 5. Supporting context cannot silently become finding scope.
 6. Disputes remain visible until a predeclared deterministic oracle resolves the exact proposition.
 7. Fix authoring, fix verification, landing, and human merge approval remain separate.
+8. In every mode, never execute, compile, adapt, or register reporter-supplied proof-of-concept code, payloads, or exploit scripts, and never produce a working exploit. The only permitted execution is small, local adversarial-input regression tests in the sandbox; a reporter's proof of concept never becomes a frozen test.
+9. Every run passes the repository authorization check and every orchestrator instruction set and stage packet carries the mode's authorization statement, both defined in `references/orchestrator-contract.md`. No verbal confirmation replaces the check.

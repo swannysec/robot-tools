@@ -11,6 +11,19 @@ contracts remain authoritative; this file defines dispatch mechanics.
 | Fix author | `gpt-6.1-sol` | high | Separate author agent on the authorized fix branch; never verifies its own patch |
 | Native verifier, including fix verification | `gpt-6.1-sol` | high | Fresh agent with no inherited turns |
 | Cross-provider verifier, including fix verification | `claude-opus-5-5` | high | Fresh non-persistent restricted Claude execution |
+| Intake roles (GHSA mode) | `gpt-6-luna` | high | Fresh `codex exec` with no file, command, or network tool and no GitHub token |
+
+The table gives the expected models. The analysis tier follows the orchestrating model:
+the orchestrator may identify its own model from its context or harness metadata, and if
+it is not `gpt-6.1-sol`, it stops and asks the user before dispatch. `claude-opus-5-5` is
+the default cross-provider model; `--cross-model <model>` overrides it with another
+Anthropic model, recorded in provenance. Intake roles make no security judgment, so the
+cross-provider rule does not apply to them. Codex has no verified zero-tool launch, so
+intake isolation is defined by capability: no tool that reads files, runs commands, or
+reaches the network. Residual tools that remain offered (patch application under a
+read-only sandbox, user-input requests in a non-interactive run, MCP resource listing with
+no servers) cannot reach files, commands, or the network; live verification confirms this
+on the final launch form.
 
 For native roles, dispatch `gpt-6.1-sol` with high effort and `fork_turns: none`. Supply
 all required task context explicitly; do not rely on conversation inheritance.
@@ -38,7 +51,29 @@ Before sending report or source material to another provider:
 
 If a required capability or authorization is absent, mark the cross-provider role
 `MISSING` and the run `INCOMPLETE`. Do not silently choose another model, provider, or
-same-family verifier.
+same-family verifier. A model change that runtime metadata reports after dispatch is a
+disclosed role fallback under `orchestrator-contract.md`, never a silent substitution.
+
+## Model and refusal metadata
+
+- Native agents: record the model the host reports for each agent. Where the host reports
+  none, record the requested model and mark the actual model unverified.
+- `codex exec` children (intake): `--json` events do not name the model. Run with a
+  temporary `HOME` and `CODEX_HOME` (mode 700) holding only a link to the existing Codex
+  credential file, and read `turn_context.model` and `turn_context.effort` from the session
+  file there; `--ephemeral` discards that file. Treat any `model_reroute` event
+  (`from_model`, `to_model`, `reason`) or "model rerouted" notice as a role fallback. Never
+  set `allow_provider_model_fallback`. Treat the error codes `cyber_policy`, `bio_policy`,
+  and `content_filter` as hard refusals; their exact event shape is confirmed by live
+  verification. Remove the temporary homes after capturing the run.
+- Claude cross-provider children: never pass `--fallback-model`. Claude Code re-runs
+  safety-classifier-flagged requests on an older model by default; leave that on and
+  detect it from the result's `modelUsage` keys and `stream-json` system subtype
+  `model_refusal_fallback`. Subtype `model_refusal_no_fallback`, a non-zero
+  `safety_stops`, or a refusal `stop_reason`/`terminal_reason` without schema output is a
+  hard refusal; `is_error: true` with an API error is `FAILED`. Exclude
+  `CLAUDE_CODE_EFFORT_LEVEL` from the child environment, and record high effort as
+  requested and unverified, because print mode does not report it.
 
 ## Native dispatch
 
@@ -58,7 +93,8 @@ Invoke Claude Code directly in non-interactive print mode; do not depend on a na
 plugin agent. Use a fresh execution rooted at the target repository, with:
 
 - model `claude-opus-5-5` and effort `high`;
-- restricted and safe modes;
+- restricted and safe modes (restricted mode is what keeps user settings, including
+  their environment block, out of the child);
 - no session persistence;
 - permission mode `dontAsk` and no permission-prompt handler;
 - only bounded read/search tools needed by the packet; and
@@ -91,7 +127,7 @@ and routes the split to `DISPUTED`.
 ## Waiting, retry, and failure
 
 - Wait for every role in a round; do not interpret partial results.
-- Retry a `FAILED` or `MALFORMED` role once with the same frozen role contract and input.
+- Retry a `FAILED`, `MALFORMED`, or `REFUSED` role once with the same frozen role contract and input.
 - Do not change the claim, reveal other outputs, or add coaching on retry.
 - After the retry fails, preserve the role status and render an `INCOMPLETE` run.
 - A single verifier can provide analysis, but cannot confer `CROSS-MODEL VERIFIED`.

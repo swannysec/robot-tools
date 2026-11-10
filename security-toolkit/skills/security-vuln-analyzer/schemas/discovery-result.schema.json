@@ -1,7 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["role_type", "status", "provider", "model", "effort", "packet_revision", "pinned_revisions", "scope", "evidence", "counterevidence", "candidates"],
+  "required": ["role_type", "status", "provider", "model", "effort", "packet_revision", "pinned_revisions", "scope", "evidence", "counterevidence", "candidates", "declined_scope"],
   "properties": {
     "role_type": {"type": "string", "enum": ["discovery"]},
     "status": {"type": "string", "enum": ["COMPLETE", "MALFORMED", "FAILED", "MISSING"]},
@@ -63,7 +63,8 @@
           }
         }
       }
-    }
+    },
+    "declined_scope": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["task_element", "reason"], "properties": {"task_element": {"type": "string", "minLength": 1}, "reason": {"type": "string", "minLength": 1}}}}
   },
   "$defs": {
     "scoring": {

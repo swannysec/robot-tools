@@ -15,6 +15,8 @@ Critical finding from "Sifting the Noise": **51.2% of successful false positive 
 
 ## 2. Exploit PoC Generation as Verification
 
+> **Background research, not a method this skill uses.** This skill never executes, compiles, adapts, or registers reporter-supplied proof-of-concept code, payloads, or exploit scripts, and never produces a working exploit. Its only execution is small, local adversarial-input regression tests in the sandbox (see `orchestrator-contract.md`).
+
 **CVE-Genie** (multi-agent framework for CVE reproduction):
 - Reproduced **428/841 CVEs (50.8%)** at average cost of **$2.77 per CVE**
 - Ablation study: removing critic agents increased false positives by **47%**
@@ -42,6 +44,8 @@ The highest-ROI technique when SAST tools are available:
 Key insight: **CWE-specialized prompting consistently outperforms generic prompts** when triaging SAST output. Providing the CWE-specific rubric (sources, sinks, sanitizers for that exact vulnerability class) dramatically improves precision.
 
 ## 4. DAST-Style Runtime Validation
+
+> **Background research, not a method this skill uses.** This skill never executes, compiles, adapts, or registers reporter-supplied proof-of-concept code, payloads, or exploit scripts, and never produces a working exploit. Its only execution is small, local adversarial-input regression tests in the sandbox (see `orchestrator-contract.md`).
 
 CVE-Genie uses CTF-style verification: successful exploits trigger hidden flags. Pipeline: pre-setup environment validation → exploit execution → post-execution success confirmation. Provides binary ground truth but limited to vulnerabilities with reproducible environments.
 

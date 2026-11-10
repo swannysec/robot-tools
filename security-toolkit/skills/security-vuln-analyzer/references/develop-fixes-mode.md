@@ -19,13 +19,15 @@ One finding and shared root-cause variant family use one branch and one contract
 
 ## Authoring flow
 
-Dispatch a separate native-model fix author at High effort: `claude-opus-5-5` in Claude Code or `gpt-6.1-sol` in Codex/ChatGPT. The independent fix verifiers use the same host/model matrix as analysis; neither verifier may be the author agent.
+Dispatch a separate fix author at High effort on the host's analysis-tier model (see `SKILL.md` and the runtime guide). The independent fix verifiers use the same host-adaptive selection as analysis; neither verifier may be the author agent.
+
+Every packet in this mode carries the `--develop-fix` / `--verify-fix` authorization statement from [orchestrator-contract.md](orchestrator-contract.md), after the repository authorization check passes. The execution prohibition there applies in full: never execute, compile, adapt, or register reporter-supplied proof-of-concept code, payloads, or exploit scripts, and never produce a working exploit. The author writes its own small adversarial-input regression tests from the frozen contract; a reporter's proof of concept is never copied into a test or registered as one.
 
 1. Freeze the contract and all test definitions before editing production code. Record the contract version, source artifact and hash of the full contract, base revision, test IDs/hashes, and author provenance. Bind the handoff to both version and artifact hash; a matching version alone does not establish identical content. The orchestrator may validate the hash but does not adjudicate contract compatibility.
-2. Author one regression test for each declared adversarial input class plus declared benign/negative controls. Test the untouched base revision first: exploit tests must fail as expected; benign controls must retain their expected behavior.
+2. Author one regression test for each declared adversarial input class plus declared benign/negative controls. Test the untouched base revision first: adversarial-input regression tests must fail as expected; benign controls must retain their expected behavior.
 3. Prove the test reaches the cited sink/observable using the frozen deterministic method and oracle. Record `TEST_OBSERVED`, `TEST_WRITTEN_NOT_RUN`, or `TEST_UNVALIDATED` accurately; written tests alone are not validation.
 4. Make the smallest root-cause patch on an isolated branch. Do not expand scope, alter frozen tests, or substitute a compensating control for the declared invariant without returning the finding to human review.
-5. On the patched revision, run the same frozen exploit, benign, sink-coverage, regression, and class-coverage checks. Use a deeper deterministic check matched to the claim where predeclared. Run a mutation check at the fix site (Rust default: `necessist` when compatible); a surviving mutant is a failed test-quality gate.
+5. On the patched revision, run the same frozen adversarial-input regression tests, benign controls, sink-coverage, regression, and class-coverage checks. Use a deeper deterministic check matched to the claim where predeclared. Run a mutation check at the fix site (Rust default: `necessist` when compatible); a surviving mutant is a failed test-quality gate.
 6. Patch iteration is bounded to at most three attempts with the same frozen contract and tests. Carry every prior patch and gate result forward. After the third failed attempt, stop and return a candidate-patch failure packet for human review. This authoring budget is separate from the one-retry limit for malformed mandatory role output.
 7. Hand the patch to `--verify-fix` as a cold artifact, including original test results and any supplemental checks from [deterministic-validation.md](deterministic-validation.md), clearly distinguished in the existing finding record. The verifier receives no author reasoning trace. Preserve prior results and explicit corrections rather than changing frozen tests to make a patch pass.
 
@@ -33,7 +35,7 @@ The deterministic check contract and test evidence states are defined in [determ
 
 ## Two-phase network gate
 
-Use an isolated branch and the host's enforced sandbox. Phase 1 permits only dependency/toolchain preparation such as `cargo fetch`, build prerequisites, and approved nightly components. Record fetched versions and hashes. Phase 2 disables network access and runs frozen exploit/benign tests, sink and class coverage, full regression tests, deeper checks, and mutation testing with Cargo offline. Cargo's `--offline` is a package-manager control, not the sandbox boundary; verify the host's network denial is effective. Do not expose user credential directories or permit unsandboxed commands.
+Use an isolated branch and the host's enforced sandbox. Phase 1 permits only dependency/toolchain preparation such as `cargo fetch`, build prerequisites, and approved nightly components. Record fetched versions and hashes. Phase 2 disables network access and runs frozen adversarial-input regression tests and benign controls, sink and class coverage, full regression tests, deeper checks, and mutation testing with Cargo offline. Cargo's `--offline` is a package-manager control, not the sandbox boundary; verify the host's network denial is effective. Do not expose user credential directories or permit unsandboxed commands.
 
 ## Candidate-patch provenance
 

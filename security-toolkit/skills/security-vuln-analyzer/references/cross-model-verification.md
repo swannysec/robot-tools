@@ -5,7 +5,7 @@ description: Two-stage, cold native and cross-provider verification with determi
 
 # Cross-Model Verification
 
-Every vulnerability finding and primary-control weakness requires two mandatory, cold verifiers at High reasoning effort: one native-family verifier and one cross-provider verifier. The host selects the families: Claude Code uses `claude-opus-5-5` native and `gpt-6.1-sol` cross-provider; Codex/ChatGPT uses `gpt-6.1-sol` native and `claude-opus-5-5` cross-provider. Same-family fallback is forbidden.
+Every vulnerability finding and primary-control weakness requires two mandatory, cold verifiers at High reasoning effort: one native-family verifier and one cross-provider verifier. The orchestrating host selects the families: the native verifier uses the host's analysis-tier model and provider, and the cross-provider verifier uses the runtime guide's default for the other provider or the model named with `--cross-model`, which must belong to the other provider. `SKILL.md` lists the expected models per host. Same-family fallback is forbidden; model fallback and refusal handling follow `orchestrator-contract.md`.
 
 The cross-provider verifier may run only after preflight establishes executable availability, authentication, exact model selection, structured-output support, read isolation, and authorization to share the frozen packet with that provider. If it cannot run, the analysis is incomplete and no claim may be labeled `CROSS-MODEL VERIFIED`.
 
@@ -26,8 +26,9 @@ After JSON Schema validation, apply these verdict-dependent cardinality checks w
 - A `COMPLETE` Stage 2 `CONFIRMED` result has at least one affected gate and one valid supporting-evidence citation.
 - A `COMPLETE` Stage 2 `REFUTED` result has at least one affected gate and one valid counterevidence citation.
 - A `COMPLETE` Stage 2 `INCONCLUSIVE` result has at least one affected gate and at least one nonempty item across evidence, counterevidence, remaining assumptions, or uncertainty.
+- Any Stage 1 or Stage 2 result with a non-empty `declined_scope` is effectively `REFUSED` (a partial refusal under `orchestrator-contract.md`), whatever its status field says.
 
-Extract and verify repository quotations before these completion and cardinality checks. Trim ASCII whitespace only to test whether a string is nonempty. Do not assess whether an observation or citation is persuasive. If a cardinality check fails, preserve the raw artifact, set its effective role status to `MALFORMED`, perform the one permitted identical-packet retry, and route an unrepaired result to `INCOMPLETE`.
+Extract and verify repository quotations before these completion and cardinality checks. Trim ASCII whitespace only to test whether a string is nonempty. Do not assess whether an observation or citation is persuasive. If a cardinality check fails, preserve the raw artifact, set its effective role status to `MALFORMED` (or `REFUSED` for a non-empty `declined_scope`), perform the one permitted identical-packet retry, and route an unrepaired result to `INCOMPLETE`.
 
 ## Four-gate verification contract
 

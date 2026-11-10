@@ -19,7 +19,7 @@ description: Failure patterns that prevent a candidate patch from being mistaken
 
 ## Original tests pass but a sibling path remains vulnerable
 
-**Failure:** treating the frozen exploit suite as exhaustive, or rewriting it after patch
+**Failure:** treating the frozen adversarial-input regression suite as exhaustive, or rewriting it after patch
 inspection so later results appear predeclared.
 
 **Control:** preserve the original contract and results; use bounded supplemental checks

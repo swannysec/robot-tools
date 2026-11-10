@@ -1,6 +1,6 @@
 ---
 name: security-vuln-analyzer
-description: Evidence-led security vulnerability analysis, fix verification, and guarded fix development for source repositories. Use for reported or suspected vulnerabilities, primary-control weaknesses, secure-code review, cross-model verification, remediation verification, and candidate security fixes. Supports Claude Code and Codex/ChatGPT Desktop with mandatory cold cross-provider verification for security claims.
+description: Evidence-led security vulnerability analysis, fix verification, and guarded fix development for source repositories. Use for reported or suspected vulnerabilities, primary-control weaknesses, secure-code review, cross-model verification, remediation verification, candidate security fixes, and optional GitHub Security Advisory (GHSA) triage with deduplication. Supports Claude Code and Codex/ChatGPT Desktop with mandatory cold cross-provider verification for security claims.
 ---
 
 # Security Vulnerability Analyzer
@@ -16,6 +16,7 @@ Choose exactly one entry point from the user's request:
 - **Analysis** (default): discover, verify, and report findings.
 - **`--verify-fix`**: follow `references/fix-verification-mode.md`.
 - **`--develop-fix`**: follow `references/develop-fixes-mode.md`.
+- **`--ghsa <advisory URL>`**, **`--ghsa <GHSA-ID> --repo OWNER/REPO`**, or **`--ghsa-queue OWNER/REPO`** (optional): follow `references/ghsa-triage-mode.md` for GitHub Security Advisory intake, the completeness screen, handoff into the modes above, and human-approved write-back, and `references/ghsa-deduplication.md` for claim-level relations and the membership check. A bare GHSA ID without `--repo` is a usage error.
 
 All modes use the same host/model matrix, isolation rules, provenance records, role status values, and one-retry limit. Fix modes add their own author/verifier and frozen-test boundaries.
 
@@ -164,8 +165,9 @@ Load references by phase rather than reading the entire package automatically:
 - Language context: `references/rust-security.md`
 - Scoring and remediation: `references/scoring-frameworks.md`, `references/compliance-frameworks.md`, `references/remediation-patterns.md`
 - Output and retained modes: `references/report-template.md`, `references/fix-verification-mode.md`, `references/develop-fixes-mode.md`
+- GHSA triage (optional): `references/ghsa-triage-mode.md`, `references/ghsa-deduplication.md`
 
-Use the role-specific schemas `schemas/discovery-result.schema.json`, `schemas/verifier-stage1-result.schema.json`, `schemas/verifier-stage2-result.schema.json`, `schemas/fix-verifier-stage2-result.schema.json`, and `schemas/computation-result.schema.json`, plus the packaged non-model adapters `scripts/deterministic-check.py` and `scripts/repo-authorization.py`. Resolve each path from this skill directory before launching a child process; the target repository working directory does not change schema resolution. Use the fix Stage 2 schema for `--verify-fix` and verification invoked by `--develop-fix`; use the ordinary Stage 2 schema for analysis. All paths are package-relative. Do not fetch missing references from GitHub, a plugin cache, or another installed copy. A missing required reference or adapter makes the affected phase `INCOMPLETE`.
+Use the role-specific schemas `schemas/discovery-result.schema.json`, `schemas/verifier-stage1-result.schema.json`, `schemas/verifier-stage2-result.schema.json`, `schemas/fix-verifier-stage2-result.schema.json`, and `schemas/computation-result.schema.json`, plus the packaged non-model adapters `scripts/deterministic-check.py` and `scripts/repo-authorization.py`. GHSA mode adds the intake and deduplication role schemas `schemas/intake-h1-claims.schema.json`, `schemas/intake-h2-completeness.schema.json`, `schemas/intake-h4-draft.schema.json`, `schemas/dedup-d4-result.schema.json`, and `schemas/dedup-m4-result.schema.json`; the script-output schemas `schemas/ghsa-intake.schema.json` and `schemas/dedup-relation.schema.json`; and the adapters `scripts/ghsa-fetch.py` (read-only), `scripts/intake-check.py`, `scripts/ghsa-writeback.py` (the only GitHub writer), and `scripts/ghsa-dedup.py`. Resolve each path from this skill directory before launching a child process; the target repository working directory does not change schema resolution. Use the fix Stage 2 schema for `--verify-fix` and verification invoked by `--develop-fix`; use the ordinary Stage 2 schema for analysis. All paths are package-relative. Do not fetch missing references from GitHub, a plugin cache, or another installed copy. A missing required reference or adapter makes the affected phase `INCOMPLETE`.
 
 ## Non-negotiable boundaries
 

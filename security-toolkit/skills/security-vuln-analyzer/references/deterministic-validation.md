@@ -27,7 +27,14 @@ Invoke the adapter with a JSON request, an immutable checkout path, and, for a f
 test, the frozen JSON registry. The executable, arguments, oracle, routing table, and
 SHA-256 of the exact NFC- and LF-normalized proposition the test measures are all
 registered before discovery. Record the SHA-256 of the complete registry bytes in every
-discovery packet and do not modify the registry after dispatch. The adapter verifies the
+discovery packet and do not modify the registry after dispatch. Before any test enters a
+registry (pre-discovery, supplemental, `--develop-fix`, D5, or M2), when the finding has a
+checked GHSA H1 result, run `scripts/intake-check.py poc-overlap` on each test source file
+against that H1 result; `REJECT` blocks registration. The check matches long verbatim spans
+from H1-extracted proof-of-concept blocks only; without an H1 result, or for a reworded
+copy, the execution prohibition in `orchestrator-contract.md` is the only safeguard, so the
+test author must write tests from the frozen contract, never from a reporter's proof of
+concept. The adapter verifies the
 registry digest, proposition binding, checkout `HEAD`, path containment, and routing-table identity, records adapter
 name and version, and emits `schemas/computation-result.schema.json`. It rejects every other kind
 and every inconsistent sentinel combination. It

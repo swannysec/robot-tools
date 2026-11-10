@@ -196,6 +196,36 @@ Disclosure-safe landing posture:
 Status: candidate patch — independent --verify-fix and human merge required
 ```
 
+## GHSA records
+
+Only for GHSA mode, using [ghsa-triage-mode.md](ghsa-triage-mode.md) and [ghsa-deduplication.md](ghsa-deduplication.md). These records live in the restricted run directory; render advisory text only there.
+
+```text
+GHSA intake — advisory ID, repository, input form, state, created/updated:
+Captured artifacts: advisory and comments SHA-256, comments status, retrieval time, API version:
+Pinned target: revision, revision source (default-branch HEAD | exact tag | user selected):
+Reporter claims (labeled, not skill assessments): severity, CVSS vectors, CWE IDs, versions:
+Intake roles: H1/H2 provenance, effective status, intake-check result, typed literals:
+```
+
+```text
+Completeness pause — advisory ID, mode, H2 result and quotes (or non-complete status):
+Decision brief presented; human choice: run anyway | request evidence; recorded at:
+```
+
+```text
+Relation — relation ID, canonical advisory/claim, other advisory/claim, relation, basis:
+D4 verdicts (provider, model, artifact digest); D5 result; membership M1/M3/M4:
+Canonical rule or override reason; human decision; invalidation state and reasons:
+```
+
+```text
+Write plan — plan SHA-256, advisory, items (operation, old value, new value, supporting record IDs and digests):
+Approvals — per item, approved at, through the harness question prompt:
+Results — per item: WRITTEN | NOT_APPROVED | STOPPED_CHANGED_SINCE_CAPTURE | STOPPED_STATE_NOT_TRIAGE | refused (reason):
+Comment drafts — draft IDs, records mentioned, highlighted wording; posted by a human: yes | no:
+```
+
 ## Output checks
 
 - Preserve every candidate, whole-finding refutation, role status, and retry record.

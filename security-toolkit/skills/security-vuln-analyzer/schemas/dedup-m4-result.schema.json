@@ -1,0 +1,183 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "role_type",
+    "status",
+    "provider",
+    "model",
+    "effort",
+    "packet_revision",
+    "pair",
+    "proposition",
+    "verification_result",
+    "evidence",
+    "counterevidence",
+    "uncertainty",
+    "declined_scope"
+  ],
+  "properties": {
+    "role_type": {
+      "type": "string",
+      "enum": [
+        "dedup_m4"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "COMPLETE",
+        "MALFORMED",
+        "FAILED",
+        "MISSING"
+      ]
+    },
+    "provider": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "effort": {
+      "type": "string",
+      "enum": [
+        "high"
+      ]
+    },
+    "packet_revision": {
+      "type": "string"
+    },
+    "pair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canonical_record_id",
+        "other_record_id",
+        "canonical_ghsa_id",
+        "other_ghsa_id",
+        "other_claim_id"
+      ],
+      "properties": {
+        "canonical_record_id": {
+          "type": "string"
+        },
+        "other_record_id": {
+          "type": "string"
+        },
+        "canonical_ghsa_id": {
+          "type": "string"
+        },
+        "other_ghsa_id": {
+          "type": "string"
+        },
+        "other_claim_id": {
+          "type": "string"
+        }
+      }
+    },
+    "proposition": {
+      "type": "string",
+      "minLength": 1
+    },
+    "verification_result": {
+      "type": "string",
+      "enum": [
+        "CONFIRMED",
+        "REFUTED",
+        "INCONCLUSIVE"
+      ]
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/citation"
+      }
+    },
+    "counterevidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/citation"
+      }
+    },
+    "uncertainty": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "declined_scope": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "task_element",
+          "reason"
+        ],
+        "properties": {
+          "task_element": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "citation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_kind",
+        "repository",
+        "revision",
+        "relative_path",
+        "start_line",
+        "end_line",
+        "quote",
+        "observation",
+        "artifact_id"
+      ],
+      "properties": {
+        "source_kind": {
+          "type": "string",
+          "enum": [
+            "repository",
+            "deterministic_check",
+            "runtime_observation",
+            "authoritative_source"
+          ]
+        },
+        "repository": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "relative_path": {
+          "type": "string"
+        },
+        "start_line": {
+          "type": "integer"
+        },
+        "end_line": {
+          "type": "integer"
+        },
+        "quote": {
+          "type": "string"
+        },
+        "observation": {
+          "type": "string"
+        },
+        "artifact_id": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "description": "M4 membership verification: 'Y's claim shares X's root cause and is resolved by X's fix'."
+}

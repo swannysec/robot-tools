@@ -133,3 +133,45 @@ and routes the split to `DISPUTED`.
 - A single verifier can provide analysis, but cannot confer `CROSS-MODEL VERIFIED`.
 
 For Stage 2 fix verification, including verification invoked by `--develop-fix`, bind `schemas/fix-verifier-stage2-result.schema.json` for both providers; use `schemas/verifier-stage2-result.schema.json` for ordinary analysis. Apply the fix-mode semantic checks and routing in [fix-verification-mode.md](fix-verification-mode.md).
+
+## GHSA mode
+
+Follow [ghsa-triage-mode.md](ghsa-triage-mode.md) and [ghsa-deduplication.md](ghsa-deduplication.md).
+
+**Tokens.** `ghsa-fetch.py` uses `gh` authentication, or `SVA_GHSA_READ_TOKEN` when set.
+`SVA_GHSA_WRITE_TOKEN_REF` (a 1Password `op://` reference) is used only by
+`ghsa-writeback.py`. No GitHub token or token reference is ever placed in an intake, D4,
+M2, or M4 child's environment.
+
+**Intake roles (H1/D1, H2, H4).** Freeze the packet to a file and launch a fresh `codex exec`
+from an empty temporary directory, with temporary `HOME` and `CODEX_HOME` (mode 700) whose
+only content is a link to the existing Codex `auth.json`, and every tool surface disabled:
+
+```bash
+env -i HOME="$TMP_HOME" CODEX_HOME="$TMP_CODEX_HOME" PATH="$PATH" codex exec \
+  --ignore-user-config --ignore-rules --skip-git-repo-check -C "$EMPTY_TMP_DIR" -s read-only \
+  -m gpt-6-luna -c 'model_reasoning_effort="high"' -c 'web_search="disabled"' \
+  --disable shell_tool --disable unified_exec --disable code_mode_host --disable view_image \
+  --disable image_generation --disable apps --disable plugins --disable browser_use \
+  --disable browser_use_external --disable computer_use --disable hooks --disable skill_search \
+  --disable tool_suggest --disable sleep_tool --disable goals --disable multi_agent --disable memories \
+  --output-schema "$SKILL_DIR/schemas/intake-h1-claims.schema.json" --json - < "$PACKET_FILE"
+```
+
+Use the H2 or H4 schema for those roles. `env -i` keeps GitHub tokens and `SVA_GHSA_*`
+variables out. Code mode reports that it fails closed; that error item is expected. This is
+capability-based isolation: no tool that reads files, runs commands, or reaches the network
+(see "Model assignment"). Read the actual model and any reroute from the session file under
+`$TMP_CODEX_HOME`, check every result with `scripts/intake-check.py`, and remove the
+temporary homes afterward.
+
+**D4 and M4.** Dispatch both providers exactly as the native and cross-provider verifiers,
+cold and in parallel, with the packet from `ghsa-dedup.py d4-packet` or `m4-packet` and
+`schemas/dedup-d4-result.schema.json` or `schemas/dedup-m4-result.schema.json`. **M2** is a
+fix-author dispatch whose packet is `ghsa-dedup.py m2-packet` output only.
+
+**Writer.** After the user approves write-back and each item, the maintainer runs
+`uv run python3 -I scripts/ghsa-writeback.py --plan <plan> --approvals <approvals> --records <records>`
+in their own terminal with `SVA_GHSA_WRITE_TOKEN_REF` set; `op read` prompts for Touch ID.
+A Codex writer child would need network access for `gh` without a general shell; that
+launch form is unverified and is checked in live verification before it is documented.

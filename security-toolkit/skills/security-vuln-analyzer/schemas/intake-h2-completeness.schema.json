@@ -1,0 +1,108 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "role_type",
+    "status",
+    "provider",
+    "model",
+    "effort",
+    "packet_revision",
+    "ghsa_id",
+    "reproduction_steps",
+    "proof_of_concept",
+    "declined_scope"
+  ],
+  "properties": {
+    "role_type": {
+      "type": "string",
+      "enum": [
+        "intake_h2"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "COMPLETE",
+        "MALFORMED",
+        "FAILED",
+        "MISSING"
+      ]
+    },
+    "provider": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "effort": {
+      "type": "string",
+      "enum": [
+        "high"
+      ]
+    },
+    "packet_revision": {
+      "type": "string"
+    },
+    "ghsa_id": {
+      "type": "string",
+      "pattern": "^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$"
+    },
+    "reproduction_steps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "present",
+        "quote"
+      ],
+      "properties": {
+        "present": {
+          "type": "boolean"
+        },
+        "quote": {
+          "type": "string",
+          "maxLength": 4000
+        }
+      }
+    },
+    "proof_of_concept": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "present",
+        "quote"
+      ],
+      "properties": {
+        "present": {
+          "type": "boolean"
+        },
+        "quote": {
+          "type": "string",
+          "maxLength": 4000
+        }
+      }
+    },
+    "declined_scope": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "task_element",
+          "reason"
+        ],
+        "properties": {
+          "task_element": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "description": "H2 completeness screen: reproduction steps OR a proof of concept. 'present' requires a non-empty exact quote; absent requires an empty quote."
+}

@@ -164,3 +164,54 @@ and routes the split to `DISPUTED`.
 - A single verifier can provide analysis, but cannot confer `CROSS-MODEL VERIFIED`.
 
 For Stage 2 fix verification, including verification invoked by `--develop-fix`, bind `schemas/fix-verifier-stage2-result.schema.json` for both providers; use `schemas/verifier-stage2-result.schema.json` for ordinary analysis. Apply the fix-mode semantic checks and routing in [fix-verification-mode.md](fix-verification-mode.md).
+
+## GHSA mode
+
+Follow [ghsa-triage-mode.md](ghsa-triage-mode.md) and [ghsa-deduplication.md](ghsa-deduplication.md).
+
+**Tokens.** `ghsa-fetch.py` uses `gh` authentication, or `SVA_GHSA_READ_TOKEN` when set.
+`SVA_GHSA_WRITE_TOKEN_REF` (a 1Password `op://` reference) is set only in the writer
+child's environment. No GitHub token or token reference is ever placed in an intake, D4,
+M2, or M4 child's environment.
+
+**Intake roles (H1/D1, H2, H4).** Freeze the packet (authorization statement, role
+instructions, and the captured advisory as untrusted data) to a file, then launch from an
+empty temporary directory with a scrubbed environment and no tools:
+
+```bash
+cd "$EMPTY_TMP_DIR" && env -i HOME="$HOME" PATH="$PATH" ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  claude -p --bare --restricted --safe-mode --model claude-haiku-5-5 --effort high \
+  --tools "" --strict-mcp-config --no-session-persistence --permission-mode dontAsk \
+  --verbose --output-format stream-json \
+  --json-schema "$(cat "$SKILL_DIR/schemas/intake-h1-claims.schema.json")" < "$PACKET_FILE"
+```
+
+Use the H2 or H4 schema for those roles. The init event must list only `StructuredOutput`
+as a tool and no MCP servers; otherwise the role is `MISSING`. `env -i` keeps GitHub tokens
+and `SVA_GHSA_*` variables out. Where only OAuth authentication is available, omit `--bare`
+and `ANTHROPIC_API_KEY`; `--restricted` still keeps user settings out. Check every result
+with `scripts/intake-check.py` and read model and refusal metadata as above.
+
+**D4 and M4.** Dispatch both providers exactly as the native and cross-provider verifiers,
+cold and in parallel, with the packet from `ghsa-dedup.py d4-packet` or `m4-packet` and
+`schemas/dedup-d4-result.schema.json` or `schemas/dedup-m4-result.schema.json`. Read tools
+are limited to the pinned target, as for verifiers. **M2** is a fix-author dispatch whose
+packet is `ghsa-dedup.py m2-packet` output only.
+
+**Writer child.** After the user approves write-back and each item, launch a minimal child
+that can run only the write-back script and receives only file paths:
+
+```bash
+printf '%s' "Run exactly this command and report its output: uv run python3 -I $SKILL_DIR/scripts/ghsa-writeback.py --plan $PLAN --approvals $APPROVALS --records $RECORDS" |
+env -i HOME="$HOME" PATH="$PATH" ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  SVA_GHSA_WRITE_TOKEN_REF="$SVA_GHSA_WRITE_TOKEN_REF" \
+  claude -p --bare --restricted --safe-mode --model claude-haiku-5-5 --effort high \
+  --tools "Bash" --allowedTools "Bash(uv run python3 -I $SKILL_DIR/scripts/ghsa-writeback.py --plan $PLAN --approvals $APPROVALS --records $RECORDS)" \
+  --strict-mcp-config --no-session-persistence --permission-mode dontAsk \
+  --output-format json
+```
+
+`op read` inside the script triggers the maintainer's Touch ID prompt for that process
+tree (verified 2026-11-10); the child cannot satisfy it. The maintainer may instead run the
+same command in their own terminal. Verified live 2026-11-10: this launch ran the allowed
+command with no permission denials, and the same launch denied any other Bash command.

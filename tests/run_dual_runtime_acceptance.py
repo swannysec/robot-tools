@@ -78,6 +78,19 @@ SECURITY_VULN_ANALYZER_SCHEMAS["fix-verifier-stage2-result.schema.json"] = (
     | {"closure_recommendation", "closure_conditions"}
 )
 SECURITY_VULN_ANALYZER_ROLE_TYPES["fix-verifier-stage2-result.schema.json"] = "verifier_stage2"
+# GHSA mode model roles; script-output schemas (ghsa-intake, dedup-relation) are checked in
+# tests/acceptance/test_security_ghsa_triage.py because they carry no role status or effort.
+for _filename, _role_type, _fields in (
+    ("intake-h1-claims.schema.json", "intake_h1", {"ghsa_id", "claims", "versions_quoted", "poc_blocks"}),
+    ("intake-h2-completeness.schema.json", "intake_h2", {"ghsa_id", "reproduction_steps", "proof_of_concept"}),
+    ("intake-h4-draft.schema.json", "intake_h4", {"ghsa_id", "field_updates", "comment_drafts"}),
+    ("dedup-d4-result.schema.json", "dedup_d4", {"pair", "verdict", "evidence", "counterevidence", "uncertainty"}),
+    ("dedup-m4-result.schema.json", "dedup_m4", {"pair", "proposition", "verification_result", "evidence", "counterevidence", "uncertainty"}),
+):
+    SECURITY_VULN_ANALYZER_SCHEMAS[_filename] = {
+        "role_type", "status", "provider", "model", "effort", "packet_revision", "declined_scope",
+    } | _fields
+    SECURITY_VULN_ANALYZER_ROLE_TYPES[_filename] = _role_type
 PORTABLE_VALIDATOR = (
     ROOT
     / "workflow-toolkit"
@@ -2522,6 +2535,7 @@ def add_deterministic_acceptance_cases(harness: Harness) -> None:
         "tests.acceptance.test_kcap_synthesis_policy",
         "tests.acceptance.test_live_provenance",
         "tests.acceptance.test_security_source_citations",
+        "tests.acceptance.test_security_ghsa_triage",
         "tests.acceptance.test_portable_validator",
         "tests.acceptance.test_starduster_sync",
         "tests.acceptance.test_starduster_rendering",
@@ -4357,6 +4371,9 @@ def hplumb_case(workspace: Path) -> dict[str, Any]:
             Path("references/orchestrator-contract.md"), Path("references/discovery-contract.md"),
             Path("references/cross-model-verification.md"),
             Path("scripts/deterministic-check.py"), Path("scripts/repo-authorization.py"),
+            Path("references/ghsa-triage-mode.md"), Path("references/ghsa-deduplication.md"),
+            Path("scripts/ghsa-fetch.py"), Path("scripts/intake-check.py"), Path("scripts/ghsa-writeback.py"),
+            Path("scripts/ghsa-dedup.py"), Path("schemas/ghsa-intake.schema.json"), Path("schemas/dedup-relation.schema.json"),
             *{Path("schemas") / filename for filename in SECURITY_VULN_ANALYZER_SCHEMAS},
         },
     }

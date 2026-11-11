@@ -96,6 +96,10 @@ When adding a skill, agent, or command to any toolkit:
 3. Add row to the **Commands table** in `<toolkit>/README.md`
 4. Add entry to the toolkit's **Commands** list in root `README.md`
 
+### Schema Field Changes
+
+When adding, renaming, or moving a field in a role schema (`schemas/*.schema.json`), grep the skill's `references/` and `SKILL.md` for every list that enumerates that schema's fields (preserved-field lists, report render tables, packet-content lists, the runner's required-field sets) and update each one, or state why it should not include the new field.
+
 ## Shell Scripting
 
 - Target **bash 3.2** (macOS default) — no bash 4+ features

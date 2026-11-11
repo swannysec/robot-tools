@@ -118,6 +118,8 @@ def validate_item(item: dict[str, Any], records: dict[str, dict[str, Any]], repo
             raise Refusal(f"record {ref.get('record_id')} does not belong to {repository} advisory {ghsa_id}")
         if record.get("final_status") != "CROSS-MODEL VERIFIED":
             raise Refusal(f"record {ref.get('record_id')} is not CROSS-MODEL VERIFIED")
+        if record.get("ghsa_eligible") is not True:
+            raise Refusal(f"record {ref.get('record_id')} is not GHSA-eligible (ghsa-dedup.py records did not bridge it)")
         if record.get("fallback_model") is True and record.get("fallback_use_permitted") is not True:
             raise Refusal(f"record {ref.get('record_id')} came from a fallback model without the user's permission for this use")
         cited.append(record)

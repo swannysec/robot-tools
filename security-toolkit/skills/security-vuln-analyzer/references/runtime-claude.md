@@ -10,7 +10,7 @@ output contracts remain authoritative; this file defines dispatch mechanics.
 | Three discovery roles | `claude-opus-5-5` | high | Fresh CLI executions; no discovery output shared between them |
 | Fix author | `claude-opus-5-5` | high | Separate author agent on the authorized fix branch; never verifies its own patch |
 | Native verifier, including fix verification | `claude-opus-5-5` | high | Fresh CLI execution; receives only its staged verification packet |
-| Cross-provider verifier, including fix verification | `gpt-6.1-sol` | high | Fresh Codex execution in read-only mode with a temporary `CODEX_HOME` |
+| Cross-provider verifier, including fix verification | `gpt-6.1-sol` | high | Fresh Codex execution under a read-only permission profile with a temporary `CODEX_HOME` |
 | Intake roles (GHSA mode) | `claude-haiku-5-5` | high | Fresh `claude -p` execution with no tools, no network, and no GitHub token |
 
 The table gives the expected models. The analysis tier follows the orchestrating model:
@@ -52,8 +52,10 @@ Before sending report or source material to another provider:
 
 1. Confirm the user or organization permits the relevant material to be sent to OpenAI.
 2. Resolve Codex from an explicitly configured executable first, then `codex` on `PATH`.
-3. Check the selected executable's help output for `exec`, `--model`, `--sandbox`,
-   `--output-schema`, `--ignore-user-config`, `--disable`, and reasoning-effort configuration.
+3. Check the selected executable's help output for `exec`, `--model`, `--output-schema`,
+   `--disable`, and reasoning-effort configuration, and that its version supports permission
+   profiles (verified with codex-cli 0.162.0). The intake launch form under "GHSA mode" also
+   uses `--sandbox` and `--ignore-user-config`.
 4. Confirm authentication with a bounded non-sensitive probe; configuration or a saved
    login alone is not proof that execution works.
 5. Record the executable version and effective model/effort in run provenance.
@@ -95,6 +97,17 @@ delegation. Close standard input. Each child receives
 only its frozen packet, and no session, instruction, or memory loading. Do not expose
 one discovery result to another role.
 
+Claude Code 2.1.322 under `--restricted` offers no `Grep` or `Glob` tool (`--tools
+Read,Grep,Glob` yields only `Read`), and `Read` on a directory fails with `EISDIR`. A
+probed working form for read-only roles is `--restricted --safe-mode --permission-mode
+dontAsk --tools Read,Bash`, launched from inside the pinned snapshot. In that probe,
+read-only commands inside the working directory ran, while reads outside it, relative
+escapes (`../`), and writes were denied. Some legitimate searches were also denied: shell
+globs, `cd` into a sibling supporting-context snapshot, and compound pipelines. Give roles
+concrete paths in their packets. In a probe on 2026-11-11, a `curl` request was denied by the
+permission layer (`dontAsk` allows only commands Claude Code treats as read-only); no
+OS-level network sandbox was tested.
+
 Require exit status zero, `is_error: false`, and a `structured_output` object that
 validates against the complete applicable schema. Validate citations and other literal
 contract checks as well. Wait for all discovery roles and complete schema and citation
@@ -115,21 +128,57 @@ fresh execution rooted at the target repository, with:
 
 - model `gpt-6.1-sol`;
 - reasoning effort `high`;
-- sandbox `read-only`;
+- a read-only permission profile instead of `--sandbox` (see below);
+- apps and plugins disabled (`--disable apps --disable plugins`), so no account connector
+  starts an MCP server outside the sandbox;
 - the applicable role-specific schema resolved from the skill directory (`schemas/discovery-result.schema.json`, `schemas/verifier-stage1-result.schema.json`, `schemas/verifier-stage2-result.schema.json`, `schemas/fix-verifier-stage2-result.schema.json`, or `schemas/computation-result.schema.json`);
-- user and project instruction loading disabled when supported;
+- no user instructions: the temporary `CODEX_HOME` below supplies none (do not use
+  `--ignore-user-config`, which would also skip the profile);
 - no writable directory added; and
 - an explicit environment allowlist excluding Anthropic credentials and host session indicators; and
 - a temporary `HOME` and `CODEX_HOME` (mode 700) whose only content is a link to the existing
-  Codex credential file, so no user skills, global instructions, or memories load and the
-  session record stays out of the user's Codex home. Remove both after capturing the run.
+  Codex credential file and the permission profile's `config.toml`, so no user skills, global
+  instructions, or memories load and the session record stays out of the user's Codex home.
+  Remove both after capturing the run.
 
 Codex `--json` events do not name the model. Read the actual model from `turn_context.model`
-in the session file under the temporary `CODEX_HOME` (not `--ephemeral`, which discards it),
-and treat any `model_reroute` event (`from_model`, `to_model`, `reason`) or "model rerouted"
+in the session file under the temporary `CODEX_HOME` (not `--ephemeral`, which discards it);
+`turn_context.effort` in the same record verifies the reasoning effort. Treat any `model_reroute` event (`from_model`, `to_model`, `reason`) or "model rerouted"
 notice as a role fallback. Never set `allow_provider_model_fallback`. Treat the error codes
 `cyber_policy`, `bio_policy`, and `content_filter` as hard refusals; their exact event shape
 is confirmed by live verification.
+
+The legacy `read-only` sandbox limits writes, not reads: the child can read any file the
+user can, including other role artifacts under the run root. Confine reads with a Codex
+permission profile written to the temporary `CODEX_HOME/config.toml`:
+
+```toml
+default_permissions = "sva-read"
+
+[permissions.sva-read.filesystem]
+":minimal" = "read"
+"<codex-install-prefix>" = "read"
+
+[permissions.sva-read.filesystem.":workspace_roots"]
+"." = "read"
+
+[permissions.sva-read.network]
+enabled = false
+```
+
+Replace `<codex-install-prefix>` with the directory tree holding the Codex executable (for a
+Homebrew install, the Homebrew prefix); without it, Codex cannot start its own sandbox
+helper. Add a `"<path>" = "read"` entry for each supporting-context snapshot the packet
+cites (from the documented profile syntax; the probe used only the working directory). The
+`network` table follows the Codex permissions documentation; the probe's session record showed
+network `restricted`. Do not pass `--sandbox` or set `sandbox_mode`: per the Codex permissions
+documentation, either makes Codex use the legacy sandbox instead of the profile. Do not pass
+`--ignore-user-config` either; it would presumably skip the `config.toml` that holds the
+profile (inferred, not tested). The session file's `turn_context.permission_profile` records the
+enforced profile; check that it is `restricted` with the expected entries. Verified with
+codex-cli 0.162.0 on 2026-11-11: reads inside the working directory succeeded, and reads of
+a sibling directory by relative and absolute path failed with `Operation not permitted`, with
+and without apps and plugins disabled.
 
 Send the prompt through standard input and close the stream immediately. Treat standard
 output as untrusted until it passes the expected schema. Do not expose raw verifier
@@ -195,7 +244,10 @@ with `scripts/intake-check.py` and read model and refusal metadata as above.
 **D4 and M4.** Dispatch both providers exactly as the native and cross-provider verifiers,
 cold and in parallel, with the packet from `ghsa-dedup.py d4-packet` or `m4-packet` and
 `schemas/dedup-d4-result.schema.json` or `schemas/dedup-m4-result.schema.json`. Read tools
-are limited to the pinned target, as for verifiers. **M2** is a fix-author dispatch whose
+are limited to the pinned target, as for verifiers. Pass `route-d4` and `route-m` the literal
+provider values from runtime metadata: the hosts use different vocabularies (Claude
+`modelUsage` reports an access channel such as `firstParty`; the Codex session file reports
+`model_provider` such as `openai`), and the routers only require the two values to differ. **M2** is a fix-author dispatch whose
 packet is `ghsa-dedup.py m2-packet` output only.
 
 **Writer child.** After the user approves write-back and each item, launch a minimal child

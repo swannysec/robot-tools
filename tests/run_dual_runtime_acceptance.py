@@ -1516,7 +1516,7 @@ def security_discovery_post_schema_errors(payload: Mapping[str, Any]) -> list[st
     def visit(value: Any, path: str) -> None:
         if isinstance(value, Mapping):
             for key, item in value.items():
-                if key == "role_local_id" or (key == "quote" and value.get("source_kind") == "repository"):
+                if key in ("role_local_id", "claim_ids") or (key == "quote" and value.get("source_kind") == "repository"):
                     continue
                 visit(item, f"{path}.{key}")
         elif isinstance(value, list):
@@ -2015,7 +2015,7 @@ def portable_security_vuln_analyzer_case(workspace: Path) -> dict[str, Any]:
         "attacker_preconditions", "reachability_trace", "affected_boundary", "primitive_class",
         "variant_family", "enumerated_variants", "enumeration_source", "validity", "reachability",
         "impact", "mitigation_or_fix_state", "confidence", "priority", "deterministic_checks",
-        "invariant_test_contract", "scoring",
+        "invariant_test_contract", "scoring", "claim_ids", "control_site", "cwe_ids",
     }
     if not isinstance(candidate_properties, dict) or not detailed_candidate_fields <= set(candidate_properties):
         raise AssertionError("discovery schema lacks the detailed candidate contract")
@@ -2110,6 +2110,13 @@ def portable_security_vuln_analyzer_case(workspace: Path) -> dict[str, Any]:
     bounded_identity["candidates"][0]["assumptions"] = ["R1-C10 and xR1-C1 are different ASCII tokens."]
     if security_discovery_post_schema_errors(bounded_identity):
         raise AssertionError("finder-local ID matching ignored literal ASCII token boundaries")
+    claim_reference = {"candidates": [{"role_local_id": "C1", "claim_ids": ["C1"], "evidence": [], "assumptions": [],
+                                        "enumerated_variants": []}]}
+    if security_discovery_post_schema_errors(claim_reference):
+        raise AssertionError("a claim_ids reference was treated as finder identity")
+    claim_reference["candidates"][0]["assumptions"] = ["Same sink as C1."]
+    if not security_discovery_post_schema_errors(claim_reference):
+        raise AssertionError("the claim_ids exemption hid a finder-local ID in prose")
 
     negative_fixtures = {
         "stage1-empty-complete.json": {

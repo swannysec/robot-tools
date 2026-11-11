@@ -63,6 +63,13 @@
       "enumerated_variants": [],
       "enumeration_source": [],
       "deterministic_checks": [],
+      "claim_ids": [],
+      "control_site": {
+        "symbol": "",
+        "relative_path": "",
+        "line": 0
+      },
+      "cwe_ids": [],
       "invariant_test_contract": {
         "applicable": true,
         "version": "fixture-contract-v1",

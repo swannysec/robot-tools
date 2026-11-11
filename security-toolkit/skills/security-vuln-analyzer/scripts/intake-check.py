@@ -7,6 +7,7 @@ Subcommands:
   h4-packet    build H4's scoped packet and allowed-record set for one advisory
   h4           check an H4 draft against its allowed records and the unpublished-ID block
   poc-overlap  reject a test file that copies a long verbatim span from an H1 PoC block
+  render       write the captured advisory fields as raw text for an intake or Phase 1 packet
 
 The checks count, compare, and match strings. They never judge whether a claim is valid.
 """
@@ -93,20 +94,36 @@ def schema_errors(value: Any, schema: dict[str, Any], path: str = "$") -> list[s
     return errors
 
 
-def captured_fields(intake: dict[str, Any]) -> list[str]:
+def normalize_newlines(text: str) -> str:
+    """CRLF and lone CR become LF; a model reproducing visible text emits LF."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def labeled_fields(intake: dict[str, Any]) -> list[tuple[str, str]]:
+    """The captured advisory fields, labeled, exactly as rendered to intake roles and compared by the checks."""
     advisory = intake.get("advisory", {})
-    fields = [advisory.get("summary", ""), advisory.get("description", "")]
-    fields.extend(comment.get("body", "") for comment in advisory.get("comments", []) if isinstance(comment, dict))
+    fields: list[tuple[str, Any]] = [("summary", advisory.get("summary", "")), ("description", advisory.get("description", ""))]
+    for index, comment in enumerate(advisory.get("comments", []), 1):
+        if isinstance(comment, dict):
+            fields.append((f"comment {index}", comment.get("body", "")))
     # Structured vulnerability fields are part of the captured advisory in the packet, so a
     # verbatim version range, package, or vulnerable-function name is a valid quote.
-    for vulnerability in advisory.get("reporter_claims", {}).get("vulnerabilities", []):
+    for index, vulnerability in enumerate(advisory.get("reporter_claims", {}).get("vulnerabilities", []), 1):
         if isinstance(vulnerability, dict):
-            fields.extend(vulnerability.get(key, "") for key in ("package", "vulnerable_version_range", "patched_versions"))
-            fields.extend(vulnerability.get("vulnerable_functions", []) or [])
-    return [field for field in fields if isinstance(field, str) and field]
+            for key in ("package", "vulnerable_version_range", "patched_versions"):
+                fields.append((f"vulnerability {index} {key}", vulnerability.get(key, "")))
+            for number, function in enumerate(vulnerability.get("vulnerable_functions", []) or [], 1):
+                fields.append((f"vulnerability {index} vulnerable_function {number}", function))
+    return [(label, normalize_newlines(value)) for label, value in fields if isinstance(value, str) and value]
+
+
+def captured_fields(intake: dict[str, Any]) -> list[str]:
+    return [value for _, value in labeled_fields(intake)]
 
 
 def is_exact_quote(text: str, fields: list[str]) -> bool:
+    """Exact substring match after line-ending normalization; nothing else is normalized."""
+    text = normalize_newlines(text)
     return bool(text) and any(text in field for field in fields)
 
 
@@ -145,6 +162,7 @@ def command_h1(args: argparse.Namespace) -> dict[str, Any]:
                 for literal in values:
                     if not is_exact_quote(literal, fields):
                         errors.append(f"{claim['claim_id']}: {kind} literal does not appear verbatim in the advisory")
+                        continue  # only checked literals are reported
                     literal_summary.setdefault(kind, [])
                     if literal not in literal_summary[kind]:
                         literal_summary[kind].append(literal)
@@ -187,7 +205,7 @@ def command_h2(args: argparse.Namespace) -> dict[str, Any]:
             "declined_scope": result.get("declined_scope", []) if isinstance(result, dict) else []}
 
 
-H4_RECORD_FIELDS = ("record_id", "kind", "answers", "final_status", "fallback_model", "fallback_use_permitted",
+H4_RECORD_FIELDS = ("record_id", "kind", "answers", "final_status", "ghsa_eligible", "fallback_model", "fallback_use_permitted",
                     "normalized_proposition", "proposed_disposition", "values")
 
 
@@ -198,9 +216,30 @@ def h4_projection(record: dict[str, Any]) -> dict[str, Any]:
 
 def value_source(record: dict[str, Any]) -> bool:
     """Field values may come only from verified records, with explicit permission for fallback results."""
-    return record.get("final_status") == "CROSS-MODEL VERIFIED" and (
+    return record.get("final_status") == "CROSS-MODEL VERIFIED" and record.get("ghsa_eligible") is True and (
         record.get("fallback_model") is not True or record.get("fallback_use_permitted") is True
     )
+
+
+def comparable(value: Any) -> str:
+    """Lists compare ignoring order; everything else compares as canonical JSON."""
+    if isinstance(value, list):
+        value = sorted(json.dumps(item, sort_keys=True) for item in value)
+    return json.dumps(value, sort_keys=True)
+
+
+def withhold_disagreeing_values(records: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Advisory-level fields: drop a field from every record when the value-source records that carry it disagree."""
+    carried: dict[str, set[str]] = {}
+    for record in records:
+        if value_source(record):
+            for field, value in (record.get("values") or {}).items():
+                carried.setdefault(field, set()).add(comparable(value))
+    withheld = sorted(field for field, values in carried.items() if len(values) > 1)
+    for record in records:
+        if isinstance(record.get("values"), dict):
+            record["values"] = {field: value for field, value in record["values"].items() if field not in withheld}
+    return [{"field": field, "reason": "verified records disagree"} for field in withheld]
 
 
 def command_h4_packet(args: argparse.Namespace) -> dict[str, Any]:
@@ -216,12 +255,14 @@ def command_h4_packet(args: argparse.Namespace) -> dict[str, Any]:
         answers = record.get("answers", [])
         if answers and all(a.get("ghsa_id") == advisory and a.get("claim_id") in claim_ids for a in answers):
             allowed.append(h4_projection(record))
+    withheld = withhold_disagreeing_values(allowed)
     packet = {
         "packet_type": "intake_h4",
         "ghsa_id": advisory,
         "intake_record": intake,
         "claims": claims,
         "finding_records": allowed,
+        "withheld_values": withheld,
     }
     allowed_ids = ["intake:" + advisory] + [f"claim:{claim_id}" for claim_id in sorted(claim_ids)] + [r["record_id"] for r in allowed]
     out = Path(args.out_dir)
@@ -273,6 +314,8 @@ def command_h4(args: argparse.Namespace) -> dict[str, Any]:
                     errors.append(f"{where}: value does not match a cited verified record")
             elif proposed != "draft":
                 errors.append(f"{where}: the only state a draft may propose is draft")
+            elif not any(ref in values_by_record for ref in update["record_refs"]):
+                errors.append(f"{where}: accepting to draft needs a cited GHSA-eligible verified record")
             scan(update["proposed_value_json"], where)
         proposed_fields = {update["field"] for update in result["field_updates"]}
         if {"severity", "cvss_vector_string"} <= proposed_fields:
@@ -288,6 +331,17 @@ def command_h4(args: argparse.Namespace) -> dict[str, Any]:
     status = effective_status(result, errors)
     return {"check": "h4", "effective_status": status, "errors": errors,
             "posting_brief": {"records_mentioned": sorted(mentioned), "highlighted_wording": highlights}}
+
+
+def command_render(args: argparse.Namespace) -> dict[str, Any]:
+    """Render each captured field as raw text, so intake roles see exactly the strings the checks compare."""
+    fields = labeled_fields(load_json(args.intake))
+    text = "".join(f"<<<FIELD {label}>>>\n{value}\n<<<END {label}>>>\n" for label, value in fields)
+    try:
+        Path(args.out).write_text(text, encoding="utf-8")
+    except OSError as error:
+        raise UsageError(f"cannot write {args.out}: {error}") from error
+    return {"check": "render", "effective_status": "COMPLETE", "errors": [], "fields": [label for label, _ in fields]}
 
 
 def normalize_whitespace(text: str) -> str:
@@ -336,8 +390,12 @@ def main() -> int:
     overlap = sub.add_parser("poc-overlap")
     overlap.add_argument("--h1", required=True)
     overlap.add_argument("--test-file", required=True)
+    render = sub.add_parser("render")
+    render.add_argument("--intake", required=True)
+    render.add_argument("--out", required=True, help="text file holding the packet's advisory data section")
     args = parser.parse_args()
-    handlers = {"h1": command_h1, "h2": command_h2, "h4-packet": command_h4_packet, "h4": command_h4, "poc-overlap": command_poc_overlap}
+    handlers = {"h1": command_h1, "h2": command_h2, "h4-packet": command_h4_packet, "h4": command_h4,
+                "poc-overlap": command_poc_overlap, "render": command_render}
     try:
         outcome = handlers[args.command](args)
     except (UsageError, KeyError, TypeError) as error:

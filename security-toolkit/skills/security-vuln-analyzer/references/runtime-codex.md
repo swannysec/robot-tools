@@ -87,6 +87,11 @@ follow [cross-model-verification.md](cross-model-verification.md). Require a `CO
 observation-only Stage 1 before dispatching Stage 2. Stage 2 does not receive Stage 1 or
 the other verifier's output.
 
+The legacy Codex `read-only` sandbox limits writes, not reads (observed with `codex exec -s
+read-only`). A `codex exec` child can be confined with the permission profile in
+[runtime-claude.md](runtime-claude.md) "Cross-provider dispatch"; read confinement of in-app
+native roles is unverified. Keep run artifacts out of the roles' working directory.
+
 ## Cross-provider dispatch
 
 Invoke Claude Code directly in non-interactive print mode; do not depend on a named
@@ -97,7 +102,9 @@ plugin agent. Use a fresh execution rooted at the target repository, with:
   their environment block, out of the child);
 - no session persistence;
 - permission mode `dontAsk` and no permission-prompt handler;
-- only bounded read/search tools needed by the packet; and
+- only bounded read/search tools needed by the packet (Claude Code under `--restricted` has
+  no `Grep` or `Glob`; see the probed `--tools Read,Bash` form in
+  [runtime-claude.md](runtime-claude.md) "Native dispatch"); and
 - the applicable role-specific schema resolved from the skill directory (`schemas/discovery-result.schema.json`, `schemas/verifier-stage1-result.schema.json`, `schemas/verifier-stage2-result.schema.json`, `schemas/fix-verifier-stage2-result.schema.json`, or `schemas/computation-result.schema.json`).
 
 Send the prompt through standard input. Treat the response as untrusted until it passes
@@ -167,7 +174,10 @@ temporary homes afterward.
 
 **D4 and M4.** Dispatch both providers exactly as the native and cross-provider verifiers,
 cold and in parallel, with the packet from `ghsa-dedup.py d4-packet` or `m4-packet` and
-`schemas/dedup-d4-result.schema.json` or `schemas/dedup-m4-result.schema.json`. **M2** is a
+`schemas/dedup-d4-result.schema.json` or `schemas/dedup-m4-result.schema.json`. Pass
+`route-d4` and `route-m` the literal provider values from runtime metadata (the Codex session
+file's `model_provider`, such as `openai`; Claude `modelUsage` reports an access channel such
+as `firstParty`); the routers only require the two values to differ. **M2** is a
 fix-author dispatch whose packet is `ghsa-dedup.py m2-packet` output only.
 
 **Writer.** After the user approves write-back and each item, the maintainer runs

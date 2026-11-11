@@ -1,0 +1,160 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "role_type",
+    "status",
+    "provider",
+    "model",
+    "effort",
+    "packet_revision",
+    "ghsa_id",
+    "field_updates",
+    "comment_drafts",
+    "declined_scope"
+  ],
+  "properties": {
+    "role_type": {
+      "type": "string",
+      "enum": [
+        "intake_h4"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "COMPLETE",
+        "MALFORMED",
+        "FAILED",
+        "MISSING"
+      ]
+    },
+    "provider": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "effort": {
+      "type": "string",
+      "enum": [
+        "high"
+      ]
+    },
+    "packet_revision": {
+      "type": "string"
+    },
+    "ghsa_id": {
+      "type": "string",
+      "pattern": "^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$"
+    },
+    "field_updates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "field",
+          "proposed_value_json",
+          "record_refs"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "enum": [
+              "state",
+              "cwe_ids",
+              "cvss_vector_string",
+              "severity",
+              "vulnerabilities"
+            ]
+          },
+          "proposed_value_json": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "record_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+            },
+            "minItems": 1,
+            "maxItems": 20
+          }
+        }
+      },
+      "maxItems": 10
+    },
+    "comment_drafts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "draft_id",
+          "statements"
+        ],
+        "properties": {
+          "draft_id": {
+            "type": "string",
+            "pattern": "^D[0-9]{1,3}$"
+          },
+          "statements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "text",
+                "record_refs"
+              ],
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2000
+                },
+                "record_refs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+                  },
+                  "minItems": 1,
+                  "maxItems": 20
+                }
+              }
+            },
+            "minItems": 1,
+            "maxItems": 30
+          }
+        }
+      },
+      "maxItems": 5
+    },
+    "declined_scope": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "task_element",
+          "reason"
+        ],
+        "properties": {
+          "task_element": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "description": "H4 write-back drafter. Every field update and comment statement cites allowed record IDs; values must match verified report records. Drafts only: a human posts comments."
+}

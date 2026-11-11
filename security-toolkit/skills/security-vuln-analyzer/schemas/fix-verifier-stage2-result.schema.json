@@ -1,6 +1,6 @@
 {
   "type": "object", "additionalProperties": false,
-  "required": ["role_type", "status", "provider", "model", "effort", "packet_revision", "pinned_revisions", "candidate_id", "normalized_proposition", "verification_result", "affected_gates", "evidence", "counterevidence", "remaining_assumptions", "uncertainty", "check_evidence", "closure_recommendation", "closure_conditions"],
+  "required": ["role_type", "status", "provider", "model", "effort", "packet_revision", "pinned_revisions", "candidate_id", "normalized_proposition", "verification_result", "affected_gates", "evidence", "counterevidence", "remaining_assumptions", "uncertainty", "check_evidence", "declined_scope", "closure_recommendation", "closure_conditions"],
   "properties": {
     "role_type": {"type": "string", "enum": ["verifier_stage2"]},
     "status": {"type": "string", "enum": ["COMPLETE", "MALFORMED", "FAILED", "MISSING"]},
@@ -18,6 +18,7 @@
     "remaining_assumptions": {"type": "array", "items": {"type": "string"}},
     "uncertainty": {"type": "array", "items": {"type": "string"}},
     "check_evidence": {"type": "array", "items": {"$ref": "#/$defs/citation"}},
+    "declined_scope": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["task_element", "reason"], "properties": {"task_element": {"type": "string", "minLength": 1}, "reason": {"type": "string", "minLength": 1}}}},
     "closure_recommendation": {"type": "string", "enum": ["YES", "CONDITIONAL YES", "NO", "INCONCLUSIVE"]},
     "closure_conditions": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["residual_scope_or_uncertainty", "tracking_reference", "owner", "acceptance_required"], "properties": {"residual_scope_or_uncertainty": {"type": "string", "minLength": 1}, "tracking_reference": {"type": "string", "minLength": 1}, "owner": {"type": "string", "minLength": 1}, "acceptance_required": {"type": "string", "minLength": 1}}}}
   },

@@ -21,7 +21,7 @@ Security investigation and analysis tools.
 
 **Skills:**
 - `secret-scanning-investigator` - Investigate GitHub secret scanning alerts with evidence-based analysis
-- `security-vuln-analyzer` - Portable evidence-led vulnerability analysis for Claude Code and Codex/ChatGPT Desktop. Uses three isolated discovery roles, mandatory cold native and cross-provider verification for security claims, deterministic dispute checks, a non-judgmental orchestrator, and retained `--verify-fix` and human-gated `--develop-fix` modes.
+- `security-vuln-analyzer` - Portable evidence-led vulnerability analysis for Claude Code and Codex/ChatGPT Desktop. Uses three isolated discovery roles, mandatory cold native and cross-provider verification for security claims, deterministic dispute checks, a non-judgmental orchestrator, retained `--verify-fix` and human-gated `--develop-fix` modes, and an optional `--ghsa` / `--ghsa-queue` advisory triage mode with deduplication and human-approved write-back.
 - `gha-hardening` - GitHub Actions security hardening — permissions, secrets, OIDC, attack patterns, supply chain, detection tools, runner security, incident response
 - `vanta` - Vanta compliance operations — posture analysis, audit readiness, vulnerability management, personnel compliance, flexible reporting, and direct API operations
 - `vercel-forensics` - Preservation-first forensic evidence collection and analysis for Vercel incidents — read-only collection across Vercel + GitHub, redaction, SHA-256 manifest + software WORM freeze, 8-section findings report, and rotation-worklist CSV handoff to subinium/metapod

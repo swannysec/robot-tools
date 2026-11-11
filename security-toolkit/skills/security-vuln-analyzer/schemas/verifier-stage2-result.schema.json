@@ -1,6 +1,6 @@
 {
   "type": "object", "additionalProperties": false,
-  "required": ["role_type", "status", "provider", "model", "effort", "packet_revision", "pinned_revisions", "candidate_id", "normalized_proposition", "verification_result", "affected_gates", "evidence", "counterevidence", "remaining_assumptions", "uncertainty", "check_evidence"],
+  "required": ["role_type", "status", "provider", "model", "effort", "packet_revision", "pinned_revisions", "candidate_id", "normalized_proposition", "verification_result", "affected_gates", "evidence", "counterevidence", "remaining_assumptions", "uncertainty", "check_evidence", "declined_scope"],
   "properties": {
     "role_type": {"type": "string", "enum": ["verifier_stage2"]}, "status": {"type": "string", "enum": ["COMPLETE", "MALFORMED", "FAILED", "MISSING"]},
     "provider": {"type": "string"}, "model": {"type": "string"}, "effort": {"type": "string", "enum": ["high"]}, "packet_revision": {"type": "string"},
@@ -9,7 +9,8 @@
     "affected_gates": {"type": "array", "items": {"type": "string", "enum": ["validity", "reachability", "impact", "mitigation_or_fix_state"]}},
     "evidence": {"type": "array", "items": {"$ref": "#/$defs/citation"}}, "counterevidence": {"type": "array", "items": {"$ref": "#/$defs/citation"}},
     "remaining_assumptions": {"type": "array", "items": {"type": "string"}}, "uncertainty": {"type": "array", "items": {"type": "string"}},
-    "check_evidence": {"type": "array", "items": {"$ref": "#/$defs/citation"}}
+    "check_evidence": {"type": "array", "items": {"$ref": "#/$defs/citation"}},
+    "declined_scope": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["task_element", "reason"], "properties": {"task_element": {"type": "string", "minLength": 1}, "reason": {"type": "string", "minLength": 1}}}}
   },
   "$defs": {
     "citation": {"type": "object", "additionalProperties": false, "required": ["source_kind", "repository", "revision", "relative_path", "start_line", "end_line", "quote", "observation", "artifact_id"], "properties": {"source_kind": {"type": "string", "enum": ["repository", "deterministic_check", "runtime_observation", "authoritative_source"]}, "repository": {"type": "string"}, "revision": {"type": "string"}, "relative_path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}, "quote": {"type": "string"}, "observation": {"type": "string"}, "artifact_id": {"type": "string"}}}

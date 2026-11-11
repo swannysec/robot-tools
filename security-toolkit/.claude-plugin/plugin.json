@@ -1,6 +1,6 @@
 {
   "name": "security-toolkit",
-  "version": "0.13.2",
+  "version": "0.14.0",
   "description": "Security investigation and analysis tools",
   "author": {
     "name": "swannysec",
@@ -28,6 +28,9 @@
     "threat-modeling",
     "adversarial-verification",
     "develop-fixes",
+    "ghsa-triage",
+    "security-advisories",
+    "deduplication",
     "cwe",
     "debiasing",
     "icd-203",

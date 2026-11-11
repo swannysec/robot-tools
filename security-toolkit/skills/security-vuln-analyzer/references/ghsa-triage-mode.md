@@ -53,7 +53,7 @@ git work tree; the script refuses a run root inside one. Layout:
 
 ```text
 <run-root>/<OWNER>__<REPO>/
-  index/<listing-id>/       queue listings and the cross-advisory index (IDs, hashes, typed literals; never report text)
+  index/<listing-id>/       queue listings and the cross-advisory index (IDs, hashes, typed and anchor literals; never report text)
   <GHSA-ID>/<run-id>/       (timestamp plus a random suffix, unique per capture)
     intake/                 advisory.raw.json, comments.raw.json, intake-record.json, H1/H2 results and checks
     analysis/               the unchanged analysis-mode artifacts
@@ -136,7 +136,13 @@ and drafts a comment asking for the missing element; a human posts it.
   from two roles stay separate), and treats a candidate as verified for GHSA use only when
   the manifest says `CROSS-MODEL VERIFIED` and both Stage 2 artifacts are complete,
   unrefused, `CONFIRMED`, and from different providers. Each record keeps its reconciled
-  `final_status` and carries `ghsa_eligible`, true only for those bridged records. It writes `report-records.json` (for `h4-packet` and the
+  `final_status` and carries `ghsa_eligible`, true only for those bridged records. A bridged
+  record's `values` carry its CWE IDs and, when its CVSS v4.0 record is `SCORED` or
+  `NOT SCORED` with a complete vector, that vector as `cvss_vector_string`; GitHub computes
+  the score and severity from the vector, so no score is carried. The vector is the roles'
+  label, not checked by Stage 2 (see [orchestrator-contract.md](orchestrator-contract.md)
+  "Computed CVSS v4.0 scores"); it reaches H4 only when every verified record with a vector
+  agrees exactly, and any write is human-approved. It writes `report-records.json` (for `h4-packet` and the
   writer), one `claim-sets/<claim_id>.json` per claim with verified records (for
   `d4-packet`), and `anchors.json` (for `reanchor`; for a D3 pair, pass both advisories'
   `anchors.json` files with `--anchors` and the pair's two claim-set files with `--claim-set`,
@@ -158,13 +164,19 @@ and drafts a comment asking for the missing element; a human posts it.
 1. **Indexing pass.** `ghsa-fetch.py queue --state all` lists every advisory in every state.
    For each advisory, capture it with `ghsa-fetch.py advisory` and run H1/D1 in its own
    packet, one advisory per packet. `scripts/ghsa-dedup.py index` writes the
-   cross-advisory index (IDs, digests, D0 fingerprints, and typed literals; never report
-   text) to the restricted run root.
+   cross-advisory index (IDs, digests, D0 fingerprints, typed literals, and anchor literals,
+   which are code-derived paths and symbols; never report text) to the restricted run root.
 2. **Per-advisory runs.** Analyze one advisory per run, with no model context shared across
    advisories. Order clusters as [ghsa-deduplication.md](ghsa-deduplication.md) describes.
+   After each advisory's `records`, add its `anchors.json` path to that advisory's item in
+   the `index --entries` file as `anchors` (beside `intake` and `h1_check`), then rerun
+   `ghsa-dedup.py index` and `cluster`, so its verified control sites can join advisories
+   whose reports share no literal with its own report.
 3. A single `--ghsa` run refreshes the advisory and compares it against the most recent
    index when one exists: add its fresh capture and H1 check to the index entries, rerun
-   `ghsa-dedup.py index` and `cluster`, and read its candidate pairs and cluster. Deduplication
+   `ghsa-dedup.py index` and `cluster`, and read its candidate pairs and cluster. When an
+   existing entries item's capture is refreshed, keep its `anchors` field, or point it at the
+   newer run's `anchors.json` once that run has written one. Deduplication
    sees the queue without loading other reports.
 
 Scheduled or webhook automation is deferred; queue mode is its future entry point. Never
@@ -234,15 +246,19 @@ explicitly permits that use for that result ([orchestrator-contract.md](orchestr
   intake record, A's checked claims, and only the finding records that answer those claims.
   It never includes relation records, other findings, variants beyond A's claims, or
   supporting-context material: each finding record is projected to its ID, kind,
-  `answers`, final status, fallback flags, proposition, disposition, and verified values,
-  with evidence, variants, and locations removed. Field values are advisory-level: when the
+  `answers`, final status, fallback flags, proposition, disposition, and its
+  values (verified records only), with evidence, variants, and locations removed. Field values are advisory-level: when the
   verified records that carry a field disagree (lists compared ignoring order), `h4-packet` removes
   that field from every record and lists it under `withheld_values`; records without the
-  field do not count. H4 is exempt from the no-JSON rendering rule: it quotes nothing from
+  field do not count. Roles record the CVSS vector they chose, so every verified record with
+  a complete vector takes part, and vectors are compared as exact strings: when the roles'
+  vectors differ at all (a different metric value, or an optional metric one role includes
+  and another omits), `cvss_vector_string` is withheld for the advisory and H4 proposes no
+  vector. H4 is exempt from the no-JSON rendering rule: it quotes nothing from
   the advisory and its check compares no quotes, so `h4-packet.json` (which embeds the
   intake record) is passed as is.
-- **Absent values:** the H4 packet states that a field for which no record carries a
-  verified value is not a task element: H4 proposes nothing for it and never lists it in
+- **Absent values:** the H4 packet states that a field for which no verified record carries a
+  value is not a task element: H4 proposes nothing for it and never lists it in
   `declined_scope`. Without that sentence, a dry-run H4 listed every field it had no value
   for, which made the draft `REFUSED`.
 - **Cited records:** every field update and comment statement cites record IDs.

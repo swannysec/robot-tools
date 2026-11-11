@@ -29,7 +29,7 @@ Each candidate has a required `scoring` object with three strict records. Each r
 
 `score`, `probability`, and `percentile` are numbers or null; unknown numbers are null, never fabricated zeroes. Unavailable string metadata is `""` and unavailable arrays are `[]`. `inputs` is an array of strings and `evidence` is an array of structured citations. Explain unknown or unavailable information with a nonblank `rationale`; do not represent unknown KEV membership as `NOT LISTED`.
 
-The role must explain the security authorities and trust boundaries supporting a CVSS score, supply an applicable CVE for a retrieved signal, and explain when a returned version is unavailable. These are author obligations: the controller does not assess whether a rationale is adequate or a CVE applies.
+The role must explain the security authorities and trust boundaries supporting each metric of a CVSS vector, supply an applicable CVE for a retrieved signal, and explain when a returned version is unavailable. These are author obligations: the controller does not assess whether a rationale is adequate or a CVE applies.
 
 After schema validation, the controller performs only literal presence, syntax, citation, and range checks. A `SCORED` CVSS record requires a `CVSS:4.0` vector, finite score from 0 through 10, nonblank score type, calculator version and rationale, nonempty inputs, and evidence. Other CVSS states require a null score. A `RETRIEVED` EPSS or KEV record requires a syntactically valid CVE, UTC retrieval timestamp, nonblank rationale, and evidence. EPSS probability must be finite from 0 through 1; percentile may be null or finite from 0 through 1. For other EPSS states, probability and percentile are null and timestamp and version are empty strings. For other KEV states, membership is `UNKNOWN` and timestamp and version are empty strings. `NO CVE` requires an empty CVE string. When a retrieved record has an empty version, require a nonblank rationale without judging its explanation. Missing or malformed mandatory fields or violations are `MALFORMED`, with one identical-packet retry, then `INCOMPLETE` if unrepaired. Do not use conditional schema keywords; the controller applies these post-schema checks without calculating values or inferring missing values from prose.
 
@@ -39,13 +39,19 @@ For literal vector syntax checks, use the required metrics, value abbreviations,
 in [FIRST's CVSS v4.0 vector specification, Table 23](https://www.first.org/cvss/v4.0/specification-document#Vector-String).
 Reject missing Base metrics, unknown metrics or values, duplicate metrics, and incorrect
 ordering. Syntax validation does not calculate the score or decide whether a metric choice
-or its security rationale is justified.
+or its security rationale is justified. These post-schema vector checks apply to `SCORED`
+records; a non-empty `NOT SCORED` vector that fails the grammar is not `MALFORMED`: the
+scorer refuses it (exit 2, rendered `not computed`) and `ghsa-dedup.py records` does not
+carry it.
 
-Use **CVSS v4.0** as the primary technical severity framework when the finding has enough evidence for a vector. Record the complete vector, score, calculator/version, score type (Base, Threat, Environmental, or Supplemental where used), inputs, and the security authorities/trust boundaries that justify the inputs.
+Use **CVSS v4.0** as the primary technical severity framework. A role chooses metrics and never computes a score; it has no calculator. When CVSS applies to the candidate, it records `cvss_v4` in one of two forms:
 
-CVSS describes technical severity; it neither establishes validity/reachability/impact nor predicts exploitation. Do not silently substitute CVSS v3.1. If a consumer requires v3.1, render it only as an explicitly labeled compatibility score alongside CVSS v4.0, with its own vector and rationale.
+- **Complete vector:** when the evidence supports a choice for every Base metric, record `NOT SCORED` with the complete vector (Base metrics, plus Threat, Environmental, or Supplemental metrics where used). List the metric choices in `inputs`, cite the evidence, and explain in `rationale` the security authorities and trust boundaries that justify each metric. `score` is null; `score_type` and `calculator_version` are `""`.
+- **Empty vector:** when evidence is insufficient to choose every Base metric, record `NOT SCORED` with an empty vector and name the missing evidence in `rationale`. Do not infer a metric from product category, repository name, or severity labels.
 
-When evidence is insufficient to score a metric, record `CVSS v4.0: NOT SCORED` with the missing evidence. Do not infer a score from product category, repository name, or severity labels.
+The packaged scorer computes every score from the role's vector, and the orchestrator renders the result beside the role record without editing it (see "Computed CVSS v4.0 scores" in [orchestrator-contract.md](orchestrator-contract.md)). `SCORED` remains in the schema for compatibility; a `SCORED` record a role emits anyway is checked as above and rendered unchanged.
+
+CVSS describes technical severity; it neither establishes validity/reachability/impact nor predicts exploitation. Do not silently substitute CVSS v3.1. No role or adapter computes a CVSS v3.1 score. If a consumer requires v3.1, state that only the CVSS v4.0 vector and the adapter-computed v4.0 score are available, labeled as v4.0.
 
 ## Exploitation signals
 

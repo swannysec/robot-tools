@@ -131,6 +131,9 @@ a verifier split. Any extra kind, role-emitted
 argument, unknown test ID, revision mismatch, or unavailable isolation yields `NOT_RUN`
 and routes the split to `DISPUTED`.
 
+Compute CVSS v4.0 scores only with the packaged `scripts/cvss4-score.py`, never through a
+model, as described under "Computed CVSS v4.0 scores" in `orchestrator-contract.md`.
+
 ## Waiting, retry, and failure
 
 - Wait for every role in a round; do not interpret partial results.

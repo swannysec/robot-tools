@@ -101,11 +101,12 @@ Test evidence state: STATICALLY_CONFIRMED | TEST_WRITTEN_NOT_RUN | TEST_OBSERVED
 Role and verifier-stage provenance and status for all four verifier-stage artifacts:
 ```
 
-Render the following exact fields for each role record, preserving states, numbers, metadata, rationale, and citations without calculation, score selection, or extracting missing fields from prose:
+Render the following exact fields for each role record, preserving states, numbers, metadata, rationale, and citations without calculation, score selection, or extracting missing fields from prose. The only computed values are the packaged scorer's output in the Computed CVSS v4.0 row, rendered beside the role record under "Computed CVSS v4.0 scores" in `orchestrator-contract.md`:
 
 | Report field | Source field |
 |---|---|
 | CVSS v4 | `candidate.scoring.cvss_v4.status`, `candidate.scoring.cvss_v4.vector`, `candidate.scoring.cvss_v4.score`, `candidate.scoring.cvss_v4.score_type`, `candidate.scoring.cvss_v4.calculator_version`, `candidate.scoring.cvss_v4.inputs`, `candidate.scoring.cvss_v4.rationale`, `candidate.scoring.cvss_v4.evidence` |
+| Computed CVSS v4.0 | `calculator`, `score`, `score_type`, and `severity` from `scripts/cvss4-score.py score --vector` run on `candidate.scoring.cvss_v4.vector`, labeled as computed by the adapter from the role's vector; `not computed` when the scorer is not run under `orchestrator-contract.md` or exits 2 |
 | EPSS | `candidate.scoring.epss.status`, `candidate.scoring.epss.cve`, `candidate.scoring.epss.probability`, `candidate.scoring.epss.percentile`, `candidate.scoring.epss.retrieved_at_utc`, `candidate.scoring.epss.version`, `candidate.scoring.epss.rationale`, `candidate.scoring.epss.evidence` |
 | KEV | `candidate.scoring.kev.status`, `candidate.scoring.kev.cve`, `candidate.scoring.kev.membership`, `candidate.scoring.kev.retrieved_at_utc`, `candidate.scoring.kev.version`, `candidate.scoring.kev.rationale`, `candidate.scoring.kev.evidence` |
 | CWE IDs | `candidate.cwe_ids` (the role's classification; empty means none supplied) |
@@ -221,7 +222,7 @@ Decision brief presented; human choice: run anyway | request evidence; recorded 
 ```text
 Relation — relation ID, canonical advisory/claim, other advisory/claim, relation, basis:
 D4 verdicts (provider, model, artifact digest); D5 result; membership M1/M3/M4:
-Canonical rule or override reason; human decision; invalidation state and reasons:
+Canonical rule or override reason; human decision (not required when the record's `proposed` is false); invalidation state and reasons:
 ```
 
 ```text

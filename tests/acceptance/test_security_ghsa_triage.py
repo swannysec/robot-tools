@@ -12,6 +12,9 @@ import sys
 import tempfile
 import unittest
 
+from tests.acceptance.test_security_source_citations import CVSS_V4_GRAMMAR_SAMPLES
+from tests.run_dual_runtime_acceptance import security_cvss_v4_vector_is_complete
+
 ROOT = Path(__file__).resolve().parents[2]
 SKILL = ROOT / "security-toolkit/skills/security-vuln-analyzer"
 SCRIPTS = SKILL / "scripts"
@@ -739,6 +742,56 @@ class DedupTest(Workspace):
         references, _, _ = self.synthetic_cluster([left[:2] + (unjoinable, None), right[:2] + (unjoinable, None)], "references")
         self.assertEqual([(p["shared_literal_kinds"], p["shared_literal_count"]) for p in references["pairs"]], [(["config_keys"], 2)])
 
+    def anchor(self, symbol, path):
+        return {"record_id": "R-1", "symbol": symbol, "path": path, "revision": "a" * 40, "line": 3}
+
+    def test_anchor_paths_join_unanalyzed_advisory(self):
+        analyzed = (IDS["base"], "The alpha reader trusts input without validation.", {"file_paths": ["src/alpha/reader.rs"]})
+        unanalyzed = (IDS["variant"], "The beta writer accepts unsigned payloads silently.", {"file_paths": ["src/beta/writer.rs"]}, None)
+        before, _, _ = self.synthetic_cluster([analyzed + (None,), unanalyzed], "before")
+        self.assertEqual((before["pairs"], before["clusters"]), ([], []))
+        after, _, _ = self.synthetic_cluster([analyzed + ([self.anchor("check", "src/beta/writer.rs")],), unanalyzed], "after")
+        self.assertEqual([(p["canonical"], p["other"]) for p in after["pairs"]], [(IDS["base"], IDS["variant"])])
+        self.assertEqual(after["pairs"][0]["shared_anchor_literal_count"], 1)
+        self.assertEqual(after["clusters"], [{"canonical": IDS["base"], "members": [IDS["base"], IDS["variant"]]}])
+
+    def test_anchor_anchor_join_without_report_literals(self):
+        def pairs(left_anchors, right_anchors, name, right_text="The delta cache keeps stale entries."):
+            result, _, _ = self.synthetic_cluster([(IDS["base"], "The gamma store loads records unchecked.", None, left_anchors),
+                                                   (IDS["variant"], right_text, None, right_anchors)], name)
+            return result["pairs"]
+        joined = pairs([self.anchor("gamma::store::load", "src/gamma/store.rs")], [self.anchor("gamma::store::load", "src/delta/cache.rs")], "qualified")
+        self.assertEqual([(p["shared_literal_kinds"], p["shared_anchor_literal_count"]) for p in joined], [(["symbols"], 1)])
+        self.assertEqual(pairs([self.anchor("alpha::list", "src/alpha/a.rs")], [self.anchor("beta::list", "src/beta/b.rs")], "final"), [])
+        # A bare anchor symbol joins neither a D0 `list(` symbol literal nor the same bare anchor.
+        self.assertEqual(pairs([self.anchor("list", "src/alpha/a.rs")], [self.anchor("list", "src/beta/b.rs")], "bare",
+                               right_text="Calling list() on the delta cache returns stale entries."), [])
+        # An empty anchor path or symbol is no literal, so it joins nothing.
+        self.assertEqual(pairs([self.anchor("load", ""), self.anchor("", "")], [self.anchor("list", ""), self.anchor("", "")], "empty"), [])
+
+    def test_anchors_do_not_change_same_text(self):
+        text = "The alpha reader trusts input from src/alpha/reader.rs without validation."
+        typed = {"file_paths": ["src/alpha/reader.rs"]}
+        result, _, index = self.synthetic_cluster([(IDS["base"], text, typed, [self.anchor("alpha::reader::read", "src/alpha/reader.rs")]),
+                                                   (IDS["variant"], text, typed, None)])
+        self.assertEqual([entry["anchor_literals"] for entry in index["advisories"]],
+                         [{"paths": ["src/alpha/reader.rs"], "symbols": ["alpha::reader::read"]}, {"paths": [], "symbols": []}])
+        self.assertTrue(result["pairs"][0]["same_text_proposed"])
+
+    def test_index_without_anchors_is_unchanged(self):
+        result = self.cluster(["base", "variant", "resubmission", "no_repro"])
+        index = json.loads((self.tmp / "index.json").read_text(encoding="utf-8"))
+        self.assertEqual([entry["anchor_literals"] for entry in index["advisories"]], [{"paths": [], "symbols": []}] * 4)
+        kinds = ["config_keys", "paths", "symbols"]
+
+        def pair(canonical, other, count, same_text, similarity):
+            return {"canonical": IDS[canonical], "other": IDS[other], "lineage_reference": False, "same_text_proposed": same_text,
+                    "shared_literal_count": count, "shared_literal_kinds": kinds, "similarity": similarity, "shared_anchor_literal_count": 0}
+        # The pairs and clusters the index produced before anchor literals existed, plus a zero anchor count.
+        self.assertEqual(result["pairs"], [pair("base", "variant", 3, False, 0.8077), pair("base", "resubmission", 4, True, 1.0),
+                                           pair("variant", "resubmission", 3, False, 0.8077)])
+        self.assertEqual(result["clusters"], [{"canonical": IDS["base"], "members": [IDS["base"], IDS["variant"], IDS["resubmission"]]}])
+
     def x_finding(self, **overrides):
         finding = {"record_id": "F-X", "ghsa_id": IDS["base"], "final_status": "CROSS-MODEL VERIFIED", "contract_accepted": True,
                    "fix_revision": "d" * 40, "locations": [["example-repo", "c" * 40, "src/workspace/loader.rs", 10, 20]],
@@ -775,6 +828,20 @@ class DedupTest(Workspace):
         self.assertEqual(result["result"], "FAILED")
         self.assertIn("Y is not in X's D2 cluster", result["ineligible_reasons"])
 
+    def test_m1_accepts_anchor_joined_pair(self):
+        # X's report and Y's report share no literal; X's verified control site is the path Y's report names.
+        _, clusters, _ = self.synthetic_cluster([
+            (IDS["base"], "The workspace opener trusts folders it should not.", {"file_paths": ["src/workspace/opener.rs"]},
+             [self.anchor("loader::open_workspace", "src/workspace/loader.rs")]),
+            (IDS["variant"], "Folders are trusted without a prompt.", {"file_paths": ["src/workspace/loader.rs"]}, None)], "m1-anchor")
+        h1 = write(self.tmp / "y-h1.json", self.h1_result("variant", [claim("C1", "reads the key without checking", paths=["src/workspace/loader.rs"])]))
+        check = write(self.tmp / "y-check.json", {"effective_status": "COMPLETE"})
+        code, _, err = run("ghsa-dedup.py", "m1", "--x-finding", self.x_finding(), "--y-h1", h1, "--y-h1-check", check,
+                           "--clusters", clusters, "--out", self.tmp / "m1.json")
+        self.assertEqual(code, 0, err)
+        result = json.loads((self.tmp / "m1.json").read_text(encoding="utf-8"))
+        self.assertEqual((result["result"], result["ineligible_reasons"]), ("PASSED", []))
+
     def test_m2_and_m4_packets_exclude_free_text(self):
         _, h1, check = self.m1([claim("C1", "reads the key without checking", paths=["src/workspace/loader.rs"])])
         m2 = self.tmp / "m2.json"
@@ -799,8 +866,9 @@ class DedupTest(Workspace):
         route = DEDUP["route_d4_relation"]
         S, V, D, N = "SAME_ROOT_CAUSE", "VARIANT", "DISTINCT", "NON_COMPLETE"
         cases = [((S, S, "NONE"), S), ((S, S, "PASSED"), S), ((S, S, "FAILED"), "UNRESOLVED"), ((V, V, "PASSED"), V),
-                 ((D, D, "FAILED"), D), ((S, V, "PASSED"), S), ((S, D, "FAILED"), V), ((V, D, "NONE"), "UNRESOLVED"),
-                 ((S, N, "PASSED"), None)]
+                 ((D, D, "FAILED"), D), ((S, V, "PASSED"), S), ((S, D, "FAILED"), V), ((V, D, "NONE"), V),
+                 ((D, V, "NONE"), V), ((S, V, "NONE"), "UNRESOLVED"), ((D, S, "NONE"), "UNRESOLVED"), ((V, D, "PASSED"), S),
+                 ((D, V, "FAILED"), V), ((S, N, "PASSED"), None)]
         for args, expected in cases:
             self.assertEqual(route(*args), expected, args)
 
@@ -842,6 +910,20 @@ class DedupTest(Workspace):
         self.assertEqual(out["relation"], "UNRESOLVED")
         code, out = self.route(self.d4("n.json", "SAME_ROOT_CAUSE"), self.d4("c.json", "VARIANT", status="FAILED"))
         self.assertEqual((code, out["routing"]), (8, "FULL_ANALYSIS"))
+
+    def test_only_same_root_cause_relations_await_a_human(self):
+        failed = (self.computation("b.json", "PASSED"), self.computation("f.json", "FAILED"))
+        cases = [(("VARIANT", "DISTINCT"), None, "VARIANT", False), (("VARIANT", "VARIANT"), None, "VARIANT", False),
+                 (("DISTINCT", "DISTINCT"), None, "DISTINCT", False), (("SAME_ROOT_CAUSE", "VARIANT"), None, "UNRESOLVED", True),
+                 (("SAME_ROOT_CAUSE", "SAME_ROOT_CAUSE"), None, "SAME_ROOT_CAUSE", True),
+                 # D5 failed against a SAME_ROOT_CAUSE leg: a possible incomplete fix, so a human still checks.
+                 (("SAME_ROOT_CAUSE", "VARIANT"), failed, "VARIANT", True), (("VARIANT", "VARIANT"), failed, "VARIANT", False)]
+        for (native, cross), d5, expected, proposed in cases:
+            code, out = self.route(self.d4("n.json", native), self.d4("c.json", cross), d5=d5)
+            self.assertEqual((code, out["relation"]), (0, expected), (native, cross, d5))
+            relation = json.loads((self.tmp / "relation.json").read_text(encoding="utf-8"))
+            self.assertEqual((relation["relation"], relation["proposed"]), (expected, proposed), (native, cross, d5))
+            self.assertEqual(out["relation_id"], relation["relation_id"])
 
     def test_same_provider_legs_never_form_a_relation(self):
         code, out = self.route(self.d4("n.json", "SAME_ROOT_CAUSE"), self.d4("c.json", "SAME_ROOT_CAUSE"), providers=("anthropic", "Anthropic"))
@@ -992,14 +1074,14 @@ REV = "c" * 40
 CVSS_A = "CVSS:4.0/AV:L/AC:L/AT:N/PR:N/UI:P/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
 
 
-def candidate(local_id, proposition, claim_ids=("C1",), start=10, cvss="", cwe=(), symbol="", affects=True):
+def candidate(local_id, proposition, claim_ids=("C1",), start=10, cvss="", cwe=(), symbol="", affects=True, cvss_status=None):
     return {"role_local_id": local_id, "normalized_proposition": proposition, "proposed_disposition": "vulnerability finding",
             "affects_security_claim": affects,
             "locations": [{"repository": "example-repo", "revision": REV, "relative_path": "src/workspace/loader.rs",
                            "start_line": start, "end_line": start + 10}],
             "primitive_class": "missing authorization", "variant_family": "workspace trust", "enumerated_variants": ["auto_trust set"],
             "invariant_test_contract": {"applicable": True, "invariant": "untrusted workspaces never auto-trust"},
-            "scoring": {"cvss_v4": {"status": "SCORED" if cvss else "NOT SCORED", "vector": cvss}},
+            "scoring": {"cvss_v4": {"status": cvss_status or ("SCORED" if cvss else "NOT SCORED"), "vector": cvss}},
             "claim_ids": list(claim_ids), "cwe_ids": list(cwe),
             "control_site": {"symbol": symbol, "relative_path": "src/loader.rs" if symbol else "", "line": 3 if symbol else 0},
             "evidence": [{"observation": "ROLE-EVIDENCE-TEXT"}]}
@@ -1163,6 +1245,32 @@ class RecordsTest(Workspace):
         listed = [item["record_id"] for item in out["not_bridged"]]
         self.assertEqual(len(listed), len(set(listed)))
         self.assertEqual(set(listed), {r["record_id"] for r in records if not r["ghsa_eligible"]})
+
+    def test_records_takes_complete_vector_from_unscored_record(self):
+        # Roles record NOT SCORED with the vector they chose; only a complete vector from a SCORED or
+        # NOT SCORED record becomes the record's `cvss_vector_string` value.
+        cases = [("NOT SCORED", CVSS_A, True), ("NOT SCORED", "CVSS:4.0/AV:N", False), ("NOT SCORED", "", False),
+                 ("NOT APPLICABLE", CVSS_A, False), ("SCORED", CVSS_A, True), ("SCORED", CVSS_A + "/E:A/E:P", False)]
+        items = [candidate(f"R1-{i}", f"Loader skips trust, case {i}.", start=10 + i, cvss=vector, cvss_status=status)
+                 for i, (status, vector, _) in enumerate(cases)]
+        ids = [expected_candidate_id(item, REV) for item in items]
+        code, out = self.run_records([self.discovery("role1.json", items)], {cid: self.verified(cid) for cid in ids})
+        self.assertEqual(code, 0, out)
+        records = json.loads((self.tmp / "records-out/report-records.json").read_text(encoding="utf-8"))["records"]
+        by_local = {r["role_local_id"]: r for r in records}
+        for i, (status, vector, carried) in enumerate(cases):
+            with self.subTest(status=status, vector=vector):
+                self.assertTrue(by_local[f"R1-{i}"]["ghsa_eligible"])
+                self.assertEqual(by_local[f"R1-{i}"]["values"], {"cvss_vector_string": vector} if carried else {})
+
+    def test_records_vector_grammar_matches_runner(self):
+        verdicts = set()
+        for vector in CVSS_V4_GRAMMAR_SAMPLES:
+            with self.subTest(vector=vector):
+                accepted = security_cvss_v4_vector_is_complete(vector)
+                verdicts.add(accepted)
+                self.assertIs(DEDUP["cvss_v4_vector_is_complete"](vector), accepted)
+        self.assertEqual(verdicts, {True, False})
 
     def test_records_outputs_are_private(self):
         permissive_umask(self)

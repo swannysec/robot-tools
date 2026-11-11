@@ -148,6 +148,8 @@ def command_index(args: argparse.Namespace) -> dict[str, Any]:
             check = load(item["h1_check"])
             if check.get("effective_status") == "COMPLETE":  # literals from a failed H1 check are unchecked
                 typed = check.get("typed_literals", {})
+        # Anchors come from `records`, which writes them only for bridged records, so they need no H1-style gate.
+        anchors = load(item["anchors"]).get("anchors", []) if item.get("anchors") else []
         entries.append({
             "ghsa_id": advisory["ghsa_id"],
             "state": advisory.get("state", ""),
@@ -158,6 +160,8 @@ def command_index(args: argparse.Namespace) -> dict[str, Any]:
             "shingles": shingle_hashes(text),
             "d0_literals": extract_literals(text),
             "typed_literals": typed,
+            "anchor_literals": {"paths": sorted({a["path"] for a in anchors if a.get("path")}),
+                                "symbols": sorted({a["symbol"] for a in anchors if a.get("symbol")})},
         })
     entries.sort(key=lambda e: (e["created_at"], e["ghsa_id"]))
     index = {"record_type": "ghsa_dedup_index", "adapter": ADAPTER_NAME, "adapter_version": ADAPTER_VERSION,
@@ -166,6 +170,13 @@ def command_index(args: argparse.Namespace) -> dict[str, Any]:
     # An entry without checked literals clusters on D0 literals only; count it so it is not silently missed.
     without = sum(1 for entry in entries if not has_joinable_typed(entry))
     return {"status": "COMPLETE", "advisories": len(entries), "entries_without_typed_literals": without}
+
+
+def anchor_set(entry: dict[str, Any]) -> set[tuple[str, str]]:
+    # A bare anchor symbol (no `::`) is too common a name to join on; anchor paths always join.
+    anchors = entry.get("anchor_literals", {})
+    values = {("paths", value) for value in anchors.get("paths", [])}
+    return values | {("symbols", value) for value in anchors.get("symbols", []) if "::" in value}
 
 
 def has_joinable_typed(entry: dict[str, Any]) -> bool:
@@ -178,7 +189,7 @@ def literal_set(entry: dict[str, Any]) -> set[tuple[str, str]]:
     values = {(kind, value) for kind in joinable for value in entry.get("d0_literals", {}).get(kind, [])}
     for kind, mapped in TYPED_JOIN_MAP.items():
         values |= {(mapped, value) for value in entry.get("typed_literals", {}).get(kind, [])}
-    return values
+    return values | anchor_set(entry)
 
 
 def all_extracted(entry: dict[str, Any]) -> Any:
@@ -199,7 +210,7 @@ def command_cluster(args: argparse.Namespace) -> dict[str, Any]:
     for i, left in enumerate(advisories):
         for right in advisories[i + 1:]:
             similarity = jaccard(left["shingles"], right["shingles"])
-            shared = sorted(literal_set(left) & literal_set(right))
+            shared = literal_set(left) & literal_set(right)
             lineage = (right["ghsa_id"] in left["d0_literals"].get("advisory_ids", [])
                        or left["ghsa_id"] in right["d0_literals"].get("advisory_ids", []))
             if similarity < CANDIDATE_SIMILARITY and not shared and not lineage:
@@ -209,6 +220,7 @@ def command_cluster(args: argparse.Namespace) -> dict[str, Any]:
                 "canonical": left["ghsa_id"], "other": right["ghsa_id"],
                 "similarity": round(similarity, 4), "shared_literal_count": len(shared),
                 "shared_literal_kinds": sorted({kind for kind, _ in shared}),
+                "shared_anchor_literal_count": len(shared & (anchor_set(left) | anchor_set(right))),
                 "lineage_reference": lineage, "same_text_proposed": same_text,
             })
             if shared or lineage:
@@ -285,6 +297,33 @@ def candidate_id(item: dict[str, Any], primary_revision: str) -> str:
     return "SVA-" + hashlib.sha256(data).hexdigest()[:20]
 
 
+# FIRST v4.0 Table 23 grammar, copied from the repository's acceptance runner
+# (`security_cvss_v4_vector_is_complete`) and scripts/cvss4-score.py: base metrics required
+# in order, every optional metric at most once and in order.
+CVSS_V4_BASE_GRAMMAR = (
+    ("AV", "[NALP]"), ("AC", "[LH]"), ("AT", "[NP]"), ("PR", "[NLH]"),
+    ("UI", "[NPA]"), ("VC", "[HLN]"), ("VI", "[HLN]"), ("VA", "[HLN]"),
+    ("SC", "[HLN]"), ("SI", "[HLN]"), ("SA", "[HLN]"),
+)
+CVSS_V4_OPTIONAL_GRAMMAR = (
+    ("E", "[XAPU]"), ("CR", "[XHML]"), ("IR", "[XHML]"), ("AR", "[XHML]"),
+    ("MAV", "[XNALP]"), ("MAC", "[XLH]"), ("MAT", "[XNP]"), ("MPR", "[XNLH]"),
+    ("MUI", "[XNPA]"), ("MVC", "[XNLH]"), ("MVI", "[XNLH]"), ("MVA", "[XNLH]"),
+    ("MSC", "[XNLH]"), ("MSI", "[XNLHS]"), ("MSA", "[XNLHS]"),
+    ("S", "[XNP]"), ("AU", "[XNY]"), ("R", "[XAUI]"), ("V", "[XDC]"),
+    ("RE", "[XLMH]"), ("U", "(?:X|Clear|Green|Amber|Red)"),
+)
+CVSS_V4_PATTERN = re.compile(
+    r"CVSS:4\.0" + "".join(f"/{name}:{values}" for name, values in CVSS_V4_BASE_GRAMMAR)
+    + "".join(f"(?:/{name}:{values})?" for name, values in CVSS_V4_OPTIONAL_GRAMMAR)
+)
+
+
+def cvss_v4_vector_is_complete(vector: Any) -> bool:
+    """Literal grammar check only; it never calculates a score or fills in a metric."""
+    return isinstance(vector, str) and CVSS_V4_PATTERN.fullmatch(vector) is not None
+
+
 def stage2_confirms(entry: dict[str, Any], cid: str) -> bool:
     """True when both Stage 2 legs CONFIRMED; False for a complete split. Anything inconsistent is a usage error."""
     legs = entry.get("stage2")
@@ -350,7 +389,8 @@ def command_records(args: argparse.Namespace) -> dict[str, Any]:
         values: dict[str, Any] = {}
         if bridged:
             cvss = item.get("scoring", {}).get("cvss_v4", {})
-            if cvss.get("status") == "SCORED" and cvss.get("vector"):
+            # Roles record NOT SCORED with the complete vector they chose; GitHub derives severity from the vector.
+            if cvss.get("status") in ("SCORED", "NOT SCORED") and cvss_v4_vector_is_complete(cvss.get("vector")):
                 values["cvss_vector_string"] = cvss["vector"]
             if item.get("cwe_ids"):
                 values["cwe_ids"] = sorted(set(item["cwe_ids"]))
@@ -577,6 +617,9 @@ def route_d4_relation(native: str, cross: str, d5: str) -> str | None:
         if native == "SAME_ROOT_CAUSE":
             return "UNRESOLVED" if d5 == "FAILED" else "SAME_ROOT_CAUSE"
         return native
+    # A VARIANT/DISTINCT split without D5 has no duplicate to decide; record the more cautious VARIANT, no human needed.
+    if d5 == "NONE" and "SAME_ROOT_CAUSE" not in (native, cross):
+        return "VARIANT"
     return {"PASSED": "SAME_ROOT_CAUSE", "FAILED": "VARIANT"}.get(d5, "UNRESOLVED")
 
 
@@ -587,7 +630,7 @@ def relation_record(args: argparse.Namespace, relation: str, basis: str, **field
         "created_at_utc": utc_now(),
         "canonical": {"ghsa_id": args.canonical_ghsa, "claim_id": args.canonical_claim, "record_id": args.canonical_record},
         "other": {"ghsa_id": args.other_ghsa, "claim_id": args.other_claim, "record_id": args.other_record},
-        "relation": relation, "basis": basis, "proposed": relation not in ("RELATED", "DISTINCT"),
+        "relation": relation, "basis": basis, "proposed": relation not in ("RELATED", "DISTINCT", "VARIANT"),
         "d4_verdicts": fields.get("d4_verdicts", []), "d5_result": fields.get("d5", "NONE"),
         "membership": fields.get("membership", {"m1": "NOT_RUN", "m3": "NOT_RUN", "m4": []}),
         "canonical_choice": {"rule": "HUMAN_OVERRIDE" if args.override_reason else "EARLIEST_RECEIVED", "override_reason": args.override_reason or ""},
@@ -626,6 +669,8 @@ def command_route_d4(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     basis = "D4" if native == cross else "D5" if d5 != "NONE" else "D4"
     artifacts = [v["artifact_sha256"] for v in verdicts] + [digest(Path(p).read_bytes()) for p in (args.d5_base, args.d5_fix) if p]
     record = relation_record(args, relation, basis, d4_verdicts=verdicts, d5=d5, artifacts=artifacts)
+    if relation == "VARIANT" and "SAME_ROOT_CAUSE" in (native, cross):
+        record["proposed"] = True  # D5 failed against a SAME_ROOT_CAUSE leg: possible incomplete fix; a human checks
     dump(args.out, record)
     return {"status": "COMPLETE", "routing": "RELATION", "relation": relation, "relation_id": record["relation_id"]}, EXIT_OK
 

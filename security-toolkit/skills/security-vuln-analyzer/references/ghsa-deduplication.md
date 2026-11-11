@@ -43,6 +43,10 @@ canonical claim.
 | D5 Fix oracle | Deterministic (`scripts/deterministic-check.py`) | Run Y's skill-authored adversarial-input regression test on X's fix revision; pass supports `SAME_ROOT_CAUSE`, fail means `VARIANT` or an incomplete fix |
 | D6 Human confirmation | Human, with a decision brief | Confirm, pick the canonical, or mark variant, distinct, related, or needs more; outward actions stay manual |
 
+`index` takes typed literals only from an H1 check whose `effective_status` is `COMPLETE`.
+An advisory without checked literals clusters on D0 literals alone; the command result
+counts such entries (`entries_without_typed_literals`) so they are not silently missed.
+
 D5 tests are authored and their registry is frozen before D4 dispatch, so a D5 result can
 never be a check invented after seeing verifier results
 ([deterministic-validation.md](deterministic-validation.md)). Y's test is authored by the
@@ -85,7 +89,9 @@ Every relation other than `RELATED` and `DISTINCT` is a proposal until the human
 it at D6 (`ghsa-dedup.py human`). `ghsa-dedup.py relate` records a D0 `SAME_TEXT` proposal or
 a relation the human sets directly. `route-d4` and `route-m` take each leg's provider and model
 from runtime metadata, not role output, and refuse to record a relation unless the two legs
-come from different providers. A `SAME_TEXT` match is proposed by D0 only when the normalized texts are
+come from different providers. The routers check pair identity, status, `declined_scope`, and
+verdict only; validate each D4 or M4 artifact against its schema and citations before
+routing it. A `SAME_TEXT` match is proposed by D0 only when the normalized texts are
 near-identical and the extracted literal sets are identical; one differing config key
 means it is not `SAME_TEXT`. After human confirmation, the original's analysis stands for
 both advisories.

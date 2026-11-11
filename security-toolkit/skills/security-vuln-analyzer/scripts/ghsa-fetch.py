@@ -152,7 +152,15 @@ def ensure_run_root(run_root: Path) -> Path:
 
 
 def restricted_dir(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True)
+    # Create every missing level with mode 700, not only the leaf (mkdir(parents=True) uses the umask).
+    missing = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    for directory in reversed(missing):
+        directory.mkdir(exist_ok=True)
+        os.chmod(directory, 0o700)
     os.chmod(path, 0o700)
     return path
 

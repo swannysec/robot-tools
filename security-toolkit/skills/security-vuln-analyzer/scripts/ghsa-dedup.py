@@ -116,7 +116,9 @@ def command_index(args: argparse.Namespace) -> dict[str, Any]:
         text = "\n".join([advisory.get("summary", ""), advisory.get("description", "")])
         typed = {}
         if item.get("h1_check"):
-            typed = load(item["h1_check"]).get("typed_literals", {})
+            check = load(item["h1_check"])
+            if check.get("effective_status") == "COMPLETE":  # literals from a failed H1 check are unchecked
+                typed = check.get("typed_literals", {})
         entries.append({
             "ghsa_id": advisory["ghsa_id"],
             "state": advisory.get("state", ""),
@@ -132,7 +134,9 @@ def command_index(args: argparse.Namespace) -> dict[str, Any]:
     index = {"record_type": "ghsa_dedup_index", "adapter": ADAPTER_NAME, "adapter_version": ADAPTER_VERSION,
              "created_at_utc": utc_now(), "advisories": entries}
     dump(args.out, index)
-    return {"status": "COMPLETE", "advisories": len(entries)}
+    # An entry without checked literals clusters on D0 literals only; count it so it is not silently missed.
+    without = sum(1 for entry in entries if not any(entry["typed_literals"].values()))
+    return {"status": "COMPLETE", "advisories": len(entries), "entries_without_typed_literals": without}
 
 
 def literal_set(entry: dict[str, Any]) -> set[tuple[str, str]]:

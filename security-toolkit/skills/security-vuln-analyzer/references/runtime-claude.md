@@ -95,6 +95,15 @@ delegation. Close standard input. Each child receives
 only its frozen packet, and no session, instruction, or memory loading. Do not expose
 one discovery result to another role.
 
+Claude Code 2.1.322 under `--restricted` offers no `Grep` or `Glob` tool (`--tools
+Read,Grep,Glob` yields only `Read`), and `Read` on a directory fails with `EISDIR`. A
+probed working form for read-only roles is `--restricted --safe-mode --permission-mode
+dontAsk --tools Read,Bash`, launched from inside the pinned snapshot. In that probe,
+read-only commands inside the working directory ran, while reads outside it, relative
+escapes (`../`), and writes were denied. Some legitimate searches were also denied: shell
+globs, `cd` into a sibling supporting-context snapshot, and compound pipelines. Give roles
+concrete paths in their packets. Network denial under this form is unverified.
+
 Require exit status zero, `is_error: false`, and a `structured_output` object that
 validates against the complete applicable schema. Validate citations and other literal
 contract checks as well. Wait for all discovery roles and complete schema and citation
@@ -125,11 +134,16 @@ fresh execution rooted at the target repository, with:
   session record stays out of the user's Codex home. Remove both after capturing the run.
 
 Codex `--json` events do not name the model. Read the actual model from `turn_context.model`
-in the session file under the temporary `CODEX_HOME` (not `--ephemeral`, which discards it),
-and treat any `model_reroute` event (`from_model`, `to_model`, `reason`) or "model rerouted"
+in the session file under the temporary `CODEX_HOME` (not `--ephemeral`, which discards it);
+`turn_context.effort` in the same record verifies the reasoning effort. Treat any `model_reroute` event (`from_model`, `to_model`, `reason`) or "model rerouted"
 notice as a role fallback. Never set `allow_provider_model_fallback`. Treat the error codes
 `cyber_policy`, `bio_policy`, and `content_filter` as hard refusals; their exact event shape
 is confirmed by live verification.
+
+The `read-only` sandbox limits writes and commands, not reads: the Codex child can read any
+file the user can, including other role artifacts under the run root. Cold isolation for the
+Codex leg therefore rests on packet scope and the child's own `HOME`/`CODEX_HOME`, not on
+the sandbox.
 
 Send the prompt through standard input and close the stream immediately. Treat standard
 output as untrusted until it passes the expected schema. Do not expose raw verifier
@@ -195,7 +209,10 @@ with `scripts/intake-check.py` and read model and refusal metadata as above.
 **D4 and M4.** Dispatch both providers exactly as the native and cross-provider verifiers,
 cold and in parallel, with the packet from `ghsa-dedup.py d4-packet` or `m4-packet` and
 `schemas/dedup-d4-result.schema.json` or `schemas/dedup-m4-result.schema.json`. Read tools
-are limited to the pinned target, as for verifiers. **M2** is a fix-author dispatch whose
+are limited to the pinned target, as for verifiers. Pass `route-d4` and `route-m` the literal
+provider values from runtime metadata: the hosts use different vocabularies (Claude
+`modelUsage` reports an access channel such as `firstParty`; the Codex session file reports
+`model_provider` such as `openai`), and the routers only require the two values to differ. **M2** is a fix-author dispatch whose
 packet is `ghsa-dedup.py m2-packet` output only.
 
 **Writer child.** After the user approves write-back and each item, launch a minimal child

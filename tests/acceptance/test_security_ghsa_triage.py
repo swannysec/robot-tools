@@ -153,6 +153,14 @@ class ReadAdapterTest(Workspace):
         self.assertNotEqual(first, second)
         self.assertTrue((first / "advisory.raw.json").is_file() and (second / "advisory.raw.json").is_file())
 
+    def test_run_directories_are_private(self):
+        intake_dir, _ = self.capture("base")
+        self.assertIn(self.run_root, intake_dir.parents)
+        directory = intake_dir
+        while directory != self.run_root:
+            self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700, directory)
+            directory = directory.parent
+
     def test_run_root_inside_git_work_tree_is_refused(self):
         repo_dir = self.tmp / "work"
         repo_dir.mkdir()
@@ -231,6 +239,42 @@ class IntakeCheckTest(Workspace):
         self.assertNotIn("<= 1.2.3", DATA["advisories"]["base"]["description"])
         code, out = self.check_h1(result)
         self.assertEqual((code, out["effective_status"]), (0, "COMPLETE"), out["errors"])
+
+    def crlf_intake(self):
+        intake_dir, record = self.capture("base")
+        record["advisory"]["description"] = record["advisory"]["description"].replace("\n", "\r\n")
+        return write(intake_dir / "intake-record.json", record), record
+
+    def test_crlf_quote_is_accepted(self):
+        intake, _ = self.crlf_intake()
+        span = "1. Create a fixture workspace.\n2. Set `workspace.auto_trust` to true."
+        for quote, expected in ((span, "COMPLETE"), (span.replace("\n", "\r\n"), "COMPLETE"),
+                                (span.replace("Create", "Build"), "MALFORMED")):
+            result = self.h1_result("base", [dict(BASE_CLAIM, statement_quote=quote)])
+            path = write(self.tmp / "h1-crlf.json", result)
+            _, out, _ = run("intake-check.py", "h1", "--intake", intake, "--result", path)
+            self.assertEqual(json.loads(out)["effective_status"], expected, quote)
+
+    def test_render_shows_raw_field_text(self):
+        intake, record = self.crlf_intake()
+        out_path = self.tmp / "rendered.txt"
+        code, out, err = run("intake-check.py", "render", "--intake", intake, "--out", out_path)
+        self.assertEqual((code, json.loads(out)["effective_status"]), (0, "COMPLETE"), err)
+        text = out_path.read_text(encoding="utf-8")
+        self.assertNotIn("\r", text)
+        self.assertNotIn("\\n", text)  # no JSON escapes
+        self.assertIn("<<<FIELD description>>>\n", text)
+        self.assertIn("\n<= 1.2.3\n", text)  # versions appear bare, not as JSON
+        intake_check = runpy.run_path(str(SCRIPTS / "intake-check.py"))
+        for field in intake_check["captured_fields"](record):
+            self.assertIn(field, text)
+
+    def test_failed_literals_are_not_collected(self):
+        bad = json.loads(json.dumps(BASE_CLAIM))
+        bad["literals"]["file_paths"] = ["src/workspace/loader.rs", "src/not/in/report.rs"]
+        _, out = self.check_h1(self.h1_result("base", [bad]))
+        self.assertEqual(out["effective_status"], "MALFORMED")
+        self.assertEqual(out["typed_literals"]["file_paths"], ["src/workspace/loader.rs"])
 
     def test_zero_claims_is_malformed(self):
         _, out = self.check_h1(self.h1_result("base", []))
@@ -517,7 +561,8 @@ class DedupTest(Workspace):
             intake_dir, _ = self.capture(key)
             entry = {"intake": str(intake_dir / "intake-record.json")}
             if h1_literals and key in h1_literals:
-                entry["h1_check"] = str(write(self.tmp / f"h1check-{key}.json", {"typed_literals": h1_literals[key]}))
+                entry["h1_check"] = str(write(self.tmp / f"h1check-{key}.json",
+                                              {"effective_status": "COMPLETE", "typed_literals": h1_literals[key]}))
             entries.append(entry)
         entries_path = write(self.tmp / "entries.json", {"entries": entries})
         index = self.tmp / "index.json"
@@ -534,6 +579,21 @@ class DedupTest(Workspace):
         self.assertEqual(first, second)
         self.assertNotIn("Reproduction steps", index.read_text(encoding="utf-8"))
         self.assertNotIn(DATA["injection_text"], index.read_text(encoding="utf-8"))
+
+    def test_index_ignores_non_complete_h1_check(self):
+        intake_dir, _ = self.capture("base")
+        literals = {"config_keys": ["workspace.auto_trust"]}
+        entries = []
+        for status in ("COMPLETE", "MALFORMED"):
+            check = write(self.tmp / f"check-{status}.json", {"effective_status": status, "typed_literals": literals})
+            entries.append({"intake": str(intake_dir / "intake-record.json"), "h1_check": str(check)})
+        index = self.tmp / "index-gated.json"
+        code, out, err = run("ghsa-dedup.py", "index", "--entries", write(self.tmp / "entries-gated.json", {"entries": entries}),
+                             "--out", index)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["entries_without_typed_literals"], 1)
+        typed = [entry["typed_literals"] for entry in json.loads(index.read_text(encoding="utf-8"))["advisories"]]
+        self.assertEqual(sorted(typed, key=len), [{}, literals])
 
     def cluster(self, keys, h1_literals=None):
         out = self.tmp / "clusters.json"

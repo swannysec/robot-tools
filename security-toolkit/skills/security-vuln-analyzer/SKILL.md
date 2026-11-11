@@ -22,7 +22,7 @@ All modes use the same host/model matrix, isolation rules, provenance records, r
 
 ## Runtime selection and preflight
 
-Select the current harness from an explicit host declaration when the harness exposes one. Otherwise inspect only deterministic runtime markers: Claude Code requires a Claude Code session marker such as `CLAUDECODE`; Codex/ChatGPT requires a Codex task/session marker such as `CODEX_THREAD_ID`, `CODEX_SESSION_ID`, or `CODEX_SANDBOX`. Exactly one host family must match. If neither or both match, stop with `INCOMPLETE: UNKNOWN_OR_AMBIGUOUS_HOST` and list the observed marker names without values; do not guess from installed executables. Then read exactly one runtime guide:
+Select the current harness from an explicit host declaration when the harness exposes one. Otherwise inspect only these deterministic runtime markers. Claude Code markers are exactly `CLAUDECODE`, `CLAUDE_CODE`, `CLAUDE_CODE_ENTRYPOINT`, and `CLAUDE_SESSION_ID`. Codex/ChatGPT markers are exactly `CODEX_THREAD_ID`, `CODEX_SESSION_ID`, `CODEX_SANDBOX`, and `CODEX_CI`. No variable outside these lists is a host marker, even one whose name resembles them (for example, `CODEX_COMPANION_SESSION_ID`, which a Codex companion plugin sets inside Claude Code to the Claude Code session ID). Exactly one host family must match. If neither or both match, stop with `INCOMPLETE: UNKNOWN_OR_AMBIGUOUS_HOST` and list the observed marker names without values; do not guess from installed executables. Then read exactly one runtime guide:
 
 - Claude Code: `references/runtime-claude.md`
 - Codex or ChatGPT Desktop: `references/runtime-codex.md`

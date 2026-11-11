@@ -25,6 +25,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -46,12 +47,32 @@ LITERAL_PATTERNS = {
     "versions": re.compile(r"\bv?\d+\.\d+(?:\.\d+)?\b"),
 }
 MAX_LITERAL = 200
+# H1 typed literal kinds that join, mapped to D0 kinds; advisory references and commands or settings never join.
+TYPED_JOIN_MAP = {"file_paths": "paths", "entry_point_symbols": "symbols", "config_keys": "config_keys"}
 CODE_DERIVED_FIELDS = (
     "record_id", "ghsa_id", "claim_ids", "locations", "anchors", "control_site", "primitive_class",
     "variant_family", "enumerated_variants", "invariant_test_contract", "final_status", "fix_revision",
 )
 D4_RELATIONS = {"SAME_ROOT_CAUSE", "VARIANT", "DISTINCT"}
 CLAIM_SET = "ghsa_claim_set"
+# The fixed D4 question. Each claim set is the claim as analyzed; verifiers answer as written and do not re-decide scope.
+D4_QUESTION_SETS = (
+    "Each side is a claim set: every member is part of that claim as analyzed, including members whose claim_ids also list "
+    "other claims. Would one fix resolve every member of the canonical set (claim {x}) and every member of the other set "
+    "(claim {y})? Answer SAME_ROOT_CAUSE only if one fix resolves every member of both sets. If any member of one set "
+    "shares a root-cause family with any member of the other, but one fix would not resolve every member of both sets, "
+    "answer VARIANT. Answer DISTINCT only if no member of one set shares a root-cause family with any member of the other."
+)
+D4_QUESTION_RECORDS = (
+    "Would one fix resolve both {x} and {y}? Answer SAME_ROOT_CAUSE only if one fix resolves both. If they share a "
+    "root-cause family but one fix would not resolve both, answer VARIANT. Answer DISTINCT only if they share no "
+    "root-cause family."
+)
+D4_QUESTION_MIXED = ("The {side} side is a claim set: every member is part of that claim as analyzed, including members whose "
+                     "claim_ids also list other claims. Would one fix resolve {x} and {y}? Answer SAME_ROOT_CAUSE only if one fix "
+                     "resolves every member of the set and the record. If at least one member of the set shares a root-cause "
+                     "family with the record but one fix would not resolve all of them, answer VARIANT. Answer DISTINCT only if "
+                     "no member of the set shares a root-cause family with the record.")
 VERIFIED = "CROSS-MODEL VERIFIED"
 ASCII_SPACE = " \t\n\x0b\x0c\r"
 EXIT_OK = 0
@@ -71,7 +92,11 @@ def load(path: str | Path) -> Any:
 
 
 def dump(path: str | Path, value: Any) -> None:
-    Path(path).write_text(json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+    text = json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        os.fchmod(handle.fileno(), 0o600)  # O_CREAT's mode applies only to a new file
+        handle.write(text)
 
 
 def digest(value: Any) -> str:
@@ -139,15 +164,19 @@ def command_index(args: argparse.Namespace) -> dict[str, Any]:
              "created_at_utc": utc_now(), "advisories": entries}
     dump(args.out, index)
     # An entry without checked literals clusters on D0 literals only; count it so it is not silently missed.
-    without = sum(1 for entry in entries if not any(entry["typed_literals"].values()))
+    without = sum(1 for entry in entries if not has_joinable_typed(entry))
     return {"status": "COMPLETE", "advisories": len(entries), "entries_without_typed_literals": without}
 
 
+def has_joinable_typed(entry: dict[str, Any]) -> bool:
+    return any(entry.get("typed_literals", {}).get(kind) for kind in TYPED_JOIN_MAP)
+
+
 def literal_set(entry: dict[str, Any]) -> set[tuple[str, str]]:
-    joinable = ("paths", "symbols", "config_keys")
+    # The D0 config_keys regex also matches file names and domains, so it joins only entries without checked literals.
+    joinable = ("paths", "symbols") if has_joinable_typed(entry) else ("paths", "symbols", "config_keys")
     values = {(kind, value) for kind in joinable for value in entry.get("d0_literals", {}).get(kind, [])}
-    typed_map = {"file_paths": "paths", "entry_point_symbols": "symbols", "config_keys": "config_keys"}
-    for kind, mapped in typed_map.items():
+    for kind, mapped in TYPED_JOIN_MAP.items():
         values |= {(mapped, value) for value in entry.get("typed_literals", {}).get(kind, [])}
     return values
 
@@ -202,8 +231,17 @@ def command_reanchor(args: argparse.Namespace) -> dict[str, Any]:
     head = subprocess.run(["git", "-C", str(checkout), "rev-parse", "HEAD"], check=False, stdout=subprocess.PIPE, text=True, timeout=10)
     if head.returncode != 0 or head.stdout.strip() != args.revision:
         raise UsageError("checkout HEAD does not equal the common revision")
+    supplied = [item for path in args.anchors for item in load(path).get("anchors", [])]
+    if args.claim_set:  # keep only the pair's anchors, so other claims' records are not compared
+        members: set[str] = set()
+        for path in args.claim_set:
+            claim_set = load(path)
+            if claim_set.get("record_type") != CLAIM_SET:
+                raise UsageError(f"{path} is not a claim set")
+            members |= {member["record_id"] for member in claim_set.get("members", [])}
+        supplied = [item for item in supplied if item.get("record_id", "") in members]
     anchors = []
-    for item in load(args.anchors).get("anchors", []):
+    for item in supplied:
         symbol, path = item["symbol"], item["path"]
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_:.]{0,199}", symbol) or ".." in path.split("/") or path.startswith("/"):
             raise UsageError("anchor symbol or path is malformed")
@@ -307,6 +345,8 @@ def command_records(args: argparse.Namespace) -> dict[str, Any]:
             if not bridged:
                 not_bridged.append({"record_id": record_id, "reason": "verified status is not backed by two CONFIRMED Stage 2 results "
                                     "(for example a split resolved by a frozen test); not bridged in this version"})
+        else:
+            not_bridged.append({"record_id": record_id, "reason": f"final status {status or '(missing)'}"})
         values: dict[str, Any] = {}
         if bridged:
             cvss = item.get("scoring", {}).get("cvss_v4", {})
@@ -370,13 +410,27 @@ def d4_side(record: dict[str, Any]) -> Any:
     return code_derived(record)
 
 
+def d4_question(x: dict[str, Any], y: dict[str, Any], claim_id: str) -> str:
+    """Two claim sets name both claims; a set and a record, or two records, use ID-free wording (every member still counts)."""
+    x_set, y_set = x.get("record_type") == CLAIM_SET, y.get("record_type") == CLAIM_SET
+    if x_set and y_set:
+        if not x.get("claim_id"):
+            raise UsageError("X's claim set has no claim_id")
+        return D4_QUESTION_SETS.format(x=x["claim_id"], y=claim_id)
+    if x_set or y_set:
+        return D4_QUESTION_MIXED.format(side="canonical" if x_set else "other",
+                                        x="every member of the canonical set" if x_set else "the canonical record",
+                                        y="every member of the other set" if y_set else "the other record")
+    return D4_QUESTION_RECORDS.format(x="the canonical record", y="the other record")
+
+
 def command_d4_packet(args: argparse.Namespace) -> dict[str, Any]:
     x, y = load(args.x_finding), load(args.y_finding)
     if y.get("record_type") == CLAIM_SET and y.get("claim_id") != args.claim_id:
         raise UsageError("Y's claim set answers a different claim than --claim-id")
     packet = {"packet_type": "dedup_d4", "pair": {"canonical_record_id": x.get("record_id", ""), "other_record_id": y.get("record_id", ""),
               "canonical_ghsa_id": x.get("ghsa_id", ""), "other_ghsa_id": y.get("ghsa_id", ""), "other_claim_id": args.claim_id},
-              "canonical_records": d4_side(x), "other_records": d4_side(y)}
+              "question": d4_question(x, y, args.claim_id), "canonical_records": d4_side(x), "other_records": d4_side(y)}
     if args.anchors:
         packet["anchors"] = load(args.anchors)
     dump(args.out, packet)
@@ -664,8 +718,9 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("index"); p.add_argument("--entries", required=True); p.add_argument("--out", required=True)
     p = sub.add_parser("cluster"); p.add_argument("--index", required=True); p.add_argument("--out", required=True)
-    p = sub.add_parser("reanchor"); p.add_argument("--anchors", required=True); p.add_argument("--checkout", required=True)
-    p.add_argument("--revision", required=True); p.add_argument("--out", required=True)
+    p = sub.add_parser("reanchor"); p.add_argument("--anchors", action="append", required=True, help="anchors.json; one per advisory")
+    p.add_argument("--claim-set", action="append", default=[], help="keep only anchors of this set's members; one per side")
+    p.add_argument("--checkout", required=True); p.add_argument("--revision", required=True); p.add_argument("--out", required=True)
     p = sub.add_parser("records"); p.add_argument("--repository", required=True); p.add_argument("--ghsa-id", required=True)
     p.add_argument("--primary-revision", required=True); p.add_argument("--h1", required=True); p.add_argument("--h1-check", required=True)
     p.add_argument("--discovery", action="append", required=True, help="schema-valid, post-schema-checked discovery artifact")

@@ -35,6 +35,15 @@ def write(path, value):
     return path
 
 
+def permissive_umask(test):
+    """Run the rest of a test under umask 022, so a file left to the umask is group- and world-readable."""
+    test.addCleanup(os.umask, os.umask(0o022))
+
+
+def mode(path):
+    return stat.S_IMODE(Path(path).stat().st_mode)
+
+
 def canonical_digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
@@ -161,6 +170,17 @@ class ReadAdapterTest(Workspace):
             self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700, directory)
             directory = directory.parent
 
+    def test_existing_advisory_directory_is_tightened(self):
+        permissive_umask(self)
+        repo = self.run_root / REPO.replace("/", "__")
+        advisory = repo / IDS["base"]
+        advisory.mkdir(parents=True)
+        for directory in (self.run_root, repo, advisory):
+            os.chmod(directory, 0o755)
+        intake_dir, _ = self.capture("base")
+        self.assertEqual(intake_dir.parents[1], advisory)
+        self.assertEqual((mode(repo), mode(advisory)), (0o700, 0o700))
+
     def test_run_root_inside_git_work_tree_is_refused(self):
         repo_dir = self.tmp / "work"
         repo_dir.mkdir()
@@ -268,6 +288,14 @@ class IntakeCheckTest(Workspace):
         intake_check = runpy.run_path(str(SCRIPTS / "intake-check.py"))
         for field in intake_check["captured_fields"](record):
             self.assertIn(field, text)
+
+    def test_render_output_is_private(self):
+        permissive_umask(self)
+        intake_dir, _ = self.capture("base")
+        out_path = self.tmp / "rendered-private.txt"
+        code, _, err = run("intake-check.py", "render", "--intake", intake_dir / "intake-record.json", "--out", out_path)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(mode(out_path), 0o600)
 
     def test_failed_literals_are_not_collected(self):
         bad = json.loads(json.dumps(BASE_CLAIM))
@@ -497,6 +525,21 @@ class H4DraftTest(Workspace):
         self.assertEqual(code, 0, err)
         self.unpublished = write(self.tmp / "unpublished.json", {"ghsa_ids": [IDS["base"], IDS["unpublished_other"]]})
 
+    def test_packet_files_are_private(self):
+        permissive_umask(self)
+        files = [self.tmp / "h4" / name for name in ("h4-packet.json", "h4-allowed-records.json")]
+        for path in files:
+            os.chmod(path, 0o644)  # an earlier, looser write is tightened on rewrite
+        code, _, err = run("intake-check.py", "h4-packet", "--intake", self.intake_dir / "intake-record.json", "--claims", self.claims,
+                           "--records", self.tmp / "records.json", "--out-dir", self.tmp / "h4")
+        self.assertEqual(code, 0, err)
+        fresh = self.tmp / "h4-fresh"
+        code, _, err = run("intake-check.py", "h4-packet", "--intake", self.intake_dir / "intake-record.json", "--claims", self.claims,
+                           "--records", self.tmp / "records.json", "--out-dir", fresh)
+        self.assertEqual(code, 0, err)
+        for path in files + [fresh / path.name for path in files]:
+            self.assertEqual(mode(path), 0o600, path)
+
     def draft(self, statements, updates=()):
         return {"role_type": "intake_h4", "status": "COMPLETE", "provider": "fixture", "model": "fixture", "effort": "high",
                 "packet_revision": "fixture", "ghsa_id": IDS["base"], "field_updates": list(updates),
@@ -655,6 +698,46 @@ class DedupTest(Workspace):
         pairs = {(p["canonical"], p["other"]): p for p in result["pairs"]}
         self.assertTrue(pairs[(IDS["base"], IDS["resubmission"])]["same_text_proposed"])
         self.assertFalse(pairs[(IDS["base"], IDS["variant"])]["same_text_proposed"])  # one differing config key
+
+    def test_cluster_output_is_private(self):
+        permissive_umask(self)
+        self.cluster(["base", "variant"])
+        self.assertEqual(mode(self.tmp / "clusters.json"), 0o600)
+        self.assertEqual(mode(self.tmp / "index.json"), 0o600)
+
+    def synthetic_cluster(self, specs, name="synthetic"):
+        """Index and cluster invented advisories; each spec is (ghsa_id, text, typed literals or None, anchors or None)."""
+        entries = []
+        for number, (ghsa, text, typed, anchors) in enumerate(specs):
+            intake = {"advisory": {"ghsa_id": ghsa, "summary": "", "description": text, "created_at": f"2026-02-0{number + 1}T00:00:00Z"}}
+            item = {"intake": str(write(self.tmp / f"{name}-intake-{number}.json", intake))}
+            if typed is not None:
+                item["h1_check"] = str(write(self.tmp / f"{name}-check-{number}.json", {"effective_status": "COMPLETE", "typed_literals": typed}))
+            if anchors is not None:
+                item["anchors"] = str(write(self.tmp / f"{name}-anchors-{number}.json", {"anchors": anchors}))
+            entries.append(item)
+        index, out = self.tmp / f"{name}-index.json", self.tmp / f"{name}-clusters.json"
+        code, _, err = run("ghsa-dedup.py", "index", "--entries", write(self.tmp / f"{name}-entries.json", {"entries": entries}), "--out", index)
+        self.assertEqual(code, 0, err)
+        code, _, err = run("ghsa-dedup.py", "cluster", "--index", index, "--out", out)
+        self.assertEqual(code, 0, err)
+        return json.loads(out.read_text(encoding="utf-8")), out, json.loads(index.read_text(encoding="utf-8"))
+
+    def test_d0_config_keys_do_not_join_entries_with_typed_literals(self):
+        # The D0 config_keys regex also matches file names and domains; neither text has a slash path or a symbol.
+        left = (IDS["base"], "The alpha reader loads widget.rs content from example.com and trusts it.", {"file_paths": ["src/alpha/reader.rs"]}, None)
+        right = (IDS["variant"], "Remote copies of widget.rs served by example.com skip signature checks.", {"file_paths": ["src/beta/fetch.rs"]}, None)
+        typed, _, _ = self.synthetic_cluster([left, right], "typed")
+        self.assertEqual((typed["pairs"], typed["clusters"]), ([], []))
+        mixed, _, _ = self.synthetic_cluster([left, right[:2] + (None, None)], "mixed")
+        self.assertEqual(mixed["pairs"], [])
+        untyped, _, _ = self.synthetic_cluster([left[:2] + (None, None), right[:2] + (None, None)], "untyped")
+        self.assertEqual([(p["shared_literal_kinds"], p["shared_literal_count"]) for p in untyped["pairs"]], [(["config_keys"], 2)])
+        self.assertEqual(len(untyped["clusters"]), 1)
+        # Typed kinds that never join (advisory references, commands or settings) leave D0 config keys in use.
+        unjoinable = {"advisory_references": ["CVE-2026-0001"], "commands_or_settings": ["run --unsafe"]}
+        references, _, _ = self.synthetic_cluster([left[:2] + (unjoinable, None), right[:2] + (unjoinable, None)], "references")
+        self.assertEqual([(p["shared_literal_kinds"], p["shared_literal_count"]) for p in references["pairs"]], [(["config_keys"], 2)])
 
     def x_finding(self, **overrides):
         finding = {"record_id": "F-X", "ghsa_id": IDS["base"], "final_status": "CROSS-MODEL VERIFIED", "contract_accepted": True,
@@ -845,6 +928,45 @@ class DedupTest(Workspace):
         run("ghsa-dedup.py", "reanchor", "--anchors", distinct, "--checkout", repo, "--revision", head, "--out", self.tmp / "a2.json")
         self.assertEqual(json.loads((self.tmp / "a2.json").read_text(encoding="utf-8"))["shared_control_sites"], [])
 
+    def test_reanchor_accepts_pair_anchor_files_and_set_filter(self):
+        repo = self.tmp / "target"
+        (repo / "src").mkdir(parents=True)
+        (repo / "src/loader.rs").write_text("fn helper() {}\n\npub fn open_workspace() {}\n", encoding="utf-8")
+        env = dict(os.environ, GIT_AUTHOR_NAME="f", GIT_AUTHOR_EMAIL="f@example.invalid", GIT_COMMITTER_NAME="f", GIT_COMMITTER_EMAIL="f@example.invalid")
+        for argv in (["git", "init", "-q"], ["git", "add", "."], ["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture"]):
+            subprocess.run(argv, cwd=repo, check=True, env=env)
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        # Two advisories' anchors files, as written by `records`; each also has an anchor outside the pair's claim sets.
+        first = write(self.tmp / "anchors-x.json", {"anchors": [
+            {"record_id": "F-X1", "symbol": "open_workspace", "path": "src/loader.rs", "revision": "old", "line": 3},
+            {"record_id": "F-X2", "symbol": "helper", "path": "src/loader.rs", "revision": "old", "line": 1}]})
+        second = write(self.tmp / "anchors-y.json", {"anchors": [
+            {"record_id": "F-Y1", "symbol": "open_workspace", "path": "src/loader.rs", "revision": "old", "line": 3},
+            {"record_id": "F-Y2", "symbol": "helper", "path": "src/loader.rs", "revision": "old", "line": 1}]})
+        x_set = write(self.tmp / "set-x.json", {"record_type": "ghsa_claim_set", "record_id": "SET-X", "claim_id": "C1",
+                                                 "members": [{"record_id": "F-X1", "claim_ids": ["C1"]}]})
+        y_set = write(self.tmp / "set-y.json", {"record_type": "ghsa_claim_set", "record_id": "SET-Y", "claim_id": "C2",
+                                                 "members": [{"record_id": "F-Y1", "claim_ids": ["C2"]}]})
+        base = ["reanchor", "--anchors", first, "--anchors", second, "--checkout", repo, "--revision", head]
+        code, _, err = run("ghsa-dedup.py", *base, "--claim-set", x_set, "--claim-set", y_set, "--out", self.tmp / "pair.json")
+        self.assertEqual(code, 0, err)
+        result = json.loads((self.tmp / "pair.json").read_text(encoding="utf-8"))
+        self.assertEqual([a["record_id"] for a in result["anchors"]], ["F-X1", "F-Y1"])
+        self.assertEqual(result["shared_control_sites"], [{"path": "src/loader.rs", "symbol": "open_workspace",
+                                                           "lines_at_common": [3], "record_ids": ["F-X1", "F-Y1"]}])
+        # Without --claim-set, every anchor from both files is kept.
+        code, _, err = run("ghsa-dedup.py", *base, "--out", self.tmp / "all.json")
+        self.assertEqual(code, 0, err)
+        result = json.loads((self.tmp / "all.json").read_text(encoding="utf-8"))
+        self.assertEqual([a["record_id"] for a in result["anchors"]], ["F-X1", "F-X2", "F-Y1", "F-Y2"])
+        self.assertEqual([site["record_ids"] for site in result["shared_control_sites"]], [["F-X2", "F-Y2"], ["F-X1", "F-Y1"]])
+        # A --claim-set file that is not a claim set is a usage error.
+        not_a_set = write(self.tmp / "record.json", {"record_type": "finding", "record_id": "F-X1",
+                                                      "members": [{"record_id": "F-X1"}]})
+        code, _, err = run("ghsa-dedup.py", *base, "--claim-set", not_a_set, "--out", self.tmp / "bad.json")
+        self.assertEqual(code, 2)
+        self.assertIn("is not a claim set", err)
+
     def test_invalidation_is_sticky(self):
         self.route(self.d4("n.json", "VARIANT"), self.d4("c.json", "VARIANT"))
         relation = self.tmp / "relation.json"
@@ -1026,6 +1148,34 @@ class RecordsTest(Workspace):
         records = json.loads((self.tmp / "records-out/report-records.json").read_text(encoding="utf-8"))["records"]
         self.assertEqual(next(r for r in records if r["candidate_id"] == ids[1])["values"], {})  # R2 carries a CWE when verified
 
+    def test_records_lists_non_verified_routed_records(self):
+        _, paths, ids = self.three_role_fixture()
+        bypassed = candidate("R2-B", "Unrelated logging wording.", claim_ids=(), start=40, affects=False)
+        manifest = {cid: self.verified(cid) for cid in ids}
+        manifest[ids[0]] = self.verified(ids[0], results=("REFUTED", "INCONCLUSIVE"), status="NOT VERIFIED")
+        manifest[ids[1]] = self.verified(ids[1], results=("CONFIRMED", "REFUTED"), status="DISPUTED")
+        code, out = self.run_records(paths + [self.discovery("bypass.json", [bypassed])], manifest)
+        self.assertEqual(code, 0, out)
+        records = json.loads((self.tmp / "records-out/report-records.json").read_text(encoding="utf-8"))["records"]
+        by_candidate = {r["candidate_id"]: r["record_id"] for r in records}
+        self.assertIn({"record_id": by_candidate[ids[0]], "reason": "final status NOT VERIFIED"}, out["not_bridged"])
+        self.assertIn({"record_id": by_candidate[ids[1]], "reason": "final status DISPUTED"}, out["not_bridged"])
+        listed = [item["record_id"] for item in out["not_bridged"]]
+        self.assertEqual(len(listed), len(set(listed)))
+        self.assertEqual(set(listed), {r["record_id"] for r in records if not r["ghsa_eligible"]})
+
+    def test_records_outputs_are_private(self):
+        permissive_umask(self)
+        _, paths, ids = self.three_role_fixture()
+        out = self.tmp / "records-out"
+        out.mkdir()
+        (out / "report-records.json").write_text("{}\n", encoding="utf-8")
+        os.chmod(out / "report-records.json", 0o644)  # an earlier, looser write is tightened on rewrite
+        code, result = self.run_records(paths, {cid: self.verified(cid) for cid in ids})
+        self.assertEqual(code, 0, result)
+        for path in (out / "report-records.json", out / "claim-sets/C1.json", out / "anchors.json"):
+            self.assertEqual(mode(path), 0o600, path)
+
     def test_records_rejects_unknown_claim_id(self):
         item = candidate("R1-A", "Loader skips trust.", claim_ids=("C9",))
         cid = expected_candidate_id(item, REV)
@@ -1140,6 +1290,66 @@ class RecordsTest(Workspace):
         recorded = json.loads(relation.read_text(encoding="utf-8"))
         self.assertEqual((recorded["canonical"]["record_id"], recorded["other"]["record_id"], recorded["relation"]),
                          (x["record_id"], y["record_id"], "SAME_ROOT_CAUSE"))
+
+    def test_d4_packet_states_the_claim_question(self):
+        _, paths, ids = self.three_role_fixture()
+        self.assertEqual(self.run_records(paths, {cid: self.verified(cid) for cid in ids})[0], 0)
+        x_set = self.tmp / "records-out/claim-sets/C1.json"
+        y_set = self.tmp / "records-out/claim-sets/C2.json"
+        schema = json.loads((SKILL / "schemas/dedup-d4-result.schema.json").read_text(encoding="utf-8"))
+        pair_keys = set(schema["properties"]["pair"]["properties"])
+
+        def packet(x_path, y_path, name):
+            out = self.tmp / name
+            code, _, err = run("ghsa-dedup.py", "d4-packet", "--x-finding", x_path, "--y-finding", y_path, "--claim-id", "C2", "--out", out)
+            self.assertEqual(code, 0, err)
+            return json.loads(out.read_text(encoding="utf-8"))
+
+        both_sets = packet(x_set, y_set, "d4-sets.json")
+        self.assertEqual(both_sets["question"],
+                         "Each side is a claim set: every member is part of that claim as analyzed, including members whose "
+                         "claim_ids also list other claims. Would one fix resolve every member of the canonical set (claim C1) "
+                         "and every member of the other set (claim C2)? Answer SAME_ROOT_CAUSE only if one fix resolves every "
+                         "member of both sets. If any member of one set shares a root-cause family with any member of the "
+                         "other, but one fix would not resolve every member of both sets, answer VARIANT. Answer DISTINCT "
+                         "only if no member of one set shares a root-cause family with any member of the other.")
+        # The pair stays within the D4 result schema, which roles echo back.
+        self.assertEqual(set(both_sets["pair"]), pair_keys)
+        # A member answering two claims keeps both claim IDs on each side.
+        for side in ("canonical_records", "other_records"):
+            self.assertIn(["C1", "C2"], [member["claim_ids"] for member in both_sets[side]])
+        # A single-record side uses the ID-free wording, alone or mixed with a set.
+        member = next(m for m in json.loads(y_set.read_text(encoding="utf-8"))["members"])
+        single = write(self.tmp / "single.json", member)
+        records_only = packet(single, single, "d4-records.json")
+        self.assertEqual(set(records_only["pair"]), pair_keys)
+        self.assertEqual(records_only["question"],
+                         "Would one fix resolve both the canonical record and the other record? Answer SAME_ROOT_CAUSE only "
+                         "if one fix resolves both. If they share a root-cause family but one fix would not resolve both, "
+                         "answer VARIANT. Answer DISTINCT only if they share no root-cause family.")
+        mixed = {
+            (x_set, single): ("canonical", "every member of the canonical set and the other record"),
+            (single, y_set): ("other", "the canonical record and every member of the other set"),
+        }
+        for (x_path, y_path), (side, sides) in mixed.items():
+            data = packet(x_path, y_path, f"d4-mixed-{side}.json")
+            self.assertEqual(set(data["pair"]), pair_keys)
+            self.assertEqual(data["question"],
+                             f"The {side} side is a claim set: every member is part of that claim as analyzed, including "
+                             f"members whose claim_ids also list other claims. Would one fix resolve {sides}? Answer "
+                             "SAME_ROOT_CAUSE only if one fix resolves every member of the set and the record. If at least "
+                             "one member of the set shares a root-cause family with the record but one fix would not resolve "
+                             "all of them, answer VARIANT. Answer DISTINCT only if no member of the set shares a root-cause "
+                             "family with the record.")
+        # Two claim sets where X has no claim_id cannot name X's claim.
+        unnamed = json.loads(x_set.read_text(encoding="utf-8"))
+        del unnamed["claim_id"]
+        unnamed_path = write(self.tmp / "unnamed-set.json", unnamed)
+        code, _, err = run("ghsa-dedup.py", "d4-packet", "--x-finding", unnamed_path, "--y-finding", y_set, "--claim-id", "C2",
+                           "--out", self.tmp / "d4-unnamed.json")
+        self.assertEqual(code, 2)
+        self.assertIn("USAGE_ERROR", err)
+        self.assertIn("has no claim_id", err)
 
 
 class PocOverlapTest(Workspace):

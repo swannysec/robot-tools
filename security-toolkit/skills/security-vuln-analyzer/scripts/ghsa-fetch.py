@@ -316,7 +316,8 @@ def command_advisory(args: argparse.Namespace, api: Api) -> dict[str, Any]:
     advisory, raw, comments, comments_raw = capture_advisory(api, repository, ghsa_id)
     pinned = pin_revision(api, repository, args.revision, args.tag)
     run_id = retrieved.replace(":", "").replace("-", "") + "-" + secrets.token_hex(4)  # unique per capture
-    intake_dir = restricted_dir(repo_dir(run_root, repository) / ghsa_id / run_id / "intake")
+    advisory_dir = restricted_dir(repo_dir(run_root, repository) / ghsa_id)
+    intake_dir = restricted_dir(advisory_dir / run_id / "intake")
     write_private(intake_dir / "advisory.raw.json", raw)
     if comments_raw is not None:
         write_private(intake_dir / "comments.raw.json", comments_raw)

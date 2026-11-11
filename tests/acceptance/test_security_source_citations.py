@@ -82,6 +82,20 @@ class SourceCitationTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.extract(raw)
 
+    def test_errors_name_the_failing_citation(self):
+        raw = copy.deepcopy(self.raw)
+        raw['evidence'].append(dict(copy.deepcopy(self.citation), repository='example-tools'))
+        with self.assertRaises(ValueError) as caught:
+            self.extract(raw)
+        message = str(caught.exception)
+        for part in ('/evidence/1', 'citation is absent from the frozen source registry', "'example-tools'", repr(PIN), "'source.rs'"):
+            self.assertIn(part, message)
+        raw['evidence'][1] = dict(copy.deepcopy(self.citation), start_line=1)
+        with self.assertRaises(ValueError) as caught:
+            self.extract(raw)
+        self.assertIn('/evidence/1', str(caught.exception))
+        self.assertIn('outside the frozen allowed ranges', str(caught.exception))
+
     def test_changed_source_and_invalid_utf8_fail(self):
         (self.root / 'source.rs').write_bytes(b'changed source')
         with self.assertRaisesRegex(ValueError, 'SHA-256'):
@@ -89,8 +103,17 @@ class SourceCitationTest(unittest.TestCase):
         data = b'heading\n\xff\nlast'
         (self.root / 'source.rs').write_bytes(data)
         self.registry['sources'][0]['files'][0]['sha256'] = hashlib.sha256(data).hexdigest()
-        with self.assertRaises(UnicodeError):
+        with self.assertRaises(ValueError) as caught:
             self.extract()
+        self.assertIn('/evidence/0', str(caught.exception))
+        self.assertIn("'source.rs'", str(caught.exception))
+
+    def test_registered_file_missing_on_disk_names_its_citation(self):
+        (self.root / 'source.rs').unlink()
+        with self.assertRaises(ValueError) as caught:
+            self.extract()
+        self.assertIn('/evidence/0', str(caught.exception))
+        self.assertIn("'source.rs'", str(caught.exception))
 
     def test_symlink_escape_and_ambiguous_registry_fail(self):
         with tempfile.TemporaryDirectory() as outside:

@@ -174,7 +174,9 @@ temporary homes afterward.
 
 **D4 and M4.** Dispatch both providers exactly as the native and cross-provider verifiers,
 cold and in parallel, with the packet from `ghsa-dedup.py d4-packet` or `m4-packet` and
-`schemas/dedup-d4-result.schema.json` or `schemas/dedup-m4-result.schema.json`. Pass
+`schemas/dedup-d4-result.schema.json` or `schemas/dedup-m4-result.schema.json`. For D4, the
+wrapper passes the packet's `question` verbatim and does not restate, paraphrase, or add to
+it, so both providers answer the same question. Pass
 `route-d4` and `route-m` the literal provider values from runtime metadata (the Codex session
 file's `model_provider`, such as `openai`; Claude `modelUsage` reports an access channel such
 as `firstParty`); the routers only require the two values to differ. **M2** is a

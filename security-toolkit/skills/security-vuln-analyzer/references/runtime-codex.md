@@ -131,6 +131,9 @@ a verifier split. Any extra kind, role-emitted
 argument, unknown test ID, revision mismatch, or unavailable isolation yields `NOT_RUN`
 and routes the split to `DISPUTED`.
 
+Compute CVSS v4.0 scores only with the packaged `scripts/cvss4-score.py`, never through a
+model, as described under "Computed CVSS v4.0 scores" in `orchestrator-contract.md`.
+
 ## Waiting, retry, and failure
 
 - Wait for every role in a round; do not interpret partial results.
@@ -174,7 +177,9 @@ temporary homes afterward.
 
 **D4 and M4.** Dispatch both providers exactly as the native and cross-provider verifiers,
 cold and in parallel, with the packet from `ghsa-dedup.py d4-packet` or `m4-packet` and
-`schemas/dedup-d4-result.schema.json` or `schemas/dedup-m4-result.schema.json`. Pass
+`schemas/dedup-d4-result.schema.json` or `schemas/dedup-m4-result.schema.json`. For D4, the
+wrapper passes the packet's `question` verbatim and does not restate, paraphrase, or add to
+it, so both providers answer the same question. Pass
 `route-d4` and `route-m` the literal provider values from runtime metadata (the Codex session
 file's `model_provider`, such as `openai`; Claude `modelUsage` reports an access channel such
 as `firstParty`); the routers only require the two values to differ. **M2** is a

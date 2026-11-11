@@ -107,37 +107,41 @@ def extract_citations(raw_bytes, registry_bytes, expected_registry_sha256):
                 visit(item, pointer + '/' + str(number))
         elif isinstance(value, dict):
             if value.get('source_kind') == 'repository':
-                relative = relative_path(value.get('relative_path'))
-                repository, revision = value.get('repository'), value.get('revision')
-                if not isinstance(repository, str) or not isinstance(revision, str):
-                    raise ValueError('repository citation requires string repository/revision')
-                key = (repository, revision, relative)
-                if key not in index:
-                    raise ValueError('citation is absent from the frozen source registry')
-                start, end = value.get('start_line'), value.get('end_line')
-                line_range(start, end)
-                root, entry = index[key]
-                if not any(low <= start <= end <= high for low, high in entry['allowed_ranges']):
-                    raise ValueError('citation is outside the frozen allowed ranges')
-                if value.get('artifact_id') != '' or not isinstance(value.get('quote'), str):
-                    raise ValueError('repository citation requires empty artifact_id and string quote')
-                if key not in loaded:
-                    path = (root / relative).resolve(strict=True)
-                    if root not in path.parents or not path.is_file():
-                        raise ValueError('source file escapes its frozen root')
-                    data = path.read_bytes()
-                    if digest(data) != entry['sha256']:
-                        raise ValueError('source file differs from its frozen SHA-256')
-                    data.decode('utf-8')
-                    loaded[key] = data.splitlines(keepends=True)
-                lines = loaded[key]
-                if end > len(lines):
-                    raise ValueError('citation exceeds the pinned source file')
-                quote_bytes = b''.join(lines[start - 1:end])
-                value['quote'] = quote_bytes.decode('utf-8')
-                citations.append({'json_pointer': pointer, 'repository': repository, 'revision': revision,
-                                  'relative_path': relative, 'start_line': start, 'end_line': end,
-                                  'file_sha256': entry['sha256'], 'quote_sha256': digest(quote_bytes)})
+                try:
+                    relative = relative_path(value.get('relative_path'))
+                    repository, revision = value.get('repository'), value.get('revision')
+                    if not isinstance(repository, str) or not isinstance(revision, str):
+                        raise ValueError('repository citation requires string repository/revision')
+                    key = (repository, revision, relative)
+                    if key not in index:
+                        raise ValueError('citation is absent from the frozen source registry')
+                    start, end = value.get('start_line'), value.get('end_line')
+                    line_range(start, end)
+                    root, entry = index[key]
+                    if not any(low <= start <= end <= high for low, high in entry['allowed_ranges']):
+                        raise ValueError('citation is outside the frozen allowed ranges')
+                    if value.get('artifact_id') != '' or not isinstance(value.get('quote'), str):
+                        raise ValueError('repository citation requires empty artifact_id and string quote')
+                    if key not in loaded:
+                        path = (root / relative).resolve(strict=True)
+                        if root not in path.parents or not path.is_file():
+                            raise ValueError('source file escapes its frozen root')
+                        data = path.read_bytes()
+                        if digest(data) != entry['sha256']:
+                            raise ValueError('source file differs from its frozen SHA-256')
+                        data.decode('utf-8')
+                        loaded[key] = data.splitlines(keepends=True)
+                    lines = loaded[key]
+                    if end > len(lines):
+                        raise ValueError('citation exceeds the pinned source file')
+                    quote_bytes = b''.join(lines[start - 1:end])
+                    value['quote'] = quote_bytes.decode('utf-8')
+                    citations.append({'json_pointer': pointer, 'repository': repository, 'revision': revision,
+                                      'relative_path': relative, 'start_line': start, 'end_line': end,
+                                      'file_sha256': entry['sha256'], 'quote_sha256': digest(quote_bytes)})
+                except (OSError, ValueError) as error:
+                    raise ValueError(f'{pointer or "(root)"}: {error} (repository={value.get("repository")!r}, '
+                                     f'revision={value.get("revision")!r}, path={value.get("relative_path")!r})') from error
             for key, item in value.items():
                 escaped = key.replace('~', '~0').replace('/', '~1')
                 visit(item, pointer + '/' + escaped)

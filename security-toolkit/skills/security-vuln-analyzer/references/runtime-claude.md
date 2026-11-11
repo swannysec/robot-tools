@@ -175,7 +175,12 @@ network `restricted`. Do not pass `--sandbox` or set `sandbox_mode`: per the Cod
 documentation, either makes Codex use the legacy sandbox instead of the profile. Do not pass
 `--ignore-user-config` either; it would presumably skip the `config.toml` that holds the
 profile (inferred, not tested). The session file's `turn_context.permission_profile` records the
-enforced profile; check that it is `restricted` with the expected entries. Verified with
+enforced profile. Check that `turn_context.permission_profile.file_system.type` is
+`restricted` and `turn_context.permission_profile.network` is `restricted` (the top-level
+`type` is `managed`). Check that the `file_system.entries` read entries are exactly the
+profile's: the Codex install prefix, the workspace root, each supporting snapshot, and
+`:minimal`. Codex also adds its own temporary `arg0` read entry, which is expected (observed
+with codex-cli 0.162.0). Verified with
 codex-cli 0.162.0 on 2026-11-11: reads inside the working directory succeeded, and reads of
 a sibling directory by relative and absolute path failed with `Operation not permitted`, with
 and without apps and plugins disabled.
@@ -203,6 +208,9 @@ time/output, and writes confined to the temporary directory. A source digest nev
 a verifier split. Any extra kind, role-emitted
 argument, unknown test ID, revision mismatch, or unavailable isolation yields `NOT_RUN`
 and routes the split to `DISPUTED`.
+
+Compute CVSS v4.0 scores only with the packaged `scripts/cvss4-score.py`, never through a
+model, as described under "Computed CVSS v4.0 scores" in `orchestrator-contract.md`.
 
 ## Waiting, retry, and failure
 
@@ -244,7 +252,9 @@ with `scripts/intake-check.py` and read model and refusal metadata as above.
 **D4 and M4.** Dispatch both providers exactly as the native and cross-provider verifiers,
 cold and in parallel, with the packet from `ghsa-dedup.py d4-packet` or `m4-packet` and
 `schemas/dedup-d4-result.schema.json` or `schemas/dedup-m4-result.schema.json`. Read tools
-are limited to the pinned target, as for verifiers. Pass `route-d4` and `route-m` the literal
+are limited to the pinned target, as for verifiers. For D4, the wrapper passes the packet's
+`question` verbatim and does not restate, paraphrase, or add to it, so both providers answer
+the same question. Pass `route-d4` and `route-m` the literal
 provider values from runtime metadata: the hosts use different vocabularies (Claude
 `modelUsage` reports an access channel such as `firstParty`; the Codex session file reports
 `model_provider` such as `openai`), and the routers only require the two values to differ. **M2** is a fix-author dispatch whose

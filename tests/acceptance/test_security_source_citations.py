@@ -82,6 +82,20 @@ class SourceCitationTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.extract(raw)
 
+    def test_errors_name_the_failing_citation(self):
+        raw = copy.deepcopy(self.raw)
+        raw['evidence'].append(dict(copy.deepcopy(self.citation), repository='example-tools'))
+        with self.assertRaises(ValueError) as caught:
+            self.extract(raw)
+        message = str(caught.exception)
+        for part in ('/evidence/1', 'citation is absent from the frozen source registry', "'example-tools'", repr(PIN), "'source.rs'"):
+            self.assertIn(part, message)
+        raw['evidence'][1] = dict(copy.deepcopy(self.citation), start_line=1)
+        with self.assertRaises(ValueError) as caught:
+            self.extract(raw)
+        self.assertIn('/evidence/1', str(caught.exception))
+        self.assertIn('outside the frozen allowed ranges', str(caught.exception))
+
     def test_changed_source_and_invalid_utf8_fail(self):
         (self.root / 'source.rs').write_bytes(b'changed source')
         with self.assertRaisesRegex(ValueError, 'SHA-256'):
@@ -89,8 +103,17 @@ class SourceCitationTest(unittest.TestCase):
         data = b'heading\n\xff\nlast'
         (self.root / 'source.rs').write_bytes(data)
         self.registry['sources'][0]['files'][0]['sha256'] = hashlib.sha256(data).hexdigest()
-        with self.assertRaises(UnicodeError):
+        with self.assertRaises(ValueError) as caught:
             self.extract()
+        self.assertIn('/evidence/0', str(caught.exception))
+        self.assertIn("'source.rs'", str(caught.exception))
+
+    def test_registered_file_missing_on_disk_names_its_citation(self):
+        (self.root / 'source.rs').unlink()
+        with self.assertRaises(ValueError) as caught:
+            self.extract()
+        self.assertIn('/evidence/0', str(caught.exception))
+        self.assertIn("'source.rs'", str(caught.exception))
 
     def test_symlink_escape_and_ambiguous_registry_fail(self):
         with tempfile.TemporaryDirectory() as outside:
@@ -389,6 +412,133 @@ class DiscoveryMetadataTest(unittest.TestCase):
         self.assertEqual(security_discovery_metadata_errors(self.payload), [])
         self.candidate['invariant_test_contract']['implementation_pitfalls'] = ['Unfrozen residual.']
         self.assertIn('inapplicable contract has version or pitfalls', security_discovery_metadata_errors(self.payload))
+
+
+CVSS_SCRIPT = SCRIPT.with_name('cvss4-score.py')
+CVSS_BASE_HIGH = 'CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N'
+CVSS_FULL = ('CVSS:4.0/AV:L/AC:H/AT:N/PR:N/UI:A/VC:N/VI:N/VA:L/SC:H/SI:H/SA:H/E:P/CR:H/IR:H/AR:M/MAV:N/MAC:L/MAT:P'
+             '/MPR:L/MUI:A/MVC:N/MVI:H/MVA:L/MSC:L/MSI:S/MSA:H/S:P/AU:Y/R:I/V:C/RE:H/U:Clear')
+# Grammar parity samples (reused by the ghsa-dedup grammar copy).
+CVSS_V4_GRAMMAR_SAMPLES = (
+    CVSS_BASE_HIGH, CVSS_FULL, CVSS_BASE_HIGH + '/E:X/MSI:S/MSA:S/U:Red', CVSS_BASE_HIGH + '/CR:L/MVC:N/RE:M',
+    CVSS_BASE_HIGH + '/S:N/AU:N/R:A/V:D/RE:L/U:Amber', CVSS_BASE_HIGH + '/U:Green',
+    '', 'CVSS:4.0', 'CVSS:4.0/', 'CVSS:4.0/not-a-vector', CVSS_BASE_HIGH.replace('/AT:N', ''),
+    CVSS_BASE_HIGH.replace('/AV:N', '/AV:Z'), CVSS_BASE_HIGH.replace('/AV:N', '/AV:X'), CVSS_BASE_HIGH + '/E:A/E:P',
+    CVSS_BASE_HIGH + '/U:red', CVSS_BASE_HIGH.replace('/AV:N/AC:L', '/AC:L/AV:N'), CVSS_BASE_HIGH + '/CR:H/E:P',
+    CVSS_BASE_HIGH + '/MSC:S', CVSS_BASE_HIGH + '/ZZ:X', CVSS_BASE_HIGH + '/', CVSS_BASE_HIGH + '\n',
+    ' ' + CVSS_BASE_HIGH, CVSS_BASE_HIGH.lower(), CVSS_BASE_HIGH.replace('CVSS:4.0', 'CVSS:3.1'),
+    CVSS_BASE_HIGH.replace('CVSS:4.0/', ''),
+)
+
+
+class CvssScoreTest(unittest.TestCase):
+    def run_scorer(self, *vectors):
+        argv = [sys.executable, '-I', str(CVSS_SCRIPT), 'score']
+        for vector in vectors:
+            argv += ['--vector', vector]
+        return subprocess.run(argv, capture_output=True, text=True)
+
+    def complete(self, vector):
+        process = self.run_scorer(vector)
+        self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+        self.assertEqual(process.stderr, '')
+        return json.loads(process.stdout)
+
+    def test_known_vectors_score_as_reference(self):
+        """Expected scores were produced by the FIRST CVSS v4.0 JavaScript calculator at the pinned commit.
+
+        A dev-time node harness loaded the unmodified reference files (metrics, config, lookup, max_composed,
+        max_severity, cvss_score), built the selected-metric map from the reference config defaults plus the
+        vector, and printed the score the reference returns. The 7.9 and 1.9 vectors are exact half-way cases
+        (the reference rounds 78.5 and 18.5 tenths upward); round-half-to-even would give 7.8 and 1.8.
+        """
+        cases = [
+            ('CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H', 10.0),
+            ('CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:N', 0.0),
+            (CVSS_BASE_HIGH, 9.3),
+            ('CVSS:4.0/AV:L/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N', 8.5),
+            ('CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:L/VA:L/SC:H/SI:H/SA:L', 7.9),
+            ('CVSS:4.0/AV:N/AC:L/AT:P/PR:H/UI:A/VC:L/VI:L/VA:L/SC:H/SI:N/SA:N', 4.0),
+            ('CVSS:4.0/AV:P/AC:H/AT:P/PR:H/UI:A/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N', 1.0),
+            (CVSS_BASE_HIGH + '/E:U', 8.1),
+            (CVSS_BASE_HIGH + '/E:P', 8.9),
+            (CVSS_BASE_HIGH + '/E:X', 9.3),
+            (CVSS_BASE_HIGH + '/CR:L/IR:L/AR:L', 8.9),
+            (CVSS_BASE_HIGH + '/MAV:L/MPR:L/MVC:L', 7.0),
+            (CVSS_BASE_HIGH + '/MSI:S', 10.0),
+            ('CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:N/MSA:S', 8.9),
+            ('CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H/MVC:N/MVI:N/MVA:N/MSC:N/MSI:N/MSA:N', 0.0),
+            (CVSS_BASE_HIGH + '/S:P/AU:Y/R:I/V:C/RE:H/U:Red', 9.3),
+            ('CVSS:4.0/AV:A/AC:H/AT:N/PR:L/UI:N/VC:L/VI:L/VA:L/SC:H/SI:H/SA:H/E:U/CR:L/MAC:L/MAT:N/MPR:H/MUI:A'
+             '/MVC:X/MSI:S/MSA:L/S:X/V:D/U:Green', 1.9),
+        ]
+        for vector, expected in cases:
+            with self.subTest(vector=vector):
+                self.assertEqual(self.complete(vector)['score'], expected)
+
+    def test_severity_bands(self):
+        cases = [
+            ('CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:N', 0.0, 'None'),
+            ('CVSS:4.0/AV:A/AC:L/AT:P/PR:L/UI:P/VC:H/VI:L/VA:L/SC:L/SI:L/SA:L/E:U/CR:L/IR:L/AR:L', 0.1, 'Low'),
+            ('CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:A/VC:H/VI:L/VA:L/SC:H/SI:N/SA:N/E:U/CR:L/IR:L/AR:L', 3.9, 'Low'),
+            ('CVSS:4.0/AV:N/AC:L/AT:P/PR:H/UI:A/VC:L/VI:L/VA:L/SC:H/SI:N/SA:N', 4.0, 'Medium'),
+            ('CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:L/VA:L/SC:L/SI:L/SA:L', 6.9, 'Medium'),
+            ('CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:A/VC:H/VI:L/VA:L/SC:L/SI:L/SA:L', 7.0, 'High'),
+            ('CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:N/VA:N/SC:H/SI:N/SA:N', 8.9, 'High'),
+            ('CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:L/VA:H/SC:H/SI:N/SA:N', 9.0, 'Critical'),
+            ('CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H', 10.0, 'Critical'),
+        ]
+        for vector, score, severity in cases:
+            with self.subTest(vector=vector):
+                result = self.complete(vector)
+                self.assertEqual((result['score'], result['severity']), (score, severity))
+
+    def test_incomplete_or_invalid_vectors_are_refused(self):
+        for vector in (CVSS_BASE_HIGH.replace('/SA:N', ''), CVSS_BASE_HIGH + '/E:P/E:P', CVSS_BASE_HIGH.replace('/VC:H', '/VC:Q'),
+                       CVSS_BASE_HIGH + '/E:Y', CVSS_BASE_HIGH.replace('/AV:N/AC:L', '/AC:L/AV:N'),
+                       CVSS_BASE_HIGH + '/IR:H/CR:H', CVSS_BASE_HIGH.replace('CVSS:4.0', 'CVSS:3.1'),
+                       'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H'):
+            with self.subTest(vector=vector):
+                process = self.run_scorer(vector)
+                self.assertEqual(process.returncode, 2, process.stdout + process.stderr)
+                self.assertEqual(process.stdout, '')
+                error = json.loads(process.stderr)
+                self.assertEqual(error['status'], 'USAGE_ERROR')
+                self.assertTrue(error['error'])
+                self.assertNotIn('score', error)
+        two = self.run_scorer(CVSS_BASE_HIGH, CVSS_FULL)
+        self.assertEqual(two.returncode, 2, two.stdout + two.stderr)
+        self.assertEqual(two.stdout, '')
+        self.assertEqual(json.loads(two.stderr)['status'], 'USAGE_ERROR')
+
+    def test_cli_output_shape(self):
+        # deliberate tripwire: bump with ADAPTER_VERSION / FIRST_COMMIT
+        calculator = 'cvss4-score.py 1.0.0 (FIRST CVSS v4.0 reference tables, c5b0d409ae9f57c44264c6ce5f27d89298e1d32a)'
+        supplemental = '/S:P/AU:Y/R:I/V:C/RE:H/U:Red'
+        cases = [
+            (CVSS_BASE_HIGH, 'CVSS-B'), (CVSS_BASE_HIGH + supplemental, 'CVSS-B'),
+            (CVSS_BASE_HIGH + '/E:X/CR:X/IR:X/AR:X/MAV:X/MSA:X' + supplemental, 'CVSS-B'),
+            (CVSS_BASE_HIGH + '/E:U', 'CVSS-BT'), (CVSS_BASE_HIGH + '/E:U/CR:X' + supplemental, 'CVSS-BT'),
+            (CVSS_BASE_HIGH + '/CR:L', 'CVSS-BE'), (CVSS_BASE_HIGH + '/E:X/MVC:L', 'CVSS-BE'),
+            (CVSS_BASE_HIGH + '/MSI:S', 'CVSS-BE'), (CVSS_BASE_HIGH + '/E:A/AR:M', 'CVSS-BTE'), (CVSS_FULL, 'CVSS-BTE'),
+        ]
+        for vector, score_type in cases:
+            with self.subTest(vector=vector):
+                result = self.complete(vector)
+                self.assertEqual(set(result), {'status', 'vector', 'score', 'score_type', 'severity', 'calculator'})
+                self.assertEqual((result['status'], result['vector'], result['score_type'], result['calculator']),
+                                 ('COMPLETE', vector, score_type, calculator))
+                self.assertIs(type(result['score']), float)
+        self.assertEqual(self.complete(CVSS_BASE_HIGH + supplemental)['score'], self.complete(CVSS_BASE_HIGH)['score'])
+
+    def test_grammar_matches_runner(self):
+        verdicts = set()
+        for vector in CVSS_V4_GRAMMAR_SAMPLES:
+            with self.subTest(vector=vector):
+                accepted = security_cvss_v4_vector_is_complete(vector)
+                verdicts.add(accepted)
+                self.assertEqual(self.run_scorer(vector).returncode, 0 if accepted else 2)
+        self.assertEqual(verdicts, {True, False})
 
 
 if __name__ == '__main__':

@@ -4377,7 +4377,7 @@ def hplumb_case(workspace: Path) -> dict[str, Any]:
             Path("references/runtime-claude.md"), Path("references/runtime-codex.md"),
             Path("references/orchestrator-contract.md"), Path("references/discovery-contract.md"),
             Path("references/cross-model-verification.md"),
-            Path("scripts/deterministic-check.py"), Path("scripts/repo-authorization.py"),
+            Path("scripts/deterministic-check.py"), Path("scripts/repo-authorization.py"), Path("scripts/cvss4-score.py"),
             Path("references/ghsa-triage-mode.md"), Path("references/ghsa-deduplication.md"),
             Path("scripts/ghsa-fetch.py"), Path("scripts/intake-check.py"), Path("scripts/ghsa-writeback.py"),
             Path("scripts/ghsa-dedup.py"), Path("schemas/ghsa-intake.schema.json"), Path("schemas/dedup-relation.schema.json"),

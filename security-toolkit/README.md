@@ -111,6 +111,12 @@ separate, and distinguish failed assertions from interrupted or unexecuted check
 - Git
 - GitHub CLI (`gh`) only for GitHub-backed inputs or landing workflows
 
+## Third-party notices
+
+`skills/security-vuln-analyzer/scripts/cvss4-score.py` contains tables and an algorithm derived
+from the FIRST CVSS v4.0 calculator (FIRST.ORG, Inc., Red Hat, and contributors), used under
+the BSD-2-Clause license reproduced in that file.
+
 ## License
 
 [MIT License with Commercial Restriction](../LICENSE)

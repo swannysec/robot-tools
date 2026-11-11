@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -34,6 +35,13 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 
 class UsageError(ValueError):
     pass
+
+
+def write_private(path: Path, text: str) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        os.fchmod(handle.fileno(), 0o600)  # O_CREAT's mode applies only to a new file
+        handle.write(text)
 
 
 def load_json(path: str | Path) -> Any:
@@ -267,8 +275,8 @@ def command_h4_packet(args: argparse.Namespace) -> dict[str, Any]:
     allowed_ids = ["intake:" + advisory] + [f"claim:{claim_id}" for claim_id in sorted(claim_ids)] + [r["record_id"] for r in allowed]
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "h4-packet.json").write_text(json.dumps(packet, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
-    (out / "h4-allowed-records.json").write_text(json.dumps({"ghsa_id": advisory, "record_ids": allowed_ids, "records": allowed}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_private(out / "h4-packet.json", json.dumps(packet, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+    write_private(out / "h4-allowed-records.json", json.dumps({"ghsa_id": advisory, "record_ids": allowed_ids, "records": allowed}, indent=2, sort_keys=True) + "\n")
     return {"check": "h4-packet", "effective_status": "COMPLETE", "errors": [], "allowed_record_ids": allowed_ids}
 
 
@@ -338,7 +346,7 @@ def command_render(args: argparse.Namespace) -> dict[str, Any]:
     fields = labeled_fields(load_json(args.intake))
     text = "".join(f"<<<FIELD {label}>>>\n{value}\n<<<END {label}>>>\n" for label, value in fields)
     try:
-        Path(args.out).write_text(text, encoding="utf-8")
+        write_private(Path(args.out), text)
     except OSError as error:
         raise UsageError(f"cannot write {args.out}: {error}") from error
     return {"check": "render", "effective_status": "COMPLETE", "errors": [], "fields": [label for label, _ in fields]}

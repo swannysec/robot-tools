@@ -22,11 +22,11 @@ Relations are recorded per claim, after bundled advisories are split into claims
 | Relation | Meaning |
 |---|---|
 | `SAME_TEXT` | Near-identical report text with identical extracted literal sets; human-confirmed |
-| `SAME_ROOT_CAUSE` | The only duplicate relation: one fix resolves both claims (confidence rule below) |
-| `VARIANT` | Shares a root-cause family but needs its own analysis; never a duplicate |
+| `SAME_ROOT_CAUSE` | The only duplicate relation: one fix resolves both claims, including every member of each claim set (confidence rule below) |
+| `VARIANT` | Shares a root-cause family but needs its own analysis; never a duplicate. Recorded when both D4 legs say `VARIANT`, when the legs split and D5 failed, or when the legs split between `VARIANT` and `DISTINCT` with no D5 result. Needs no D6 confirmation unless a D4 leg said `SAME_ROOT_CAUSE` (D5 failed against it: possible incomplete fix) |
 | `RELATED` | Shares literals, lineage references, or context; recorded for ordering only |
-| `DISTINCT` | Compared and found to have different root causes |
-| `UNRESOLVED` | D4 verifiers split and no frozen D5 result applies, or D4 agreement conflicts with a failed D5 result; both verdicts are preserved and the human decides at D6 |
+| `DISTINCT` | Compared and found to share no root-cause family |
+| `UNRESOLVED` | D4 verifiers split with one leg `SAME_ROOT_CAUSE` and no frozen D5 result applies, or D4 agreement on `SAME_ROOT_CAUSE` conflicts with a failed D5 result; both verdicts are preserved and the human decides at D6 |
 
 An advisory is a duplicate only if every one of its claims is `SAME_ROOT_CAUSE` with a
 canonical claim.
@@ -35,17 +35,41 @@ canonical claim.
 
 | Stage | Who | What |
 |---|---|---|
-| D0 Fingerprint | Script (`ghsa-dedup.py index`, `cluster`) | Normalized-text hash and shingle similarity; literal extraction (paths, symbols, config keys, advisory and CVE IDs, SHAs, versions); compare against advisories in all states. Produces candidate pairs only |
+| D0 Fingerprint | Script (`ghsa-dedup.py index`, `cluster`) | Normalized-text hash and shingle similarity; literal extraction (paths, symbols, config keys, advisory and CVE IDs, SHAs, versions); compare against advisories in all states. The config-key pattern also matches file names and domains (`loader.rs`, `example.com`), so an entry's D0 config keys join only when it has no checked typed literals. Produces candidate pairs only |
 | D1 Claim split | Intake tier, one advisory per packet | Distinct claims with exact quotes, entry point, and typed literals (H1, see [ghsa-triage-mode.md](ghsa-triage-mode.md)) |
-| D2 Candidate clusters | Script (`ghsa-dedup.py cluster`) | Join on shared literals and lineage references; orders the queue |
-| D3 Re-anchoring | Script (`ghsa-dedup.py reanchor`) | Map verified locations to one common revision; anchor on symbols, with lines as supporting detail; compare at the control site. Anchors come from `ghsa-dedup.py records` (`anchors.json`, built from role-named `control_site` values) |
-| D4 Root-cause comparison | Analysis tier, both providers, cold | Code-derived records only, no reporter text (`ghsa-dedup.py d4-packet`); each side is a claim set from `records`, with every member listed unmerged and the set ID as the side's record ID; returns `SAME_ROOT_CAUSE`, `VARIANT`, or `DISTINCT` (`schemas/dedup-d4-result.schema.json`) |
+| D2 Candidate clusters | Script (`ghsa-dedup.py cluster`) | Join on shared literals and lineage references: D0 paths and symbols, checked typed literals, D0 config keys of entries without checked typed literals (a typed and an untyped entry sharing only a D0 config key do not join), and anchor literals from analyzed advisories (below); orders the queue |
+| D3 Re-anchoring | Script (`ghsa-dedup.py reanchor`) | Map verified locations to one common revision; anchor on symbols, with lines as supporting detail; compare at the control site. Anchors come from `ghsa-dedup.py records` (`anchors.json`, built from role-named `control_site` values); pass both advisories' `anchors.json` files (`--anchors`, repeated) and the pair's two claim-set files (`--claim-set`, repeated), so only the pair's anchors are compared; zero anchors after `--claim-set` filtering (check the result's `anchors` count) means the anchors and claim-set files do not come from the same `records` runs, unless no member has a `control_site` symbol |
+| D4 Root-cause comparison | Analysis tier, both providers, cold | Code-derived records only, no reporter text (`ghsa-dedup.py d4-packet`); each side is a claim set from `records`, with every member listed unmerged and the set ID as the side's record ID; the packet carries a fixed `question`, worded for its input form (for two claim sets, one fix must resolve every member of both sets), that verifiers answer as written, without re-deciding claim scope. Each claim set is the claim as analyzed (discovery roles set scope through each member's `claim_ids`, and a member whose `claim_ids` also list other claims still counts), so `SAME_ROOT_CAUSE` requires one fix to resolve every member of both sets; returns `SAME_ROOT_CAUSE`, `VARIANT`, or `DISTINCT` (`schemas/dedup-d4-result.schema.json`) |
 | D5 Fix oracle | Deterministic (`scripts/deterministic-check.py`) | Run Y's skill-authored adversarial-input regression test on X's fix revision; pass supports `SAME_ROOT_CAUSE`, fail means `VARIANT` or an incomplete fix |
-| D6 Human confirmation | Human, with a decision brief | Confirm, pick the canonical, or mark variant, distinct, related, or needs more; outward actions stay manual |
+| D6 Human confirmation | Human, with a decision brief | Confirm a proposed relation (`SAME_TEXT`, `SAME_ROOT_CAUSE`, `UNRESOLVED`, or a `VARIANT` from a failed D5 result against a `SAME_ROOT_CAUSE` leg), pick the canonical, or mark variant, distinct, related, or needs more; outward actions stay manual |
 
 `index` takes typed literals only from an H1 check whose `effective_status` is `COMPLETE`.
-An advisory without checked literals clusters on D0 literals alone; the command result
-counts such entries (`entries_without_typed_literals`) so they are not silently missed.
+Checked literals here means checked file paths, entry-point symbols, or config keys; typed
+advisory references and commands or settings never join. An advisory without checked
+literals clusters on D0 literals alone, including D0 config keys; an advisory with checked
+literals does not use its D0 config keys, because the regex also matches file names and
+domains. The command result counts entries without checked literals
+(`entries_without_typed_literals`) so they are not silently missed.
+
+`index` also reads an optional `anchors` path on each entry: the advisory's `anchors.json`
+from `ghsa-dedup.py records`. It stores the anchors' paths and symbols as `anchor_literals`.
+No H1-style status gate applies, because `records` writes anchors only for bridged
+(cross-model verified) records. Anchor paths always join; an anchor symbol joins only when
+it is `::`-qualified, since a bare name such as `list` is too common to mean the same code.
+This lets an analyzed advisory join an unanalyzed one whose report names its verified
+control-site path, or another analyzed advisory with the same anchor. Each pair records
+`shared_anchor_literal_count`: the number of shared literals that either advisory's anchors
+supply. A literal that both reports also name still counts, so a nonzero count does not mean
+the pair joined only because of anchors. Anchor literals stay out of the `SAME_TEXT` comparison.
+The join remains a proposal only: D3 and D4 still compare the pair. Residual misses:
+
+- Two advisories whose reports name no code can join only after both are analyzed, and then
+  only on a shared anchor path or `::`-qualified anchor symbol.
+- Anchor symbols join only when `::`-qualified, so dotted symbols (for example in Python,
+  JavaScript, Go, or Java) never join; for those languages only anchor paths join.
+- A file renamed between the two advisories' primary revisions does not match.
+- The join uses exact spelling at each advisory's own revision, so a path or symbol spelled
+  differently in a report or at another revision does not match.
 
 D5 tests are authored and their registry is frozen before D4 dispatch, so a D5 result can
 never be a check invented after seeing verifier results
@@ -66,13 +90,17 @@ test that cannot run, yields `NOT_RUN` or `UNRESOLVED`, which counts as no D5 re
 
 `SAME_ROOT_CAUSE` requires both D4 providers to agree, or a D5 result when they split.
 Otherwise the relation is `VARIANT` or `DISTINCT`, never a duplicate, or `UNRESOLVED` when
-the verifiers split and no frozen D5 result applies.
+the verifiers split with one leg `SAME_ROOT_CAUSE` and no frozen D5 result applies, or when
+both legs say `SAME_ROOT_CAUSE` and D5 failed.
 
 ## Mechanical routing (`ghsa-dedup.py route-d4`)
 
 A D5 result "passed" means Y's test failed as expected on the base revision and passed on
 X's fix revision; "failed" means it still failed on X's fix revision. Anything else is no
-D5 result.
+D5 result. A D5 pass shows only that Y's skill-authored test, written from one claim's
+contract, passes on X's fix; when a claim set has more than one member, it does not show that
+one fix resolves every member, so the D6 decision brief must say which member's contract
+produced the test.
 
 | D4 native | D4 cross-provider | D5 | Relation |
 |---|---|---|---|
@@ -82,12 +110,17 @@ D5 result.
 | `DISTINCT` | `DISTINCT` | any | `DISTINCT` |
 | any split | | passed | `SAME_ROOT_CAUSE` |
 | any split | | failed | `VARIANT` |
-| any split | | none | `UNRESOLVED` |
+| split involving `SAME_ROOT_CAUSE` | | none | `UNRESOLVED` |
+| `VARIANT`/`DISTINCT` split | | none | `VARIANT` |
 | either leg non-complete after its retry | | any | no relation; both advisories go to full analysis |
 
-Every relation other than `RELATED` and `DISTINCT` is a proposal until the human confirms
-it at D6 (`ghsa-dedup.py human`). `ghsa-dedup.py relate` records a D0 `SAME_TEXT` proposal or
-a relation the human sets directly. `route-d4` and `route-m` take each leg's provider and model
+Every relation other than `RELATED`, `DISTINCT`, and `VARIANT` is a proposal until the human
+confirms it at D6 (`ghsa-dedup.py human`). `VARIANT` and `DISTINCT` need no confirmation:
+neither is a duplicate, and both advisories already have their own analyses. The exception is
+a `VARIANT` from a failed D5 result against a `SAME_ROOT_CAUSE` leg, which goes to D6 as a
+possible incomplete fix. From D4, `SAME_ROOT_CAUSE`, `UNRESOLVED`, and that `VARIANT` go to D6;
+a D0 `SAME_TEXT` proposal and a membership `SAME_ROOT_CAUSE` also do. `ghsa-dedup.py relate`
+records a D0 `SAME_TEXT` proposal or a relation the human sets directly. `route-d4` and `route-m` take each leg's provider and model
 from runtime metadata, not role output, and refuse to record a relation unless the two legs
 come from different providers. The routers check pair identity, status, `declined_scope`, and
 verdict only; validate each D4 or M4 artifact against its schema and citations before
@@ -138,7 +171,8 @@ cluster against that fix.
 ## Confidentiality
 
 - Each advisory has its own run directory; the cross-advisory index holds IDs, digests,
-  hashed shingles, and typed literals, never report text.
+  hashed shingles, typed literals, and anchor literals (code-derived paths and symbols),
+  never report text.
 - D4 packets contain code-derived records only. D4 and M4 packets never contain reporter
   text from the other advisory.
 - H4 drafts are scoped to the advisory's own records ([ghsa-triage-mode.md](ghsa-triage-mode.md)).

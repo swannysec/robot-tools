@@ -87,10 +87,10 @@ follow [cross-model-verification.md](cross-model-verification.md). Require a `CO
 observation-only Stage 1 before dispatching Stage 2. Stage 2 does not receive Stage 1 or
 the other verifier's output.
 
-The Codex `read-only` sandbox limits writes and commands, not reads (observed with `codex
-exec -s read-only`): a role can read any file the user can, including other role artifacts.
-Keep run artifacts out of the roles' working directory, and treat cold isolation as resting
-on packet scope, not on the sandbox.
+The legacy Codex `read-only` sandbox limits writes, not reads (observed with `codex exec -s
+read-only`). A `codex exec` child can be confined with the permission profile in
+[runtime-claude.md](runtime-claude.md) "Cross-provider dispatch"; read confinement of in-app
+native roles is unverified. Keep run artifacts out of the roles' working directory.
 
 ## Cross-provider dispatch
 

@@ -159,7 +159,7 @@ def restricted_dir(path: Path) -> Path:
         missing.append(current)
         current = current.parent
     for directory in reversed(missing):
-        directory.mkdir(exist_ok=True)
+        directory.mkdir(mode=0o700, exist_ok=True)
         os.chmod(directory, 0o700)
     os.chmod(path, 0o700)
     return path

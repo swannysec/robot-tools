@@ -100,6 +100,10 @@ When adding a skill, agent, or command to any toolkit:
 
 When adding, renaming, or moving a field in a role schema (`schemas/*.schema.json`), grep the skill's `references/` and `SKILL.md` for every list that enumerates that schema's fields (preserved-field lists, report render tables, packet-content lists, the runner's required-field sets) and update each one, or state why it should not include the new field.
 
+### Approved Routing or Gating Rules
+
+When a maintainer approves a routing or gating rule stated in prose (for example, "humans decide every relation where `SAME_ROOT_CAUSE` is in play"), list every code path that produces each affected outcome and add a test per path before implementing. Check the rule against every path that produces the outcome, not only the new branch.
+
 ## Shell Scripting
 
 - Target **bash 3.2** (macOS default) — no bash 4+ features

@@ -318,7 +318,7 @@ class IntakeCheckTest(Workspace):
 class WriteBackTest(Workspace):
     def setUp(self):
         super().setUp()
-        self.record = {"record_id": "F-1", "final_status": "CROSS-MODEL VERIFIED", "fallback_model": False,
+        self.record = {"record_id": "F-1", "final_status": "CROSS-MODEL VERIFIED", "ghsa_eligible": True, "fallback_model": False,
                        "repository": REPO, "answers": [{"ghsa_id": IDS["base"], "claim_id": "C1"}],
                        "values": {"cwe_ids": ["CWE-863"], "cvss_vector_string": DATA["advisories"]["base"]["cvss_severities"]["cvss_v4"]["vector_string"]}}
         self.write_dir = self.tmp / "writeback"
@@ -391,7 +391,7 @@ class WriteBackTest(Workspace):
         self.assertEqual(code, 0)
 
     def severity_record(self, **values):
-        return {"record_id": "F-S", "final_status": "CROSS-MODEL VERIFIED", "fallback_model": False,
+        return {"record_id": "F-S", "final_status": "CROSS-MODEL VERIFIED", "ghsa_eligible": True, "fallback_model": False,
                 "repository": REPO, "answers": [{"ghsa_id": IDS["base"], "claim_id": "C1"}], "values": values}
 
     def test_severity_write_without_cvss_vector(self):
@@ -483,7 +483,7 @@ class H4DraftTest(Workspace):
         self.intake_dir, _ = self.capture("base")
         self.claims = write(self.tmp / "claims.json", self.h1_result("base", [BASE_CLAIM]))
         records = {"records": [
-            {"record_id": "F-1", "kind": "finding", "answers": [{"ghsa_id": IDS["base"], "claim_id": "C1"}], "final_status": "CROSS-MODEL VERIFIED",
+            {"record_id": "F-1", "kind": "finding", "answers": [{"ghsa_id": IDS["base"], "claim_id": "C1"}], "final_status": "CROSS-MODEL VERIFIED", "ghsa_eligible": True,
              "values": {"cwe_ids": ["CWE-863"]}, "enumerated_variants": ["VARIANT-TEXT-OUTSIDE-SCOPE"],
              "evidence": [{"observation": "EVIDENCE-TEXT"}], "supporting_context": ["SUPPORTING-CONTEXT-TEXT"]},
             {"record_id": "F-3", "kind": "finding", "answers": [{"ghsa_id": IDS["base"], "claim_id": "C1"}], "final_status": "REFUTED",
@@ -540,9 +540,9 @@ class H4DraftTest(Workspace):
         answers = [{"ghsa_id": IDS["base"], "claim_id": "C1"}]
         vector_a = "CVSS:4.0/AV:L/AC:L/AT:N/PR:N/UI:P/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
         vector_b = vector_a.replace("UI:P", "UI:A")
-        records = [{"record_id": "F-A", "kind": "finding", "answers": answers, "final_status": "CROSS-MODEL VERIFIED",
+        records = [{"record_id": "F-A", "kind": "finding", "answers": answers, "final_status": "CROSS-MODEL VERIFIED", "ghsa_eligible": True,
                     "values": {"cvss_vector_string": vector_a, "cwe_ids": ["CWE-284", "CWE-863"]}},
-                   {"record_id": "F-B", "kind": "finding", "answers": answers, "final_status": "CROSS-MODEL VERIFIED",
+                   {"record_id": "F-B", "kind": "finding", "answers": answers, "final_status": "CROSS-MODEL VERIFIED", "ghsa_eligible": True,
                     "values": {"cvss_vector_string": vector_b, "cwe_ids": ["CWE-863", "CWE-284"]}},
                    {"record_id": "F-R", "kind": "finding", "answers": answers, "final_status": "REFUTED",
                     "values": {"cwe_ids": ["CWE-79"]}}]
@@ -560,12 +560,21 @@ class H4DraftTest(Workspace):
 
     def test_single_carrier_value_is_kept(self):
         answers = [{"ghsa_id": IDS["base"], "claim_id": "C1"}]
-        records = [{"record_id": "F-A", "kind": "finding", "answers": answers, "final_status": "CROSS-MODEL VERIFIED",
+        records = [{"record_id": "F-A", "kind": "finding", "answers": answers, "final_status": "CROSS-MODEL VERIFIED", "ghsa_eligible": True,
                     "values": {"cvss_vector_string": "CVSS:4.0/AV:N"}},
-                   {"record_id": "F-B", "kind": "finding", "answers": answers, "final_status": "CROSS-MODEL VERIFIED", "values": {}}]
+                   {"record_id": "F-B", "kind": "finding", "answers": answers, "final_status": "CROSS-MODEL VERIFIED", "ghsa_eligible": True, "values": {}}]
         packet, _ = self.packet_with(records, "h4-single")
         self.assertEqual(packet["withheld_values"], [])
         self.assertEqual(packet["finding_records"][0]["values"], {"cvss_vector_string": "CVSS:4.0/AV:N"})
+
+    def test_draft_state_needs_an_eligible_verified_record(self):
+        refuted = self.draft([{"text": "Accepting.", "record_refs": ["F-3"]}],
+                             [{"field": "state", "proposed_value_json": '"draft"', "record_refs": ["F-3"]}])
+        _, out = self.check(refuted)
+        self.assertIn("field_updates[0]: accepting to draft needs a cited GHSA-eligible verified record", out["errors"])
+        verified = self.draft([{"text": "Accepting.", "record_refs": ["F-1"]}],
+                              [{"field": "state", "proposed_value_json": '"draft"', "record_refs": ["F-1"]}])
+        self.assertEqual(self.check(verified)[1]["errors"], [])
 
     def test_record_outside_allowed_set_is_rejected(self):
         _, out = self.check(self.draft([{"text": "See the related finding.", "record_refs": ["F-2"]}]))
@@ -1064,6 +1073,39 @@ class RecordsTest(Workspace):
         self.assertEqual(code, 0, err)
         reanchored = json.loads((self.tmp / "reanchored.json").read_text(encoding="utf-8"))
         self.assertEqual(len(reanchored["shared_control_sites"][0]["record_ids"]), 3)
+
+    def test_non_bridged_records_cannot_back_write_back(self):
+        _, paths, ids = self.three_role_fixture()
+        manifest = {cid: self.verified(cid) for cid in ids}
+        manifest[ids[2]] = self.verified(ids[2], results=("CONFIRMED", "INCONCLUSIVE"))
+        self.assertEqual(self.run_records(paths, manifest)[0], 0)
+        records = json.loads((self.tmp / "records-out/report-records.json").read_text(encoding="utf-8"))["records"]
+        by_cid = {r["candidate_id"]: r for r in records}
+        split, bridged = by_cid[ids[2]], by_cid[ids[0]]
+        self.assertEqual((split["final_status"], split["ghsa_eligible"]), ("CROSS-MODEL VERIFIED", False))
+        self.assertTrue(bridged["ghsa_eligible"])
+        index = {r["record_id"]: r for r in records}
+        for operation, new in (("set_state_draft", "draft"), ("create_private_fork", None)):
+            item = {"operation": operation, "old_value": "triage", "new_value": new,
+                    "record_refs": [{"record_id": split["record_id"], "sha256": canonical_digest(split)}]}
+            with self.assertRaises(WRITEBACK["Refusal"]):
+                WRITEBACK["validate_item"](item, index, REPO, IDS["bundled"])
+            item["record_refs"] = [{"record_id": bridged["record_id"], "sha256": canonical_digest(bridged)}]
+            WRITEBACK["validate_item"](item, index, REPO, IDS["bundled"])
+
+    def test_identical_candidates_from_two_artifacts_are_both_kept(self):
+        item = candidate("C1", "Loader skips trust.")  # same role-local ID and content in both role artifacts
+        first = write(self.tmp / "roleA.json", {"role_type": "discovery", "status": "COMPLETE", "declined_scope": [],
+                                                "scope": "role A", "candidates": [item]})
+        second = write(self.tmp / "roleB.json", {"role_type": "discovery", "status": "COMPLETE", "declined_scope": [],
+                                                 "scope": "role B", "candidates": [item]})
+        cid = expected_candidate_id(item, REV)
+        code, out = self.run_records([first, second], {cid: self.verified(cid)})
+        self.assertEqual(code, 0, out)
+        records = json.loads((self.tmp / "records-out/report-records.json").read_text(encoding="utf-8"))["records"]
+        self.assertEqual(len({r["record_id"] for r in records}), 2)
+        self.assertEqual({r["candidate_id"] for r in records}, {cid})
+        self.assertEqual(self.run_records([first, first], {cid: self.verified(cid)})[0], 2)  # the same artifact twice
 
     def test_d4_packet_accepts_claim_sets(self):
         _, paths, ids = self.three_role_fixture()

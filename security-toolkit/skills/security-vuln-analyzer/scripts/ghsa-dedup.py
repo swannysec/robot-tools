@@ -273,28 +273,29 @@ def command_records(args: argparse.Namespace) -> dict[str, Any]:
         raise UsageError("the H1 output belongs to a different advisory")
     known_claims = sorted({claim["claim_id"] for claim in h1.get("claims", [])})
     manifest = load(args.verification).get("candidates", {})
-    role_records: list[tuple[str, dict[str, Any]]] = []
+    role_records: list[tuple[str, str, dict[str, Any]]] = []
     for path in args.discovery:
         artifact = load(path)
+        artifact_digest = digest(artifact)  # role-local IDs are artifact-scoped, so identity includes the artifact
         if artifact.get("role_type") != "discovery" or artifact.get("status") != "COMPLETE" or artifact.get("declined_scope"):
             raise UsageError(f"{path} is not a complete, unrefused discovery artifact")
         for item in artifact.get("candidates", []):
             unknown = sorted(set(item["claim_ids"]) - set(known_claims))
             if unknown:
                 raise UsageError(f"a candidate names claim IDs not in the checked H1 output: {unknown}")
-            role_records.append((candidate_id(item, args.primary_revision), item))
-    recomputed = {cid for cid, _ in role_records}
+            role_records.append((candidate_id(item, args.primary_revision), artifact_digest, item))
+    recomputed = {cid for cid, _, _ in role_records}
     if set(manifest) - recomputed:
         raise UsageError("the verification manifest names candidate IDs that the discovery artifacts do not produce")
     for cid in recomputed - set(manifest):
-        if any(item["affects_security_claim"] for other, item in role_records if other == cid):
+        if any(item["affects_security_claim"] for other, _, item in role_records if other == cid):
             raise UsageError(f"{cid} affects a security claim but has no verification entry")
     records, members, anchors, not_bridged, unassigned = [], [], [], [], []
     seen: set[str] = set()
-    for cid, item in sorted(role_records, key=lambda pair: (pair[0], digest(pair[1]))):
-        record_id = f"{cid}:{digest(item)[:8]}"
+    for cid, artifact_digest, item in sorted(role_records, key=lambda entry: (entry[0], entry[1], digest(entry[2]))):
+        record_id = f"{cid}:{digest([artifact_digest, digest(item)])[:8]}"
         if record_id in seen:
-            raise UsageError(f"duplicate record {record_id}")
+            raise UsageError(f"duplicate record {record_id} (the same discovery artifact was supplied twice)")
         seen.add(record_id)
         entry = manifest.get(cid)
         status = entry.get("final_status", "") if entry else ""
@@ -318,7 +319,8 @@ def command_records(args: argparse.Namespace) -> dict[str, Any]:
             "record_id": record_id, "kind": "finding", "repository": args.repository, "candidate_id": cid,
             "role_local_id": item.get("role_local_id", ""),
             "answers": [{"ghsa_id": args.ghsa_id, "claim_id": claim_id} for claim_id in claim_ids],
-            "final_status": status, "fallback_model": bool(entry and entry.get("fallback_model")),
+            "final_status": status, "ghsa_eligible": bridged,
+            "fallback_model": bool(entry and entry.get("fallback_model")),
             "fallback_use_permitted": bool(entry and entry.get("fallback_use_permitted")),
             "normalized_proposition": item["normalized_proposition"], "proposed_disposition": item["proposed_disposition"],
             "values": values,

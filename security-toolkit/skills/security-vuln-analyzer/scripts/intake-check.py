@@ -205,7 +205,7 @@ def command_h2(args: argparse.Namespace) -> dict[str, Any]:
             "declined_scope": result.get("declined_scope", []) if isinstance(result, dict) else []}
 
 
-H4_RECORD_FIELDS = ("record_id", "kind", "answers", "final_status", "fallback_model", "fallback_use_permitted",
+H4_RECORD_FIELDS = ("record_id", "kind", "answers", "final_status", "ghsa_eligible", "fallback_model", "fallback_use_permitted",
                     "normalized_proposition", "proposed_disposition", "values")
 
 
@@ -216,7 +216,7 @@ def h4_projection(record: dict[str, Any]) -> dict[str, Any]:
 
 def value_source(record: dict[str, Any]) -> bool:
     """Field values may come only from verified records, with explicit permission for fallback results."""
-    return record.get("final_status") == "CROSS-MODEL VERIFIED" and (
+    return record.get("final_status") == "CROSS-MODEL VERIFIED" and record.get("ghsa_eligible") is True and (
         record.get("fallback_model") is not True or record.get("fallback_use_permitted") is True
     )
 
@@ -314,6 +314,8 @@ def command_h4(args: argparse.Namespace) -> dict[str, Any]:
                     errors.append(f"{where}: value does not match a cited verified record")
             elif proposed != "draft":
                 errors.append(f"{where}: the only state a draft may propose is draft")
+            elif not any(ref in values_by_record for ref in update["record_refs"]):
+                errors.append(f"{where}: accepting to draft needs a cited GHSA-eligible verified record")
             scan(update["proposed_value_json"], where)
         proposed_fields = {update["field"] for update in result["field_updates"]}
         if {"severity", "cvss_vector_string"} <= proposed_fields:

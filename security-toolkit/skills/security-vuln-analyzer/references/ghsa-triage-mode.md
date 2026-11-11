@@ -128,9 +128,11 @@ and drafts a comment asking for the missing element; a human posts it.
   {candidate_id: {"final_status", "fallback_model", "fallback_use_permitted", "stage2":
   [{"path", "provider"}, {"path", "provider"}]}}}`, providers from runtime metadata). The
   script recomputes every candidate ID, keeps one record per role-emitted candidate (no
-  merge), and treats a candidate as verified for GHSA use only when the manifest says
-  `CROSS-MODEL VERIFIED` and both Stage 2 artifacts are complete, unrefused, `CONFIRMED`,
-  and from different providers. It writes `report-records.json` (for `h4-packet` and the
+  merge; the record ID hashes the candidate and its source artifact, so identical candidates
+  from two roles stay separate), and treats a candidate as verified for GHSA use only when
+  the manifest says `CROSS-MODEL VERIFIED` and both Stage 2 artifacts are complete,
+  unrefused, `CONFIRMED`, and from different providers. Each record keeps its reconciled
+  `final_status` and carries `ghsa_eligible`, true only for those bridged records. It writes `report-records.json` (for `h4-packet` and the
   writer), one `claim-sets/<claim_id>.json` per claim with verified records (for
   `d4-packet`), and `anchors.json` (for `reanchor`). It refuses a manifest that does not
   match the recomputed IDs (a candidate that no role marked `affects_security_claim` may be
@@ -174,7 +176,9 @@ user whether to proceed to write-back, using a decision brief. If the user agree
    The maintainer may instead run that command in their own terminal.
 4. `ghsa-writeback.py` verifies the plan hash against the approvals, checks every item
    against the allowlist and its verified report record (which must name the plan's
-   repository and answer only the plan's advisory), reads the write token through
+   repository, answer only the plan's advisory, and carry `ghsa_eligible: true` from
+   `ghsa-dedup.py records`, so a record that was not bridged backs no write, including
+   accept-to-draft and private-fork creation), reads the write token through
    `op read`, re-fetches the advisory before each write and stops on any change since
    capture, and records each result.
 
@@ -230,8 +234,9 @@ explicitly permits that use for that result ([orchestrator-contract.md](orchestr
 - **Cited records:** every field update and comment statement cites record IDs.
   `intake-check.py h4` rejects a draft that cites a record outside A's allowed set or whose
   proposed CWE, CVSS, severity, or version value does not equal a value in a cited
-  `CROSS-MODEL VERIFIED` record (a fallback-model record needs the user's permission for
-  this use). Comment statements may cite any record in the allowed set.
+  `CROSS-MODEL VERIFIED` record with `ghsa_eligible: true` (a fallback-model record needs
+  the user's permission for this use). An accept-to-draft proposal must cite at least one
+  such record. Comment statements may cite any record in the allowed set.
 - **Advisory-ID block:** the same check rejects any draft that names another unpublished
   advisory.
 - **Posting brief:** the decision brief for each draft lists every record the draft

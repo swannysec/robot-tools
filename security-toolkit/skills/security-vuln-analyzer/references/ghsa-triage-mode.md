@@ -191,10 +191,14 @@ explicitly permits that use for that result ([orchestrator-contract.md](orchestr
 - **Packet scoping:** `intake-check.py h4-packet` builds H4's packet for advisory A from A's
   intake record, A's checked claims, and only the finding records that answer those claims.
   It never includes relation records, other findings, variants beyond A's claims, or
-  supporting-context material.
+  supporting-context material: each finding record is projected to its ID, kind,
+  `answers`, final status, fallback flags, proposition, disposition, and verified values,
+  with evidence, variants, and locations removed.
 - **Cited records:** every field update and comment statement cites record IDs.
   `intake-check.py h4` rejects a draft that cites a record outside A's allowed set or whose
-  proposed CWE, CVSS, or version value does not equal the cited verified record.
+  proposed CWE, CVSS, severity, or version value does not equal a value in a cited
+  `CROSS-MODEL VERIFIED` record (a fallback-model record needs the user's permission for
+  this use). Comment statements may cite any record in the allowed set.
 - **Advisory-ID block:** the same check rejects any draft that names another unpublished
   advisory.
 - **Posting brief:** the decision brief for each draft lists every record the draft

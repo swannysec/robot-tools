@@ -97,6 +97,12 @@ def captured_fields(intake: dict[str, Any]) -> list[str]:
     advisory = intake.get("advisory", {})
     fields = [advisory.get("summary", ""), advisory.get("description", "")]
     fields.extend(comment.get("body", "") for comment in advisory.get("comments", []) if isinstance(comment, dict))
+    # Structured vulnerability fields are part of the captured advisory in the packet, so a
+    # verbatim version range, package, or vulnerable-function name is a valid quote.
+    for vulnerability in advisory.get("reporter_claims", {}).get("vulnerabilities", []):
+        if isinstance(vulnerability, dict):
+            fields.extend(vulnerability.get(key, "") for key in ("package", "vulnerable_version_range", "patched_versions"))
+            fields.extend(vulnerability.get("vulnerable_functions", []) or [])
     return [field for field in fields if isinstance(field, str) and field]
 
 
@@ -181,6 +187,22 @@ def command_h2(args: argparse.Namespace) -> dict[str, Any]:
             "declined_scope": result.get("declined_scope", []) if isinstance(result, dict) else []}
 
 
+H4_RECORD_FIELDS = ("record_id", "kind", "answers", "final_status", "fallback_model", "fallback_use_permitted",
+                    "normalized_proposition", "proposed_disposition", "values")
+
+
+def h4_projection(record: dict[str, Any]) -> dict[str, Any]:
+    """Only the fields H4 needs: no evidence, variants, locations, or supporting-context material."""
+    return {key: record[key] for key in H4_RECORD_FIELDS if key in record}
+
+
+def value_source(record: dict[str, Any]) -> bool:
+    """Field values may come only from verified records, with explicit permission for fallback results."""
+    return record.get("final_status") == "CROSS-MODEL VERIFIED" and (
+        record.get("fallback_model") is not True or record.get("fallback_use_permitted") is True
+    )
+
+
 def command_h4_packet(args: argparse.Namespace) -> dict[str, Any]:
     intake, claims, records = load_json(args.intake), load_json(args.claims), load_json(args.records)
     advisory = intake["advisory"]["ghsa_id"]
@@ -193,7 +215,7 @@ def command_h4_packet(args: argparse.Namespace) -> dict[str, Any]:
             continue
         answers = record.get("answers", [])
         if answers and all(a.get("ghsa_id") == advisory and a.get("claim_id") in claim_ids for a in answers):
-            allowed.append(record)
+            allowed.append(h4_projection(record))
     packet = {
         "packet_type": "intake_h4",
         "ghsa_id": advisory,
@@ -220,7 +242,8 @@ def command_h4(args: argparse.Namespace) -> dict[str, Any]:
         if result.get("ghsa_id") != advisory:
             errors.append("draft names a different advisory than its allowed-record set")
         allowed_ids = set(allowed.get("record_ids", []))
-        values_by_record = {r["record_id"]: r.get("values", {}) for r in allowed.get("records", []) if "record_id" in r}
+        values_by_record = {r["record_id"]: r.get("values", {}) for r in allowed.get("records", [])
+                            if "record_id" in r and value_source(r)}
 
         def scan(text: str, where: str) -> None:
             for token in GHSA_TOKEN.findall(text):

@@ -225,6 +225,13 @@ class IntakeCheckTest(Workspace):
         _, out, _ = run("intake-check.py", "h1", "--intake", intake_dir / "intake-record.json", "--result", path)
         self.assertIn("duplicate claim_id C1", json.loads(out)["errors"])
 
+    def test_structured_vulnerability_fields_are_quote_sources(self):
+        result = self.h1_result("base", [BASE_CLAIM])
+        result["versions_quoted"] = ["<= 1.2.3"]  # only in the captured vulnerabilities field, not the description
+        self.assertNotIn("<= 1.2.3", DATA["advisories"]["base"]["description"])
+        code, out = self.check_h1(result)
+        self.assertEqual((code, out["effective_status"]), (0, "COMPLETE"), out["errors"])
+
     def test_zero_claims_is_malformed(self):
         _, out = self.check_h1(self.h1_result("base", []))
         self.assertEqual(out["effective_status"], "MALFORMED")
@@ -432,7 +439,11 @@ class H4DraftTest(Workspace):
         self.intake_dir, _ = self.capture("base")
         self.claims = write(self.tmp / "claims.json", self.h1_result("base", [BASE_CLAIM]))
         records = {"records": [
-            {"record_id": "F-1", "kind": "finding", "answers": [{"ghsa_id": IDS["base"], "claim_id": "C1"}], "values": {"cwe_ids": ["CWE-863"]}},
+            {"record_id": "F-1", "kind": "finding", "answers": [{"ghsa_id": IDS["base"], "claim_id": "C1"}], "final_status": "CROSS-MODEL VERIFIED",
+             "values": {"cwe_ids": ["CWE-863"]}, "enumerated_variants": ["VARIANT-TEXT-OUTSIDE-SCOPE"],
+             "evidence": [{"observation": "EVIDENCE-TEXT"}], "supporting_context": ["SUPPORTING-CONTEXT-TEXT"]},
+            {"record_id": "F-3", "kind": "finding", "answers": [{"ghsa_id": IDS["base"], "claim_id": "C1"}], "final_status": "REFUTED",
+             "values": {"cwe_ids": ["CWE-79"]}},
             {"record_id": "F-2", "kind": "finding", "answers": [{"ghsa_id": IDS["variant"], "claim_id": "C1"}], "values": {"cwe_ids": ["CWE-284"]}},
             {"record_id": "REL-1", "kind": "relation", "answers": [{"ghsa_id": IDS["base"], "claim_id": "C1"}]},
         ]}
@@ -455,7 +466,9 @@ class H4DraftTest(Workspace):
 
     def test_packet_excludes_relations_and_other_findings(self):
         packet = json.loads((self.tmp / "h4/h4-packet.json").read_text(encoding="utf-8"))
-        self.assertEqual([r["record_id"] for r in packet["finding_records"]], ["F-1"])
+        self.assertEqual([r["record_id"] for r in packet["finding_records"]], ["F-1", "F-3"])
+        for leaked in ("VARIANT-TEXT-OUTSIDE-SCOPE", "EVIDENCE-TEXT", "SUPPORTING-CONTEXT-TEXT"):
+            self.assertNotIn(leaked, json.dumps(packet))
         self.assertNotIn("REL-1", json.dumps(packet))
         self.assertNotIn(IDS["variant"], json.dumps(packet))
 
@@ -465,6 +478,11 @@ class H4DraftTest(Workspace):
         self.assertEqual(code, 0, out["errors"])
         self.assertEqual(out["posting_brief"]["records_mentioned"], ["F-1"])
         self.assertIn("previously reported", [h["phrase"] for h in out["posting_brief"]["highlighted_wording"]])
+
+    def test_values_only_from_verified_records(self):
+        _, out = self.check(self.draft([{"text": "The assessment was refuted.", "record_refs": ["F-3"]}],
+                                       [{"field": "cwe_ids", "proposed_value_json": '["CWE-79"]', "record_refs": ["F-3"]}]))
+        self.assertEqual(out["errors"], ["field_updates[0]: value does not match a cited verified record"])
 
     def test_record_outside_allowed_set_is_rejected(self):
         _, out = self.check(self.draft([{"text": "See the related finding.", "record_refs": ["F-2"]}]))

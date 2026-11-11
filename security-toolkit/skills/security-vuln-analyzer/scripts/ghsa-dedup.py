@@ -206,12 +206,16 @@ def command_reanchor(args: argparse.Namespace) -> dict[str, Any]:
         anchors.append({"record_id": item.get("record_id", ""), "symbol": symbol, "path": path,
                         "original_revision": item.get("revision", ""), "original_line": item.get("line", 0),
                         "common_revision": args.revision, "lines_at_common": lines, "status": status})
-    control_sites: dict[tuple[str, str], list[str]] = {}
+    # Group by the resolved identity at the common revision (path, final symbol component, and
+    # matched lines), not by the supplied spelling, so `a::f` and `f` resolving to the same lines
+    # share a site while different names or different lines stay separate.
+    control_sites: dict[tuple[str, str, tuple[int, ...]], list[str]] = {}
     for anchor in anchors:
         if anchor["status"] != "NOT_FOUND":
-            control_sites.setdefault((anchor["path"], anchor["symbol"]), []).append(anchor["record_id"])
-    shared = [{"path": path, "symbol": symbol, "record_ids": sorted(set(ids))}
-              for (path, symbol), ids in sorted(control_sites.items()) if len(set(ids)) > 1]
+            key = (anchor["path"], anchor["symbol"].split("::")[-1], tuple(anchor["lines_at_common"]))
+            control_sites.setdefault(key, []).append(anchor["record_id"])
+    shared = [{"path": path, "symbol": symbol, "lines_at_common": list(lines), "record_ids": sorted(set(ids))}
+              for (path, symbol, lines), ids in sorted(control_sites.items()) if len(set(ids)) > 1]
     dump(args.out, {"record_type": "ghsa_dedup_anchors", "common_revision": args.revision, "anchors": anchors, "shared_control_sites": shared})
     return {"status": "COMPLETE", "anchors": len(anchors), "shared_control_sites": len(shared)}
 

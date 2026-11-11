@@ -149,7 +149,8 @@ user whether to proceed to write-back, using a decision brief. If the user agree
    `uv run python3 -I scripts/ghsa-writeback.py --plan <plan> --approvals <approvals> --records <records>`.
    The maintainer may instead run that command in their own terminal.
 4. `ghsa-writeback.py` verifies the plan hash against the approvals, checks every item
-   against the allowlist and its verified report record, reads the write token through
+   against the allowlist and its verified report record (which must name the plan's
+   repository and answer only the plan's advisory), reads the write token through
    `op read`, re-fetches the advisory before each write and stops on any change since
    capture, and records each result.
 

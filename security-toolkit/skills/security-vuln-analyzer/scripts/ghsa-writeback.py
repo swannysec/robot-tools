@@ -95,7 +95,7 @@ def load(path: Path) -> tuple[Any, bytes]:
     return json.loads(raw.decode("utf-8")), raw
 
 
-def validate_item(item: dict[str, Any], records: dict[str, dict[str, Any]]) -> None:
+def validate_item(item: dict[str, Any], records: dict[str, dict[str, Any]], repository: str, ghsa_id: str) -> None:
     operation = item.get("operation")
     if operation in FORBIDDEN_OPERATIONS:
         raise Refusal(f"{operation} refused: {FORBIDDEN_OPERATIONS[operation]}")
@@ -111,6 +111,11 @@ def validate_item(item: dict[str, Any], records: dict[str, dict[str, Any]]) -> N
             raise Refusal("item cites a record that is not in the verified record set")
         if canonical_digest(record) != ref.get("sha256"):
             raise Refusal(f"record {ref.get('record_id')} does not match its digest in the plan")
+        answers = record.get("answers")
+        if record.get("repository") != repository or not isinstance(answers, list) or not answers or any(
+            not isinstance(answer, dict) or answer.get("ghsa_id") != ghsa_id for answer in answers
+        ):
+            raise Refusal(f"record {ref.get('record_id')} does not belong to {repository} advisory {ghsa_id}")
         if record.get("final_status") != "CROSS-MODEL VERIFIED":
             raise Refusal(f"record {ref.get('record_id')} is not CROSS-MODEL VERIFIED")
         if record.get("fallback_model") is True and record.get("fallback_use_permitted") is not True:
@@ -218,7 +223,7 @@ def main() -> int:
         if any(not isinstance(item_id, str) or not item_id.strip() for item_id in item_ids) or len(set(item_ids)) != len(item_ids):
             raise Refusal("every plan item needs a unique, non-empty item_id; approvals are per item")
         for item in items:
-            validate_item(item, records)  # every item is checked before any write
+            validate_item(item, records, repository, ghsa_id)  # every item is checked before any write
         operations = {item["operation"] for item in items}
         if {"set_severity", "set_cvss_vector"} <= operations:
             raise Refusal("a plan may not set both severity and a CVSS vector; GitHub derives severity from the vector")

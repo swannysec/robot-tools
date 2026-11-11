@@ -268,6 +268,7 @@ class WriteBackTest(Workspace):
     def setUp(self):
         super().setUp()
         self.record = {"record_id": "F-1", "final_status": "CROSS-MODEL VERIFIED", "fallback_model": False,
+                       "repository": REPO, "answers": [{"ghsa_id": IDS["base"], "claim_id": "C1"}],
                        "values": {"cwe_ids": ["CWE-863"], "cvss_vector_string": DATA["advisories"]["base"]["cvss_severities"]["cvss_v4"]["vector_string"]}}
         self.write_dir = self.tmp / "writeback"
         self.write_dir.mkdir()
@@ -339,7 +340,8 @@ class WriteBackTest(Workspace):
         self.assertEqual(code, 0)
 
     def severity_record(self, **values):
-        return {"record_id": "F-S", "final_status": "CROSS-MODEL VERIFIED", "fallback_model": False, "values": values}
+        return {"record_id": "F-S", "final_status": "CROSS-MODEL VERIFIED", "fallback_model": False,
+                "repository": REPO, "answers": [{"ghsa_id": IDS["base"], "claim_id": "C1"}], "values": values}
 
     def test_severity_write_without_cvss_vector(self):
         unscored = json.loads(json.dumps(DATA["advisories"]["base"]))
@@ -370,6 +372,18 @@ class WriteBackTest(Workspace):
         write(self.api / self.advisory_name, drafted)
         code, outcome = self.execute([self.item("W1", "set_state_draft", "draft", old="triage")], ["W1"])
         self.assertEqual((code, outcome["items"][0]["status"]), (7, "STOPPED_STATE_NOT_TRIAGE"))
+
+    def test_records_must_belong_to_the_plan_advisory(self):
+        other_advisory = dict(self.record, answers=[{"ghsa_id": IDS["variant"], "claim_id": "C1"}])
+        code, outcome = self.execute([self.item("W1", "set_cwe_ids", ["CWE-863"], record=other_advisory)], ["W1"], record=other_advisory)
+        self.assertEqual(code, 6)
+        self.assertIn("does not belong to", outcome["refusal"])
+        mixed = dict(self.record, answers=[{"ghsa_id": IDS["base"], "claim_id": "C1"}, {"ghsa_id": IDS["variant"], "claim_id": "C1"}])
+        code, _ = self.execute([self.item("W1", "set_cwe_ids", ["CWE-863"], record=mixed)], ["W1"], record=mixed)
+        self.assertEqual(code, 6)
+        other_repo = dict(self.record, repository="other-owner/other-repo")
+        code, _ = self.execute([self.item("W1", "set_cwe_ids", ["CWE-863"], record=other_repo)], ["W1"], record=other_repo)
+        self.assertEqual(code, 6)
 
     def test_duplicate_item_ids_are_refused(self):
         code, outcome = self.execute([self.item("W1", "set_cwe_ids", ["CWE-863"]), self.item("W1", "create_private_fork", "")], ["W1"])
@@ -697,6 +711,13 @@ class DedupTest(Workspace):
         self.assertEqual(code, 0, err)
         result = json.loads((self.tmp / "a.json").read_text(encoding="utf-8"))
         self.assertEqual([(a["status"], a["lines_at_common"]) for a in result["anchors"]], [("FOUND", [3]), ("MOVED", [3])])
+        self.assertEqual(result["shared_control_sites"], [{"path": "src/loader.rs", "symbol": "open_workspace",
+                                                           "lines_at_common": [3], "record_ids": ["F-X", "F-Y"]}])
+        distinct = write(self.tmp / "anchors2.json", {"anchors": [
+            {"record_id": "F-X", "symbol": "open_workspace", "path": "src/loader.rs", "revision": "old", "line": 3},
+            {"record_id": "F-Y", "symbol": "helper", "path": "src/loader.rs", "revision": "old", "line": 1}]})
+        run("ghsa-dedup.py", "reanchor", "--anchors", distinct, "--checkout", repo, "--revision", head, "--out", self.tmp / "a2.json")
+        self.assertEqual(json.loads((self.tmp / "a2.json").read_text(encoding="utf-8"))["shared_control_sites"], [])
 
     def test_invalidation_is_sticky(self):
         self.route(self.d4("n.json", "VARIANT"), self.d4("c.json", "VARIANT"))

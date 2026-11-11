@@ -221,6 +221,27 @@ def value_source(record: dict[str, Any]) -> bool:
     )
 
 
+def comparable(value: Any) -> str:
+    """Lists compare ignoring order; everything else compares as canonical JSON."""
+    if isinstance(value, list):
+        value = sorted(json.dumps(item, sort_keys=True) for item in value)
+    return json.dumps(value, sort_keys=True)
+
+
+def withhold_disagreeing_values(records: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Advisory-level fields: drop a field from every record when the value-source records that carry it disagree."""
+    carried: dict[str, set[str]] = {}
+    for record in records:
+        if value_source(record):
+            for field, value in (record.get("values") or {}).items():
+                carried.setdefault(field, set()).add(comparable(value))
+    withheld = sorted(field for field, values in carried.items() if len(values) > 1)
+    for record in records:
+        if isinstance(record.get("values"), dict):
+            record["values"] = {field: value for field, value in record["values"].items() if field not in withheld}
+    return [{"field": field, "reason": "verified records disagree"} for field in withheld]
+
+
 def command_h4_packet(args: argparse.Namespace) -> dict[str, Any]:
     intake, claims, records = load_json(args.intake), load_json(args.claims), load_json(args.records)
     advisory = intake["advisory"]["ghsa_id"]
@@ -234,12 +255,14 @@ def command_h4_packet(args: argparse.Namespace) -> dict[str, Any]:
         answers = record.get("answers", [])
         if answers and all(a.get("ghsa_id") == advisory and a.get("claim_id") in claim_ids for a in answers):
             allowed.append(h4_projection(record))
+    withheld = withhold_disagreeing_values(allowed)
     packet = {
         "packet_type": "intake_h4",
         "ghsa_id": advisory,
         "intake_record": intake,
         "claims": claims,
         "finding_records": allowed,
+        "withheld_values": withheld,
     }
     allowed_ids = ["intake:" + advisory] + [f"claim:{claim_id}" for claim_id in sorted(claim_ids)] + [r["record_id"] for r in allowed]
     out = Path(args.out_dir)

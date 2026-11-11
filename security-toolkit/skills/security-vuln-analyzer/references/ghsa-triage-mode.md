@@ -118,8 +118,26 @@ and drafts a comment asking for the missing element; a human posts it.
 
 ## Handoff
 
-- **Analysis:** the intake record, the verbatim advisory, and the H1 literals become Phase 1
-  input. The pinned target from intake is the primary target revision.
+- **Analysis:** the intake record, the verbatim advisory (rendered with `intake-check.py
+  render`), and the checked H1 claims become Phase 1 input. List each claim's ID with its
+  statement quote and typed literals, so discovery roles can fill `claim_ids`. The pinned
+  target from intake is the primary target revision.
+- **Records:** after Mechanical Reconciliation, run `ghsa-dedup.py records` before any D3, D4,
+  or H4 step. Inputs: the complete discovery artifacts, the checked H1 output, the primary
+  revision, and a verification manifest written by the orchestrator (`{"candidates":
+  {candidate_id: {"final_status", "fallback_model", "fallback_use_permitted", "stage2":
+  [{"path", "provider"}, {"path", "provider"}]}}}`, providers from runtime metadata). The
+  script recomputes every candidate ID, keeps one record per role-emitted candidate (no
+  merge), and treats a candidate as verified for GHSA use only when the manifest says
+  `CROSS-MODEL VERIFIED` and both Stage 2 artifacts are complete, unrefused, `CONFIRMED`,
+  and from different providers. It writes `report-records.json` (for `h4-packet` and the
+  writer), one `claim-sets/<claim_id>.json` per claim with verified records (for
+  `d4-packet`), and `anchors.json` (for `reanchor`). It refuses a manifest that does not
+  match the recomputed IDs (a candidate that no role marked `affects_security_claim` may be
+  absent), an inconsistent verified status, and unknown claim IDs. Its result lists
+  `unassigned` verified records (no claim ID; they stay in the report), claims without
+  verified records, and `not_bridged` records with reasons (for example a split resolved by
+  a frozen test, which this version does not bridge).
 - **`--develop-fix`:** receives the GHSA ID so landing can reuse the advisory's temporary
   private fork (ADR-014 path) instead of creating a new advisory.
 - **`--verify-fix --tracker <GHSA URL>`:** the tracker is captured through `ghsa-fetch.py`.
@@ -201,7 +219,10 @@ explicitly permits that use for that result ([orchestrator-contract.md](orchestr
   It never includes relation records, other findings, variants beyond A's claims, or
   supporting-context material: each finding record is projected to its ID, kind,
   `answers`, final status, fallback flags, proposition, disposition, and verified values,
-  with evidence, variants, and locations removed.
+  with evidence, variants, and locations removed. Field values are advisory-level: when the
+  verified records that carry a field disagree (lists compared ignoring order), `h4-packet` removes
+  that field from every record and lists it under `withheld_values`; records without the
+  field do not count.
 - **Absent values:** the H4 packet states that a field for which no record carries a
   verified value is not a task element: H4 proposes nothing for it and never lists it in
   `declined_scope`. Without that sentence, a dry-run H4 listed every field it had no value

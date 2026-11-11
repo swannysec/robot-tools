@@ -5,7 +5,8 @@ Subcommands:
   index        D0 fingerprints and the cross-advisory index (IDs, digests, hashed shingles, literals)
   cluster      D0 candidate pairs, SAME_TEXT proposals, and D2 clusters from an index
   reanchor     D3 symbol anchoring at one common revision
-  d4-packet    code-derived D4 packet for a pair (no reporter text)
+  records      report records, per-claim sets, and anchors from verified analysis artifacts
+  d4-packet    code-derived D4 packet for a pair of records or claim sets (no reporter text)
   m1           membership-check literal coverage
   m2-packet    M2 packet: Y's typed literals and X's contract only
   m4-packet    M4 packet: X's code-derived records, Y's claim quotes, M1 and M3 results
@@ -50,6 +51,9 @@ CODE_DERIVED_FIELDS = (
     "variant_family", "enumerated_variants", "invariant_test_contract", "final_status", "fix_revision",
 )
 D4_RELATIONS = {"SAME_ROOT_CAUSE", "VARIANT", "DISTINCT"}
+CLAIM_SET = "ghsa_claim_set"
+VERIFIED = "CROSS-MODEL VERIFIED"
+ASCII_SPACE = " \t\n\x0b\x0c\r"
 EXIT_OK = 0
 EXIT_USAGE = 2
 EXIT_ROUTED_ELSEWHERE = 8
@@ -224,17 +228,153 @@ def command_reanchor(args: argparse.Namespace) -> dict[str, Any]:
     return {"status": "COMPLETE", "anchors": len(anchors), "shared_control_sites": len(shared)}
 
 
+# ---------- records (analysis output to GHSA records) ----------
+
+def bundle_text(text: str) -> str:
+    """Normalization from orchestrator-contract.md: NFC, LF line endings, ASCII whitespace trimmed and collapsed."""
+    text = unicodedata.normalize("NFC", text).replace("\r\n", "\n").replace("\r", "\n").strip(ASCII_SPACE)
+    return re.sub("[" + re.escape(ASCII_SPACE) + "]+", " ", text)
+
+
+def candidate_id(item: dict[str, Any], primary_revision: str) -> str:
+    """Recompute the bundle ID exactly as orchestrator-contract.md specifies; never trust a supplied one."""
+    locations = sorted(([loc["repository"], loc["revision"], loc["relative_path"], loc["start_line"], loc["end_line"]] for loc in item["locations"]),
+                       key=lambda value: json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+    body = {"primary_revision": primary_revision, "locations": locations,
+            "primitive_class": bundle_text(item["primitive_class"]), "variant_family": bundle_text(item["variant_family"]),
+            "proposition": bundle_text(item["normalized_proposition"])}
+    data = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return "SVA-" + hashlib.sha256(data).hexdigest()[:20]
+
+
+def stage2_confirms(entry: dict[str, Any], cid: str) -> bool:
+    """True when both Stage 2 legs CONFIRMED; False for a complete split. Anything inconsistent is a usage error."""
+    legs = entry.get("stage2")
+    if not isinstance(legs, list) or len(legs) != 2:
+        raise UsageError(f"{cid}: a verified status needs exactly two Stage 2 artifacts")
+    if not distinct_providers(str(legs[0].get("provider", "")), str(legs[1].get("provider", ""))):
+        raise UsageError(f"{cid}: Stage 2 legs are not from two different providers")
+    if Path(legs[0]["path"]).resolve() == Path(legs[1]["path"]).resolve():
+        raise UsageError(f"{cid}: both Stage 2 legs name the same artifact")
+    results = []
+    for leg in legs:
+        data = load(leg["path"])
+        if data.get("candidate_id") != cid or data.get("status") != "COMPLETE" or data.get("declined_scope"):
+            raise UsageError(f"{cid}: a Stage 2 artifact is for another candidate, non-complete, or refused")
+        results.append(data.get("verification_result"))
+    return results == ["CONFIRMED", "CONFIRMED"]
+
+
+def command_records(args: argparse.Namespace) -> dict[str, Any]:
+    if load(args.h1_check).get("effective_status") != "COMPLETE":
+        raise UsageError("the H1 output has not passed intake-check")
+    h1 = load(args.h1)
+    if h1.get("ghsa_id") != args.ghsa_id:
+        raise UsageError("the H1 output belongs to a different advisory")
+    known_claims = sorted({claim["claim_id"] for claim in h1.get("claims", [])})
+    manifest = load(args.verification).get("candidates", {})
+    role_records: list[tuple[str, dict[str, Any]]] = []
+    for path in args.discovery:
+        artifact = load(path)
+        if artifact.get("role_type") != "discovery" or artifact.get("status") != "COMPLETE" or artifact.get("declined_scope"):
+            raise UsageError(f"{path} is not a complete, unrefused discovery artifact")
+        for item in artifact.get("candidates", []):
+            unknown = sorted(set(item["claim_ids"]) - set(known_claims))
+            if unknown:
+                raise UsageError(f"a candidate names claim IDs not in the checked H1 output: {unknown}")
+            role_records.append((candidate_id(item, args.primary_revision), item))
+    recomputed = {cid for cid, _ in role_records}
+    if set(manifest) - recomputed:
+        raise UsageError("the verification manifest names candidate IDs that the discovery artifacts do not produce")
+    for cid in recomputed - set(manifest):
+        if any(item["affects_security_claim"] for other, item in role_records if other == cid):
+            raise UsageError(f"{cid} affects a security claim but has no verification entry")
+    records, members, anchors, not_bridged, unassigned = [], [], [], [], []
+    seen: set[str] = set()
+    for cid, item in sorted(role_records, key=lambda pair: (pair[0], digest(pair[1]))):
+        record_id = f"{cid}:{digest(item)[:8]}"
+        if record_id in seen:
+            raise UsageError(f"duplicate record {record_id}")
+        seen.add(record_id)
+        entry = manifest.get(cid)
+        status = entry.get("final_status", "") if entry else ""
+        bridged = False
+        if entry is None:
+            not_bridged.append({"record_id": record_id, "reason": "not routed to verification"})
+        elif status == VERIFIED:
+            bridged = stage2_confirms(entry, cid)
+            if not bridged:
+                not_bridged.append({"record_id": record_id, "reason": "verified status is not backed by two CONFIRMED Stage 2 results "
+                                    "(for example a split resolved by a frozen test); not bridged in this version"})
+        values: dict[str, Any] = {}
+        if bridged:
+            cvss = item.get("scoring", {}).get("cvss_v4", {})
+            if cvss.get("status") == "SCORED" and cvss.get("vector"):
+                values["cvss_vector_string"] = cvss["vector"]
+            if item.get("cwe_ids"):
+                values["cwe_ids"] = sorted(set(item["cwe_ids"]))
+        claim_ids = sorted(set(item["claim_ids"]))
+        records.append({
+            "record_id": record_id, "kind": "finding", "repository": args.repository, "candidate_id": cid,
+            "role_local_id": item.get("role_local_id", ""),
+            "answers": [{"ghsa_id": args.ghsa_id, "claim_id": claim_id} for claim_id in claim_ids],
+            "final_status": status, "fallback_model": bool(entry and entry.get("fallback_model")),
+            "fallback_use_permitted": bool(entry and entry.get("fallback_use_permitted")),
+            "normalized_proposition": item["normalized_proposition"], "proposed_disposition": item["proposed_disposition"],
+            "values": values,
+        })
+        if not bridged:
+            continue
+        if not claim_ids:
+            unassigned.append(record_id)
+        members.append({"record_id": record_id, "ghsa_id": args.ghsa_id, "claim_ids": claim_ids, "locations": item["locations"],
+                        "control_site": item["control_site"], "primitive_class": item["primitive_class"],
+                        "variant_family": item["variant_family"], "enumerated_variants": item["enumerated_variants"],
+                        "invariant_test_contract": item["invariant_test_contract"], "final_status": VERIFIED})
+        site = item["control_site"]
+        if site.get("symbol"):
+            anchors.append({"record_id": record_id, "symbol": site["symbol"], "path": site["relative_path"],
+                            "revision": args.primary_revision, "line": site["line"]})
+    out = Path(args.out_dir)
+    (out / "claim-sets").mkdir(parents=True, exist_ok=True)
+    for stale in (out / "claim-sets").glob("*.json"):  # a set from an earlier run must not survive as verified
+        stale.unlink()
+    dump(out / "report-records.json", {"repository": args.repository, "ghsa_id": args.ghsa_id, "records": records})
+    claim_sets, without = [], []
+    for claim_id in known_claims:
+        set_members = [member for member in members if claim_id in member["claim_ids"]]
+        if not set_members:
+            without.append(claim_id)
+            continue
+        set_id = "SET-" + hashlib.sha256("\n".join(sorted(m["record_id"] for m in set_members)).encode("utf-8")).hexdigest()[:20]
+        dump(out / "claim-sets" / f"{claim_id}.json", {"record_type": CLAIM_SET, "record_id": set_id, "ghsa_id": args.ghsa_id,
+                                                       "claim_id": claim_id, "final_status": VERIFIED, "members": set_members})
+        claim_sets.append(claim_id)
+    dump(out / "anchors.json", {"anchors": anchors})
+    return {"status": "COMPLETE", "records": len(records), "bridged": len(members), "claim_sets": claim_sets,
+            "claims_without_records": without, "unassigned": unassigned, "not_bridged": not_bridged}
+
+
 # ---------- packets ----------
 
 def code_derived(record: dict[str, Any]) -> dict[str, Any]:
     return {key: record[key] for key in CODE_DERIVED_FIELDS if key in record}
 
 
+def d4_side(record: dict[str, Any]) -> Any:
+    """A claim set contributes every member unmerged; a single record contributes its code-derived fields."""
+    if record.get("record_type") == CLAIM_SET:
+        return [code_derived(member) for member in record.get("members", [])]
+    return code_derived(record)
+
+
 def command_d4_packet(args: argparse.Namespace) -> dict[str, Any]:
     x, y = load(args.x_finding), load(args.y_finding)
+    if y.get("record_type") == CLAIM_SET and y.get("claim_id") != args.claim_id:
+        raise UsageError("Y's claim set answers a different claim than --claim-id")
     packet = {"packet_type": "dedup_d4", "pair": {"canonical_record_id": x.get("record_id", ""), "other_record_id": y.get("record_id", ""),
               "canonical_ghsa_id": x.get("ghsa_id", ""), "other_ghsa_id": y.get("ghsa_id", ""), "other_claim_id": args.claim_id},
-              "canonical_records": code_derived(x), "other_records": code_derived(y)}
+              "canonical_records": d4_side(x), "other_records": d4_side(y)}
     if args.anchors:
         packet["anchors"] = load(args.anchors)
     dump(args.out, packet)
@@ -524,7 +664,13 @@ def main() -> int:
     p = sub.add_parser("cluster"); p.add_argument("--index", required=True); p.add_argument("--out", required=True)
     p = sub.add_parser("reanchor"); p.add_argument("--anchors", required=True); p.add_argument("--checkout", required=True)
     p.add_argument("--revision", required=True); p.add_argument("--out", required=True)
-    p = sub.add_parser("d4-packet"); p.add_argument("--x-finding", required=True); p.add_argument("--y-finding", required=True)
+    p = sub.add_parser("records"); p.add_argument("--repository", required=True); p.add_argument("--ghsa-id", required=True)
+    p.add_argument("--primary-revision", required=True); p.add_argument("--h1", required=True); p.add_argument("--h1-check", required=True)
+    p.add_argument("--discovery", action="append", required=True, help="schema-valid, post-schema-checked discovery artifact")
+    p.add_argument("--verification", required=True, help="orchestrator manifest of final statuses and Stage 2 artifacts")
+    p.add_argument("--out-dir", required=True)
+    p = sub.add_parser("d4-packet"); p.add_argument("--x-finding", required=True, help="finding record or claim set")
+    p.add_argument("--y-finding", required=True, help="finding record or claim set")
     p.add_argument("--claim-id", required=True); p.add_argument("--anchors"); p.add_argument("--out", required=True)
     p = sub.add_parser("m1"); p.add_argument("--x-finding", required=True); p.add_argument("--y-h1", required=True)
     p.add_argument("--y-h1-check", required=True); p.add_argument("--clusters", required=True); p.add_argument("--out", required=True)
@@ -550,7 +696,8 @@ def main() -> int:
     p = sub.add_parser("invalidate"); p.add_argument("--relation", required=True); p.add_argument("--current", required=True)
     p.add_argument("--out")
     args = parser.parse_args()
-    simple = {"index": command_index, "cluster": command_cluster, "reanchor": command_reanchor, "d4-packet": command_d4_packet,
+    simple = {"index": command_index, "cluster": command_cluster, "reanchor": command_reanchor, "records": command_records,
+              "d4-packet": command_d4_packet,
               "m1": command_m1, "m2-packet": command_m2_packet, "m4-packet": command_m4_packet}
     routed = {"route-d4": command_route_d4, "route-m": command_route_m, "invalidate": command_invalidate,
               "relate": command_relate, "human": command_human}

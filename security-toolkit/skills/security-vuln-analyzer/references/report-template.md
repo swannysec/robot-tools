@@ -108,6 +108,9 @@ Render the following exact fields for each role record, preserving states, numbe
 | CVSS v4 | `candidate.scoring.cvss_v4.status`, `candidate.scoring.cvss_v4.vector`, `candidate.scoring.cvss_v4.score`, `candidate.scoring.cvss_v4.score_type`, `candidate.scoring.cvss_v4.calculator_version`, `candidate.scoring.cvss_v4.inputs`, `candidate.scoring.cvss_v4.rationale`, `candidate.scoring.cvss_v4.evidence` |
 | EPSS | `candidate.scoring.epss.status`, `candidate.scoring.epss.cve`, `candidate.scoring.epss.probability`, `candidate.scoring.epss.percentile`, `candidate.scoring.epss.retrieved_at_utc`, `candidate.scoring.epss.version`, `candidate.scoring.epss.rationale`, `candidate.scoring.epss.evidence` |
 | KEV | `candidate.scoring.kev.status`, `candidate.scoring.kev.cve`, `candidate.scoring.kev.membership`, `candidate.scoring.kev.retrieved_at_utc`, `candidate.scoring.kev.version`, `candidate.scoring.kev.rationale`, `candidate.scoring.kev.evidence` |
+| CWE IDs | `candidate.cwe_ids` (the role's classification; empty means none supplied) |
+| Claims answered (GHSA mode) | `candidate.claim_ids` |
+| Control site | `candidate.control_site.symbol`, `candidate.control_site.relative_path`, `candidate.control_site.line` |
 | Contract version | `candidate.invariant_test_contract.version` |
 | Implementation pitfalls | `candidate.invariant_test_contract.implementation_pitfalls` |
 
@@ -206,6 +209,8 @@ Captured artifacts: advisory and comments SHA-256, comments status, retrieval ti
 Pinned target: revision, revision source (default-branch HEAD | exact tag | user selected):
 Reporter claims (labeled, not skill assessments): severity, CVSS vectors, CWE IDs, versions:
 Intake roles: H1/H2 provenance, effective status, intake-check result, typed literals:
+Records: claim sets built, claims without verified records, unassigned verified records, not-bridged records and reasons:
+H4 packet: withheld values and reasons:
 ```
 
 ```text

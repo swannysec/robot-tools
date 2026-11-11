@@ -528,6 +528,45 @@ class H4DraftTest(Workspace):
                                        [{"field": "cwe_ids", "proposed_value_json": '["CWE-79"]', "record_refs": ["F-3"]}]))
         self.assertEqual(out["errors"], ["field_updates[0]: value does not match a cited verified record"])
 
+    def packet_with(self, records, name):
+        path = write(self.tmp / f"{name}.json", {"records": records})
+        code, _, err = run("intake-check.py", "h4-packet", "--intake", self.intake_dir / "intake-record.json", "--claims", self.claims,
+                           "--records", path, "--out-dir", self.tmp / name)
+        self.assertEqual(code, 0, err)
+        return (json.loads((self.tmp / name / "h4-packet.json").read_text(encoding="utf-8")),
+                json.loads((self.tmp / name / "h4-allowed-records.json").read_text(encoding="utf-8")))
+
+    def test_disagreeing_values_are_withheld(self):
+        answers = [{"ghsa_id": IDS["base"], "claim_id": "C1"}]
+        vector_a = "CVSS:4.0/AV:L/AC:L/AT:N/PR:N/UI:P/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+        vector_b = vector_a.replace("UI:P", "UI:A")
+        records = [{"record_id": "F-A", "kind": "finding", "answers": answers, "final_status": "CROSS-MODEL VERIFIED",
+                    "values": {"cvss_vector_string": vector_a, "cwe_ids": ["CWE-284", "CWE-863"]}},
+                   {"record_id": "F-B", "kind": "finding", "answers": answers, "final_status": "CROSS-MODEL VERIFIED",
+                    "values": {"cvss_vector_string": vector_b, "cwe_ids": ["CWE-863", "CWE-284"]}},
+                   {"record_id": "F-R", "kind": "finding", "answers": answers, "final_status": "REFUTED",
+                    "values": {"cwe_ids": ["CWE-79"]}}]
+        packet, allowed = self.packet_with(records, "h4-disagree")
+        self.assertEqual(packet["withheld_values"], [{"field": "cvss_vector_string", "reason": "verified records disagree"}])
+        for container in (packet["finding_records"], allowed["records"]):
+            self.assertTrue(all("cvss_vector_string" not in record.get("values", {}) for record in container))
+        self.assertEqual(next(r for r in allowed["records"] if r["record_id"] == "F-B")["values"]["cwe_ids"], ["CWE-863", "CWE-284"])
+        path = write(self.tmp / "h4.json", self.draft([{"text": "Scored.", "record_refs": ["F-A"]}],
+                                                     [{"field": "cvss_vector_string", "proposed_value_json": json.dumps(vector_a),
+                                                       "record_refs": ["F-A"]}]))
+        _, out, _ = run("intake-check.py", "h4", "--result", path, "--allowed-records", self.tmp / "h4-disagree/h4-allowed-records.json",
+                        "--unpublished-ids", self.unpublished)
+        self.assertIn("field_updates[0]: value does not match a cited verified record", json.loads(out)["errors"])
+
+    def test_single_carrier_value_is_kept(self):
+        answers = [{"ghsa_id": IDS["base"], "claim_id": "C1"}]
+        records = [{"record_id": "F-A", "kind": "finding", "answers": answers, "final_status": "CROSS-MODEL VERIFIED",
+                    "values": {"cvss_vector_string": "CVSS:4.0/AV:N"}},
+                   {"record_id": "F-B", "kind": "finding", "answers": answers, "final_status": "CROSS-MODEL VERIFIED", "values": {}}]
+        packet, _ = self.packet_with(records, "h4-single")
+        self.assertEqual(packet["withheld_values"], [])
+        self.assertEqual(packet["finding_records"][0]["values"], {"cvss_vector_string": "CVSS:4.0/AV:N"})
+
     def test_record_outside_allowed_set_is_rejected(self):
         _, out = self.check(self.draft([{"text": "See the related finding.", "record_refs": ["F-2"]}]))
         self.assertEqual(out["effective_status"], "MALFORMED")
@@ -816,6 +855,249 @@ class DedupTest(Workspace):
         write(relation, data)
         code, out, _ = run("ghsa-dedup.py", "invalidate", "--relation", relation, "--current", write(self.tmp / "cur.json", {"other_body_sha256": "b" * 64}))
         self.assertTrue(json.loads(out)["invalidated"])
+
+
+REV = "c" * 40
+CVSS_A = "CVSS:4.0/AV:L/AC:L/AT:N/PR:N/UI:P/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+
+
+def candidate(local_id, proposition, claim_ids=("C1",), start=10, cvss="", cwe=(), symbol="", affects=True):
+    return {"role_local_id": local_id, "normalized_proposition": proposition, "proposed_disposition": "vulnerability finding",
+            "affects_security_claim": affects,
+            "locations": [{"repository": "example-repo", "revision": REV, "relative_path": "src/workspace/loader.rs",
+                           "start_line": start, "end_line": start + 10}],
+            "primitive_class": "missing authorization", "variant_family": "workspace trust", "enumerated_variants": ["auto_trust set"],
+            "invariant_test_contract": {"applicable": True, "invariant": "untrusted workspaces never auto-trust"},
+            "scoring": {"cvss_v4": {"status": "SCORED" if cvss else "NOT SCORED", "vector": cvss}},
+            "claim_ids": list(claim_ids), "cwe_ids": list(cwe),
+            "control_site": {"symbol": symbol, "relative_path": "src/loader.rs" if symbol else "", "line": 3 if symbol else 0},
+            "evidence": [{"observation": "ROLE-EVIDENCE-TEXT"}]}
+
+
+def expected_candidate_id(item, primary_revision):
+    """Independent restatement of the orchestrator-contract bundle-ID algorithm."""
+    def norm(text):
+        text = text.replace("\r\n", "\n").replace("\r", "\n").strip(" \t\n\x0b\x0c\r")
+        return re.sub(r"[ \t\n\x0b\x0c\r]+", " ", text)
+    locations = sorted(([loc["repository"], loc["revision"], loc["relative_path"], loc["start_line"], loc["end_line"]]
+                        for loc in item["locations"]), key=lambda a: json.dumps(a, separators=(",", ":"), ensure_ascii=False))
+    body = {"primary_revision": primary_revision, "locations": locations, "primitive_class": norm(item["primitive_class"]),
+            "variant_family": norm(item["variant_family"]), "proposition": norm(item["normalized_proposition"])}
+    data = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return "SVA-" + hashlib.sha256(data).hexdigest()[:20]
+
+
+class RecordsTest(Workspace):
+    def setUp(self):
+        super().setUp()
+        self.h1 = write(self.tmp / "h1.json", self.h1_result("bundled", [claim("C1", "applies `profile.allow_tasks` without a trust check"),
+                                                                          claim("C2", "runs tasks from an untrusted workspace")]))
+        self.h1_check = write(self.tmp / "h1-check.json", {"effective_status": "COMPLETE"})
+
+    def discovery(self, name, candidates):
+        return write(self.tmp / name, {"role_type": "discovery", "status": "COMPLETE", "declined_scope": [], "candidates": candidates})
+
+    def stage2(self, name, cid, result="CONFIRMED", status="COMPLETE", declined=()):
+        return write(self.tmp / name, {"candidate_id": cid, "status": status, "verification_result": result,
+                                       "declined_scope": list(declined)})
+
+    def verified(self, cid, results=("CONFIRMED", "CONFIRMED"), providers=("anthropic", "openai"), status="CROSS-MODEL VERIFIED", **extra):
+        tag = cid[-6:]
+        items = [{"path": str(self.stage2(f"s2-{tag}-{i}.json", cid, result)), "provider": provider}
+                 for i, (result, provider) in enumerate(zip(results, providers))]
+        entry = {"final_status": status, "fallback_model": False, "fallback_use_permitted": False, "stage2": items}
+        entry.update(extra)
+        return entry
+
+    def run_records(self, discoveries, manifest, out="records-out"):
+        manifest_path = write(self.tmp / "manifest.json", {"candidates": manifest})
+        args = ["records", "--repository", REPO, "--ghsa-id", IDS["bundled"], "--primary-revision", REV,
+                "--h1", self.h1, "--h1-check", self.h1_check, "--verification", manifest_path, "--out-dir", self.tmp / out]
+        for path in discoveries:
+            args += ["--discovery", path]
+        code, stdout, stderr = run("ghsa-dedup.py", *args)
+        return code, (json.loads(stdout) if code == 0 else stderr)
+
+    def three_role_fixture(self):
+        # The same finding from three roles: different wording and lines, so three stable IDs (no merge).
+        roles = [candidate("R1-A", "Loader skips trust for auto_trust.", start=10, symbol="loader::open_workspace"),
+                 candidate("R2-A", "The loader trusts workspaces with auto_trust set.", start=11, cwe=["CWE-863"], symbol="open_workspace"),
+                 candidate("R3-A", "auto_trust bypasses the trust prompt.", claim_ids=("C1", "C2"), start=12, cvss=CVSS_A,
+                           cwe=["CWE-863", "CWE-284", "CWE-863"], symbol="open_workspace")]
+        paths = [self.discovery(f"role{i}.json", [item]) for i, item in enumerate(roles, 1)]
+        ids = [expected_candidate_id(item, REV) for item in roles]
+        return roles, paths, ids
+
+    def test_records_recomputes_ids_and_groups_by_claim(self):
+        roles, paths, ids = self.three_role_fixture()
+        code, out = self.run_records(paths, {cid: self.verified(cid) for cid in ids})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out["claim_sets"], ["C1", "C2"])
+        records = json.loads((self.tmp / "records-out/report-records.json").read_text(encoding="utf-8"))["records"]
+        self.assertEqual(sorted(r["candidate_id"] for r in records), sorted(ids))
+        for record in records:
+            self.assertRegex(record["record_id"], r"^SVA-[0-9a-f]{20}:[0-9a-f]{8}$")
+            self.assertEqual(record["repository"], REPO)
+        by_local = {r["role_local_id"]: r for r in records}
+        self.assertEqual(by_local["R3-A"]["values"], {"cvss_vector_string": CVSS_A, "cwe_ids": ["CWE-284", "CWE-863"]})
+        self.assertEqual(by_local["R1-A"]["values"], {})
+        self.assertEqual(by_local["R3-A"]["answers"], [{"ghsa_id": IDS["bundled"], "claim_id": "C1"},
+                                                       {"ghsa_id": IDS["bundled"], "claim_id": "C2"}])
+        c1 = json.loads((self.tmp / "records-out/claim-sets/C1.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(c1["members"]), 3)  # unmerged
+        member_ids = sorted(m["record_id"] for m in c1["members"])
+        self.assertEqual(c1["record_id"], "SET-" + hashlib.sha256("\n".join(member_ids).encode()).hexdigest()[:20])
+        self.assertNotIn("role_local_id", json.dumps(c1))
+        self.assertNotIn("ROLE-EVIDENCE-TEXT", json.dumps(c1))
+        # Whitespace-only differences in the proposition do not change the stable ID.
+        respaced = dict(roles[0], normalized_proposition="  Loader skips   trust for auto_trust.\r\n")
+        self.assertEqual(expected_candidate_id(respaced, REV), ids[0])
+        code, _ = self.run_records([self.discovery("respaced.json", [respaced])] + paths[1:], {cid: self.verified(cid) for cid in ids})
+        self.assertEqual(code, 0)
+        # NFC normalization: a decomposed accent yields the same ID as the composed form.
+        composed = dict(roles[0], normalized_proposition="Caf\u00e9 loader skips trust.")
+        decomposed = dict(roles[0], normalized_proposition="Cafe\u0301 loader skips trust.")
+        self.assertEqual(DEDUP["candidate_id"](composed, REV), DEDUP["candidate_id"](decomposed, REV))
+        self.assertEqual(DEDUP["candidate_id"](roles[0], REV), ids[0])
+
+    def test_records_rejects_manifest_mismatch(self):
+        _, paths, ids = self.three_role_fixture()
+        manifest = {cid: self.verified(cid) for cid in ids[:2]}
+        self.assertEqual(self.run_records(paths, manifest)[0], 2)  # a routed candidate is missing
+        manifest = {cid: self.verified(cid) for cid in ids}
+        manifest["SVA-" + "0" * 20] = self.verified("SVA-" + "0" * 20)
+        self.assertEqual(self.run_records(paths, manifest)[0], 2)  # an unknown manifest ID
+        bypassed = candidate("R2-B", "Unrelated logging wording.", claim_ids=(), start=40, affects=False)
+        code, out = self.run_records(paths + [self.discovery("bypass.json", [bypassed])], {cid: self.verified(cid) for cid in ids})
+        self.assertEqual(code, 0, out)
+        self.assertIn({"record_id": next(r["record_id"] for r in json.loads((self.tmp / "records-out/report-records.json")
+                       .read_text(encoding="utf-8"))["records"] if r["role_local_id"] == "R2-B"),
+                       "reason": "not routed to verification"}, out["not_bridged"])
+
+    def test_records_verified_status_cross_check(self):
+        _, paths, ids = self.three_role_fixture()
+        base = {cid: self.verified(cid) for cid in ids}
+        same_provider = dict(base, **{ids[0]: self.verified(ids[0], providers=("openai", "OpenAI"))})
+        self.assertEqual(self.run_records(paths, same_provider)[0], 2)
+        refused = dict(base)
+        refused[ids[0]] = self.verified(ids[0])
+        self.stage2(Path(refused[ids[0]]["stage2"][1]["path"]).name, ids[0], declined=[{"task_element": "x", "reason": "y"}])
+        self.assertEqual(self.run_records(paths, refused)[0], 2)
+        one_leg = dict(base, **{ids[0]: dict(self.verified(ids[0]), stage2=self.verified(ids[0])["stage2"][:1])})
+        self.assertEqual(self.run_records(paths, one_leg)[0], 2)
+        mismatched = dict(base, **{ids[0]: self.verified(ids[0])})
+        self.stage2(Path(mismatched[ids[0]]["stage2"][0]["path"]).name, ids[1])  # leg names another candidate
+        self.assertEqual(self.run_records(paths, mismatched)[0], 2)
+        failed = dict(base, **{ids[0]: self.verified(ids[0])})
+        self.stage2(Path(failed[ids[0]]["stage2"][0]["path"]).name, ids[0], status="FAILED")
+        self.assertEqual(self.run_records(paths, failed)[0], 2)
+        same_file = self.verified(ids[0])
+        same_file["stage2"][1]["path"] = same_file["stage2"][0]["path"]
+        self.assertEqual(self.run_records(paths, dict(base, **{ids[0]: same_file}))[0], 2)
+        base = {cid: self.verified(cid) for cid in ids}
+        code, out = self.run_records(paths, base)
+        self.assertEqual(code, 0, out)
+        self.assertTrue((self.tmp / "records-out/claim-sets/C2.json").is_file())
+        # Split on the Role 3 record, which carries CVSS and CWE values: no values, no claim-set membership,
+        # and the C2 set written by the previous run in the same directory is removed.
+        split = dict(base, **{ids[2]: self.verified(ids[2], results=("CONFIRMED", "INCONCLUSIVE"))})
+        code, out = self.run_records(paths, split)
+        self.assertEqual(code, 0, out)
+        self.assertEqual([item["record_id"].split(":")[0] for item in out["not_bridged"]], [ids[2]])
+        records = json.loads((self.tmp / "records-out/report-records.json").read_text(encoding="utf-8"))["records"]
+        split_record = next(r for r in records if r["candidate_id"] == ids[2])
+        self.assertEqual((split_record["final_status"], split_record["values"]), ("CROSS-MODEL VERIFIED", {}))
+        c1 = json.loads((self.tmp / "records-out/claim-sets/C1.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(c1["members"]), 2)
+        self.assertFalse((self.tmp / "records-out/claim-sets/C2.json").exists())
+        self.assertEqual(out["claims_without_records"], ["C2"])
+        disputed = dict(base, **{ids[1]: self.verified(ids[1], results=("CONFIRMED", "REFUTED"), status="DISPUTED")})
+        code, out = self.run_records(paths, disputed)
+        self.assertEqual(code, 0, out)
+        records = json.loads((self.tmp / "records-out/report-records.json").read_text(encoding="utf-8"))["records"]
+        self.assertEqual(next(r for r in records if r["candidate_id"] == ids[1])["values"], {})  # R2 carries a CWE when verified
+
+    def test_records_rejects_unknown_claim_id(self):
+        item = candidate("R1-A", "Loader skips trust.", claim_ids=("C9",))
+        cid = expected_candidate_id(item, REV)
+        self.assertEqual(self.run_records([self.discovery("bad.json", [item])], {cid: self.verified(cid)})[0], 2)
+
+    def test_records_lists_unassigned_and_claims_without_records(self):
+        item = candidate("R1-A", "Variant beyond the reporter's claims.", claim_ids=())
+        cid = expected_candidate_id(item, REV)
+        code, out = self.run_records([self.discovery("unassigned.json", [item])], {cid: self.verified(cid)})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(out["unassigned"]), 1)
+        self.assertEqual(out["claims_without_records"], ["C1", "C2"])
+        self.assertEqual(out["claim_sets"], [])
+
+    def test_records_output_is_accepted_by_consumers(self):
+        _, paths, ids = self.three_role_fixture()
+        code, out = self.run_records(paths, {cid: self.verified(cid) for cid in ids})
+        self.assertEqual(code, 0, out)
+        out_dir = self.tmp / "records-out"
+        records_file = json.loads((out_dir / "report-records.json").read_text(encoding="utf-8"))
+        # h4-packet keeps every answering record.
+        intake_dir, _ = self.capture("bundled")
+        code, stdout, err = run("intake-check.py", "h4-packet", "--intake", intake_dir / "intake-record.json", "--claims", self.h1,
+                                "--records", out_dir / "report-records.json", "--out-dir", self.tmp / "h4")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(json.loads(stdout)["allowed_record_ids"]), 1 + 2 + 3)
+        # The writer accepts a value backed by the verified Role 3 record.
+        role3 = next(r for r in records_file["records"] if r["role_local_id"] == "R3-A")
+        records = {r["record_id"]: r for r in records_file["records"]}
+        item = {"operation": "set_cvss_vector", "new_value": CVSS_A,
+                "record_refs": [{"record_id": role3["record_id"], "sha256": canonical_digest(role3)}]}
+        WRITEBACK["validate_item"](item, records, REPO, IDS["bundled"])
+        # reanchor accepts the anchors file.
+        repo = self.tmp / "target"
+        (repo / "src").mkdir(parents=True)
+        (repo / "src/loader.rs").write_text("fn helper() {}\n\npub fn open_workspace() {}\n", encoding="utf-8")
+        env = dict(os.environ, GIT_AUTHOR_NAME="f", GIT_AUTHOR_EMAIL="f@example.invalid", GIT_COMMITTER_NAME="f", GIT_COMMITTER_EMAIL="f@example.invalid")
+        for argv in (["git", "init", "-q"], ["git", "add", "."], ["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture"]):
+            subprocess.run(argv, cwd=repo, check=True, env=env)
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        anchors = json.loads((out_dir / "anchors.json").read_text(encoding="utf-8"))["anchors"]
+        self.assertEqual(len(anchors), 3)
+        code, _, err = run("ghsa-dedup.py", "reanchor", "--anchors", out_dir / "anchors.json", "--checkout", repo, "--revision", head,
+                           "--out", self.tmp / "reanchored.json")
+        self.assertEqual(code, 0, err)
+        reanchored = json.loads((self.tmp / "reanchored.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(reanchored["shared_control_sites"][0]["record_ids"]), 3)
+
+    def test_d4_packet_accepts_claim_sets(self):
+        _, paths, ids = self.three_role_fixture()
+        self.assertEqual(self.run_records(paths, {cid: self.verified(cid) for cid in ids})[0], 0)
+        x_set = self.tmp / "records-out/claim-sets/C1.json"
+        y_set = self.tmp / "records-out/claim-sets/C2.json"
+        packet = self.tmp / "d4-sets.json"
+        code, _, err = run("ghsa-dedup.py", "d4-packet", "--x-finding", x_set, "--y-finding", y_set, "--claim-id", "C2", "--out", packet)
+        self.assertEqual(code, 0, err)
+        data = json.loads(packet.read_text(encoding="utf-8"))
+        x, y = (json.loads(path.read_text(encoding="utf-8")) for path in (x_set, y_set))
+        self.assertEqual((data["pair"]["canonical_record_id"], data["pair"]["other_record_id"]), (x["record_id"], y["record_id"]))
+        self.assertEqual(len(data["canonical_records"]), 3)
+        self.assertEqual(len(data["other_records"]), 1)
+        self.assertNotIn("ROLE-EVIDENCE-TEXT", json.dumps(data))
+        code, _, _ = run("ghsa-dedup.py", "d4-packet", "--x-finding", x_set, "--y-finding", y_set, "--claim-id", "C1", "--out", packet)
+        self.assertEqual(code, 2)  # Y's set answers C2, not C1
+        # route-d4 records a relation keyed by the two set IDs.
+        legs = []
+        for name, provider in (("d4n.json", "anthropic"), ("d4c.json", "openai")):
+            legs.append(write(self.tmp / name, {"role_type": "dedup_d4", "status": "COMPLETE", "provider": provider, "model": "fixture",
+                                                "effort": "high", "packet_revision": "fixture", "pair": data["pair"],
+                                                "verdict": "SAME_ROOT_CAUSE", "control_site_comparison": "", "evidence": [],
+                                                "counterevidence": [], "uncertainty": [], "declined_scope": []}))
+        relation = self.tmp / "relation-sets.json"
+        code, _, err = run("ghsa-dedup.py", "route-d4", "--d4-native", legs[0], "--d4-cross", legs[1],
+                           "--native-provider", "anthropic", "--native-model", "fixture", "--cross-provider", "openai",
+                           "--cross-model", "fixture", "--canonical-ghsa", IDS["bundled"], "--canonical-claim", "C1",
+                           "--canonical-record", x["record_id"], "--other-ghsa", IDS["bundled"], "--other-claim", "C2",
+                           "--other-record", y["record_id"], "--out", relation)
+        self.assertEqual(code, 0, err)
+        recorded = json.loads(relation.read_text(encoding="utf-8"))
+        self.assertEqual((recorded["canonical"]["record_id"], recorded["other"]["record_id"], recorded["relation"]),
+                         (x["record_id"], y["record_id"], "SAME_ROOT_CAUSE"))
 
 
 class PocOverlapTest(Workspace):

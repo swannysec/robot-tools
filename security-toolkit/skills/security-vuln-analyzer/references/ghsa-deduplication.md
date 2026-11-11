@@ -38,8 +38,8 @@ canonical claim.
 | D0 Fingerprint | Script (`ghsa-dedup.py index`, `cluster`) | Normalized-text hash and shingle similarity; literal extraction (paths, symbols, config keys, advisory and CVE IDs, SHAs, versions); compare against advisories in all states. Produces candidate pairs only |
 | D1 Claim split | Intake tier, one advisory per packet | Distinct claims with exact quotes, entry point, and typed literals (H1, see [ghsa-triage-mode.md](ghsa-triage-mode.md)) |
 | D2 Candidate clusters | Script (`ghsa-dedup.py cluster`) | Join on shared literals and lineage references; orders the queue |
-| D3 Re-anchoring | Script (`ghsa-dedup.py reanchor`) | Map verified locations to one common revision; anchor on symbols, with lines as supporting detail; compare at the control site |
-| D4 Root-cause comparison | Analysis tier, both providers, cold | Code-derived records only, no reporter text (`ghsa-dedup.py d4-packet`); returns `SAME_ROOT_CAUSE`, `VARIANT`, or `DISTINCT` (`schemas/dedup-d4-result.schema.json`) |
+| D3 Re-anchoring | Script (`ghsa-dedup.py reanchor`) | Map verified locations to one common revision; anchor on symbols, with lines as supporting detail; compare at the control site. Anchors come from `ghsa-dedup.py records` (`anchors.json`, built from role-named `control_site` values) |
+| D4 Root-cause comparison | Analysis tier, both providers, cold | Code-derived records only, no reporter text (`ghsa-dedup.py d4-packet`); each side is a claim set from `records`, with every member listed unmerged and the set ID as the side's record ID; returns `SAME_ROOT_CAUSE`, `VARIANT`, or `DISTINCT` (`schemas/dedup-d4-result.schema.json`) |
 | D5 Fix oracle | Deterministic (`scripts/deterministic-check.py`) | Run Y's skill-authored adversarial-input regression test on X's fix revision; pass supports `SAME_ROOT_CAUSE`, fail means `VARIANT` or an incomplete fix |
 | D6 Human confirmation | Human, with a decision brief | Confirm, pick the canonical, or mark variant, distinct, related, or needs more; outward actions stay manual |
 
@@ -107,7 +107,7 @@ permits that use.
 
 The membership check avoids a full analysis of report Y when the canonical finding X is
 `CROSS-MODEL VERIFIED`, has an accepted contract, and has a fix revision (a candidate patch
-counts). Y must be in X's D2 cluster. A membership check without the fix oracle may not
+counts). X is the single finding record the fix was developed from, not a claim set. Y must be in X's D2 cluster. A membership check without the fix oracle may not
 skip analysis; clusters without a fix use D4, D5, and full analysis.
 
 - **M1 (script, `ghsa-dedup.py m1`):** match each typed literal in Y's D1 claims against

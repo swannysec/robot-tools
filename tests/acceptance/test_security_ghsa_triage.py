@@ -588,6 +588,34 @@ class IssueListTest(Step1aWorkspace):
                 doc = self.issues_doc()
                 self.assertEqual((doc["cross_leg"], doc["issues"][0]["technical"]), (expected_leg, expected_technical))
 
+    def test_packets_and_merge_reject_checks_from_another_advisory(self):
+        native, review = self.added_setup("DOCUMENTATION_UI")
+        other_dir, _ = self.capture("variant")
+        other = other_dir / "intake-record.json"
+        for command, extra in (("review-packet", ["--native-check", native]),
+                               ("kinds-packet", ["--native-check", native, "--review-check", review])):
+            with self.subTest(command=command):
+                code, _, err = run("intake-check.py", command, "--intake", other, *extra, "--out-dir", self.tmp / "other-packets")
+                self.assertEqual(code, 2, err)
+                self.assertIn("another advisory", err)
+        forged = write(self.tmp / "forged-review.check.json", dict(json.loads(review.read_text(encoding="utf-8")), ghsa_id=IDS["variant"]))
+        code, err = self.merge("--native-check", native, "--review-check", forged)
+        self.assertEqual(code, 2, err)
+
+    def test_unpermitted_native_fallback_listing_does_not_ignore(self):
+        meta = self.packet("issue-packet")["meta"]
+        for permitted, technical, leg in ((False, True, "FALLBACK_NOT_PERMITTED"), (True, False, "COMPLETE")):
+            with self.subTest(permitted=permitted):
+                extra = ["--fallback-model"] + (["--fallback-use-permitted"] if permitted else [])
+                native, _ = self.check("issue-check", meta, self.listing([dict(BASE_ISSUE, kind="DOCUMENTATION_UI")]), "issue",
+                                       "anthropic", "claude-opus-4-8", *extra)
+                review, _ = self.review_check(native, [("I1", "DOCUMENTATION_UI")])
+                code, out = self.merge("--native-check", native, "--review-check", review)
+                self.assertEqual(code, 0, out)
+                doc = self.issues_doc()
+                self.assertEqual((doc["issues"][0]["technical"], doc["native_leg"]), (technical, leg))
+                self.assertEqual(doc["issues"][0]["kinds"]["native"], "DOCUMENTATION_UI")  # the reported kind is kept
+
     def test_review_for_another_listing_is_rejected(self):
         native, _ = self.native_check([BASE_ISSUE])
         review, _ = self.review_check(native, [("I1", "TECHNICAL")])
@@ -606,7 +634,7 @@ class IssueListTest(Step1aWorkspace):
         native, review = self.added_setup("TECHNICAL")
         self.merge("--native-check", native, "--review-check", review)
         doc = self.issues_doc()
-        self.assertEqual(set(doc), {"record_type", "ghsa_id", "status", "issues", "cross_leg", "native_kinds_leg",
+        self.assertEqual(set(doc), {"record_type", "ghsa_id", "status", "issues", "native_leg", "cross_leg", "native_kinds_leg",
                                     "dropped_literals", "needs_native_kinds", "inputs"})
         self.assertEqual(set(doc["issues"][0]), {"issue_id", "source", "mechanism", "trigger", "quote", "literals", "kinds", "technical"})
         self.assertEqual(doc["ghsa_id"], self.ghsa)

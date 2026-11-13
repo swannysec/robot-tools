@@ -86,7 +86,10 @@ the native provider's kind: `issues` reports `PENDING_NATIVE_KINDS` and lists th
 `kinds-packet` and `--native-kinds-check` supply it; if that leg fails, the issue stays technical.
 If the review leg is missing, failed, or refused after its retry, comes from the listing's
 provider, or comes from a fallback model without the user's permission, `cross_leg` records why,
-nothing is ignored, and no obvious duplicate can be proposed. Ignored issues stay in the decision
+nothing is ignored, and no obvious duplicate can be proposed. A native listing from a fallback
+model without the user's permission keeps its reported kinds, but its kinds never count toward
+ignoring an issue (`native_leg` records `FALLBACK_NOT_PERMITTED`). Packet builders and `issues`
+refuse checks that belong to another advisory. Ignored issues stay in the decision
 brief, and fix-guidance issues go to the fix author.
 
 ## Comparison set
@@ -174,7 +177,7 @@ rerun step 1a from the listing.
 
 - `issues.json`: `record_type` `ghsa_issue_list`, `ghsa_id`, `status` (`COMPLETE` or
   `PENDING_NATIVE_KINDS`), `issues` (`issue_id`, `source`, `mechanism`, `trigger`, `quote`,
-  `literals`, `kinds` with `native` and `cross`, `technical`), `cross_leg`, `native_kinds_leg`,
+  `literals`, `kinds` with `native` and `cross`, `technical`), `native_leg`, `cross_leg`, `native_kinds_leg`,
   `dropped_literals`, `needs_native_kinds`, `inputs` (check digests).
 - `dispositions.json`: `record_type` `ghsa_dispositions`, `ghsa_id`, `verdict`, `cross_leg`,
   `analysis_status`, `analysis_issue_ids`, `issues` (`issue_id`, `mechanism`, `technical`,

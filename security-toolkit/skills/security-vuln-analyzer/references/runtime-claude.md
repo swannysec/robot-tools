@@ -254,11 +254,13 @@ runs on a frozen packet from `scripts/intake-check.py`, with no tools. Native le
 listing, native classification of added issues, comparisons) run `claude-opus-5-5` at High
 effort in the intake launch form above, with the step's schema: `schemas/issue-list.schema.json`,
 `schemas/issue-review.schema.json` (classification), or `schemas/issue-compare.schema.json`.
-Cross-provider legs (issue review, comparison confirmation) run `gpt-6.1-sol` at High effort as a
-fresh `codex exec` under the read-only permission profile in "Cross-provider dispatch", rooted at
-an empty temporary workspace instead of the target, with network disabled, `--disable apps
---disable plugins`, and `--output-schema` naming the step's schema; confirm the profile check
-from the session file. Pass each check command the literal `--provider` and `--model` from
+Cross-provider legs (issue review, comparison confirmation) run `gpt-6.1-sol` at High effort in
+the capability-free intake launch form of [runtime-codex.md](runtime-codex.md) "GHSA mode": an
+empty temporary directory, temporary `HOME` and `CODEX_HOME`, and every tool surface disabled
+(including `shell_tool` and `unified_exec`), with the model and `--output-schema` replaced by
+gpt-6.1-sol and the step's schema. A read-only permission profile alone is not enough here: it
+limits what commands can reach but still offers command tools to a leg that reads untrusted
+report text. Pass each check command the literal `--provider` and `--model` from
 runtime metadata: the hosts use different vocabularies (Claude `modelUsage` reports an access
 channel such as `firstParty`; the Codex session file reports `model_provider` such as `openai`),
 and the scripts only require the native and cross values to differ.

@@ -437,6 +437,12 @@ def added_issue_ids(native: dict[str, Any], review: dict[str, Any]) -> list[tupl
     return [(f"I{start + index}", item) for index, item in enumerate(review.get("added_issues", []), 1)]
 
 
+def same_advisory(intake: dict[str, Any], *checks: dict[str, Any]) -> None:
+    advisory = intake.get("advisory", {}).get("ghsa_id")
+    if any(check.get("ghsa_id") != advisory for check in checks):
+        raise UsageError("a check belongs to another advisory than this intake record")
+
+
 def needs_native_kinds(native: dict[str, Any], review: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     return [(issue_id, item) for issue_id, item in added_issue_ids(native, review) if item["kind"] in NON_TECHNICAL]
 
@@ -449,6 +455,7 @@ def command_issue_packet(args: argparse.Namespace) -> dict[str, Any]:
 
 def command_review_packet(args: argparse.Namespace) -> dict[str, Any]:
     intake, native = load_json(args.intake), load_check(args.native_check, "issue-check")
+    same_advisory(intake, native)
     if native.get("effective_status") != "COMPLETE":
         raise UsageError("the native issue listing has not passed issue-check")
     issues = native_issue_ids(native)
@@ -464,6 +471,7 @@ def command_review_packet(args: argparse.Namespace) -> dict[str, Any]:
 def command_kinds_packet(args: argparse.Namespace) -> dict[str, Any]:
     intake = load_json(args.intake)
     native, review = load_check(args.native_check, "issue-check"), load_check(args.review_check, "review-check")
+    same_advisory(intake, native, review)
     needs = needs_native_kinds(native, review)
     if not needs:
         raise UsageError("no added issue needs a native classification")
@@ -570,16 +578,20 @@ def command_issues(args: argparse.Namespace) -> dict[str, Any]:
     cross_leg = "MISSING"
     if args.review_check:
         review = load_check(args.review_check, "review-check")
+        if review.get("ghsa_id") != native.get("ghsa_id"):
+            raise UsageError("the review check belongs to another advisory than the native listing")
         if review.get("packet_type") != "issue_review" or review.get("native_check_sha256") != native_digest:
             raise UsageError("the review check does not belong to this native listing")
         cross_leg = leg_status(review, native.get("provider", ""))
     cross_usable = cross_leg == "COMPLETE"
+    native_leg = ("FALLBACK_NOT_PERMITTED" if native.get("fallback_model") and not native.get("fallback_use_permitted")
+                  else "COMPLETE")
     needs = [issue_id for issue_id, _ in needs_native_kinds(native, review)] if cross_usable else []
     native_kinds: dict[str, str] = {}
     native_kinds_leg = "NOT_NEEDED" if not needs else "NOT_RUN"
     if args.native_kinds_check:
         kinds = load_check(args.native_kinds_check, "review-check")
-        if (kinds.get("packet_type") != "issue_kinds" or kinds.get("native_check_sha256") != native_digest
+        if (kinds.get("ghsa_id") != native.get("ghsa_id") or kinds.get("packet_type") != "issue_kinds" or kinds.get("native_check_sha256") != native_digest
                 or not args.review_check or kinds.get("review_check_sha256") != file_digest(args.review_check)
                 or kinds.get("expected_ids") != needs):
             raise UsageError("the native kinds check does not belong to this listing and review")
@@ -594,7 +606,8 @@ def command_issues(args: argparse.Namespace) -> dict[str, Any]:
             entries.append((issue_id, "cross", item, native_kinds.get(issue_id, ""), item["kind"]))
     issues = [{"issue_id": issue_id, "source": source, "mechanism": item["mechanism"], "trigger": item["trigger"],
                "quote": item["quote"], "literals": item["literals"], "kinds": {"native": native_kind, "cross": cross_kind},
-               "technical": not (native_kind in NON_TECHNICAL and cross_kind in NON_TECHNICAL)}
+               "technical": not (native_kind in NON_TECHNICAL and cross_kind in NON_TECHNICAL
+                                 and (source == "cross" or native_leg == "COMPLETE"))}
               for issue_id, source, item, native_kind, cross_kind in entries]
     dropped = [dict(entry, issue_id=f"I{entry['issue_index'] + 1}") for entry in native.get("dropped_literals", [])]
     if cross_usable:
@@ -604,7 +617,7 @@ def command_issues(args: argparse.Namespace) -> dict[str, Any]:
     document = {
         "record_type": "ghsa_issue_list", "ghsa_id": native["ghsa_id"],
         "status": "PENDING_NATIVE_KINDS" if pending else "COMPLETE", "issues": issues,
-        "cross_leg": cross_leg, "native_kinds_leg": native_kinds_leg,
+        "native_leg": native_leg, "cross_leg": cross_leg, "native_kinds_leg": native_kinds_leg,
         "dropped_literals": [{key: entry[key] for key in ("issue_id", "kind", "literal")} for entry in dropped],
         "needs_native_kinds": needs if pending else [],
         "inputs": {"native_check_sha256": native_digest,

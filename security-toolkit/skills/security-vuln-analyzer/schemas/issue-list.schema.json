@@ -1,0 +1,151 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "role_type",
+    "status",
+    "provider",
+    "model",
+    "effort",
+    "packet_revision",
+    "ghsa_id",
+    "issues",
+    "declined_scope"
+  ],
+  "properties": {
+    "role_type": {
+      "type": "string",
+      "enum": [
+        "issue_list"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "COMPLETE",
+        "MALFORMED",
+        "FAILED",
+        "MISSING"
+      ]
+    },
+    "provider": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "effort": {
+      "type": "string",
+      "enum": [
+        "high"
+      ]
+    },
+    "packet_revision": {
+      "type": "string"
+    },
+    "ghsa_id": {
+      "type": "string",
+      "pattern": "^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$"
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mechanism",
+          "trigger",
+          "kind",
+          "quote",
+          "literals"
+        ],
+        "properties": {
+          "mechanism": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          },
+          "trigger": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "TECHNICAL",
+              "DOCUMENTATION_UI",
+              "FIX_GUIDANCE"
+            ]
+          },
+          "quote": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "literals": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "file_paths",
+              "symbols",
+              "config_keys"
+            ],
+            "properties": {
+              "file_paths": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_./-]{1,300}$",
+                  "maxLength": 300
+                },
+                "maxItems": 20
+              },
+              "symbols": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_:.<>]{0,199}$",
+                  "maxLength": 200
+                },
+                "maxItems": 20
+              },
+              "config_keys": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.:-]{1,200}$",
+                  "maxLength": 200
+                },
+                "maxItems": 20
+              }
+            }
+          }
+        }
+      },
+      "maxItems": 50
+    },
+    "declined_scope": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "task_element",
+          "reason"
+        ],
+        "properties": {
+          "task_element": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "description": "Step 1a issue listing (native provider): one vulnerable mechanism per issue, each with a kind, an exact quote, and code literals. scripts/intake-check.py issue-check enforces exact quotes and literals."
+}

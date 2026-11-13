@@ -354,7 +354,8 @@ def command_queue(args: argparse.Namespace, api: Api) -> dict[str, Any]:
     retrieved = utc_now()
     states = STATES if args.state == "all" else (args.state,)
     listing_id = retrieved.replace(":", "").replace("-", "") + "-" + secrets.token_hex(4)  # unique per listing
-    listing_dir = restricted_dir(repo_dir(run_root, repository) / "index" / listing_id)
+    index_dir = restricted_dir(repo_dir(run_root, repository) / "index")  # also tightens an existing, looser index directory
+    listing_dir = restricted_dir(index_dir / listing_id)
     entries = []
     listing_digests: dict[str, str] = {}
     for state in states:
@@ -418,7 +419,7 @@ def main() -> int:
     advisory.add_argument("--run-root", required=True)
     advisory.add_argument("--revision", help="pin this full commit SHA instead of default-branch HEAD")
     advisory.add_argument("--tag", help="pin this exact tag instead of default-branch HEAD")
-    queue_parser = sub.add_parser("queue", help="list advisories for a queue indexing pass")
+    queue_parser = sub.add_parser("queue", help="list advisories in every requested state (queue listing for step 1a)")
     queue_parser.add_argument("--repo", required=True)
     queue_parser.add_argument("--run-root", required=True)
     queue_parser.add_argument("--state", choices=(*STATES, "all"), default="all")

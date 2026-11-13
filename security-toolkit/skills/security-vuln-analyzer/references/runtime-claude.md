@@ -228,10 +228,10 @@ Follow [ghsa-triage-mode.md](ghsa-triage-mode.md) and [ghsa-deduplication.md](gh
 
 **Tokens.** `ghsa-fetch.py` uses `gh` authentication, or `SVA_GHSA_READ_TOKEN` when set.
 `SVA_GHSA_WRITE_TOKEN_REF` (a 1Password `op://` reference) is set only in the writer
-child's environment. No GitHub token or token reference is ever placed in an intake, D4,
-M2, or M4 child's environment.
+child's environment. No GitHub token or token reference is ever placed in an intake or
+step 1a child's environment.
 
-**Intake roles (H1/D1, H2, H4).** Freeze the packet (authorization statement, role
+**Intake roles (H2, H4).** Freeze the packet (authorization statement, role
 instructions, and the captured advisory as untrusted data) to a file, then launch from an
 empty temporary directory with a scrubbed environment and no tools:
 
@@ -240,25 +240,28 @@ cd "$EMPTY_TMP_DIR" && env -i HOME="$HOME" PATH="$PATH" ANTHROPIC_API_KEY="$ANTH
   claude -p --bare --restricted --safe-mode --model claude-haiku-5-5 --effort high \
   --tools "" --strict-mcp-config --no-session-persistence --permission-mode dontAsk \
   --verbose --output-format stream-json \
-  --json-schema "$(cat "$SKILL_DIR/schemas/intake-h1-claims.schema.json")" < "$PACKET_FILE"
+  --json-schema "$(cat "$SKILL_DIR/schemas/intake-h2-completeness.schema.json")" < "$PACKET_FILE"
 ```
 
-Use the H2 or H4 schema for those roles. The init event must list only `StructuredOutput`
+Use the H4 schema for H4. The init event must list only `StructuredOutput`
 as a tool and no MCP servers; otherwise the role is `MISSING`. `env -i` keeps GitHub tokens
 and `SVA_GHSA_*` variables out. Where only OAuth authentication is available, omit `--bare`
 and `ANTHROPIC_API_KEY`; `--restricted` still keeps user settings out. Check every result
 with `scripts/intake-check.py` and read model and refusal metadata as above.
 
-**D4 and M4.** Dispatch both providers exactly as the native and cross-provider verifiers,
-cold and in parallel, with the packet from `ghsa-dedup.py d4-packet` or `m4-packet` and
-`schemas/dedup-d4-result.schema.json` or `schemas/dedup-m4-result.schema.json`. Read tools
-are limited to the pinned target, as for verifiers. For D4, the wrapper passes the packet's
-`question` verbatim and does not restate, paraphrase, or add to it, so both providers answer
-the same question. Pass `route-d4` and `route-m` the literal
-provider values from runtime metadata: the hosts use different vocabularies (Claude
-`modelUsage` reports an access channel such as `firstParty`; the Codex session file reports
-`model_provider` such as `openai`), and the routers only require the two values to differ. **M2** is a fix-author dispatch whose
-packet is `ghsa-dedup.py m2-packet` output only.
+**Step 1a legs.** Follow [ghsa-deduplication.md](ghsa-deduplication.md) for the steps. Every leg
+runs on a frozen packet from `scripts/intake-check.py`, with no tools. Native legs (issue
+listing, native classification of added issues, comparisons) run `claude-opus-5-5` at High
+effort in the intake launch form above, with the step's schema: `schemas/issue-list.schema.json`,
+`schemas/issue-review.schema.json` (classification), or `schemas/issue-compare.schema.json`.
+Cross-provider legs (issue review, comparison confirmation) run `gpt-6.1-sol` at High effort as a
+fresh `codex exec` under the read-only permission profile in "Cross-provider dispatch", rooted at
+an empty temporary workspace instead of the target, with network disabled, `--disable apps
+--disable plugins`, and `--output-schema` naming the step's schema; confirm the profile check
+from the session file. Pass each check command the literal `--provider` and `--model` from
+runtime metadata: the hosts use different vocabularies (Claude `modelUsage` reports an access
+channel such as `firstParty`; the Codex session file reports `model_provider` such as `openai`),
+and the scripts only require the native and cross values to differ.
 
 **Writer child.** After the user approves write-back and each item, launch a minimal child
 that can run only the write-back script and receives only file paths:

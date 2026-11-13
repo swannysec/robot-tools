@@ -18,7 +18,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["role_local_id", "normalized_proposition", "proposed_disposition", "affects_security_claim", "locations", "context_dependencies", "evidence", "counterevidence", "assumptions", "uncertainty", "attacker_preconditions", "reachability_trace", "affected_boundary", "primitive_class", "variant_family", "enumerated_variants", "enumeration_source", "validity", "reachability", "impact", "mitigation_or_fix_state", "confidence", "priority", "scoring", "deterministic_checks", "invariant_test_contract", "claim_ids", "control_site", "cwe_ids"],
+        "required": ["role_local_id", "normalized_proposition", "proposed_disposition", "affects_security_claim", "locations", "context_dependencies", "evidence", "counterevidence", "assumptions", "uncertainty", "attacker_preconditions", "reachability_trace", "affected_boundary", "primitive_class", "variant_family", "enumerated_variants", "enumeration_source", "validity", "reachability", "impact", "mitigation_or_fix_state", "confidence", "priority", "scoring", "deterministic_checks", "invariant_test_contract", "issue_ids", "control_site", "cwe_ids"],
         "properties": {
           "role_local_id": {"type": "string"},
           "normalized_proposition": {"type": "string"},
@@ -44,7 +44,7 @@
           "confidence": {"type": "string"},
           "priority": {"type": "string"},
           "scoring": {"$ref": "#/$defs/scoring"},
-          "claim_ids": {"type": "array", "items": {"type": "string", "pattern": "^C[0-9]{1,3}$"}},
+          "issue_ids": {"type": "array", "items": {"type": "string", "pattern": "^I[0-9]{1,3}$"}},
           "control_site": {"$ref": "#/$defs/control_site"},
           "cwe_ids": {"type": "array", "items": {"type": "string", "pattern": "^CWE-[0-9]{1,5}$"}},
           "deterministic_checks": {"type": "array", "items": {"$ref": "#/$defs/deterministic_check"}},

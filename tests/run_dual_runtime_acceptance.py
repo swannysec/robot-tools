@@ -78,14 +78,14 @@ SECURITY_VULN_ANALYZER_SCHEMAS["fix-verifier-stage2-result.schema.json"] = (
     | {"closure_recommendation", "closure_conditions"}
 )
 SECURITY_VULN_ANALYZER_ROLE_TYPES["fix-verifier-stage2-result.schema.json"] = "verifier_stage2"
-# GHSA mode model roles; script-output schemas (ghsa-intake, dedup-relation) are checked in
-# tests/acceptance/test_security_ghsa_triage.py because they carry no role status or effort.
+# GHSA mode model roles; the script-output schema (ghsa-intake) is checked in
+# tests/acceptance/test_security_ghsa_triage.py because it carries no role status or effort.
 for _filename, _role_type, _fields in (
-    ("intake-h1-claims.schema.json", "intake_h1", {"ghsa_id", "claims", "versions_quoted", "poc_blocks"}),
     ("intake-h2-completeness.schema.json", "intake_h2", {"ghsa_id", "reproduction_steps", "proof_of_concept"}),
     ("intake-h4-draft.schema.json", "intake_h4", {"ghsa_id", "field_updates", "comment_drafts"}),
-    ("dedup-d4-result.schema.json", "dedup_d4", {"pair", "verdict", "evidence", "counterevidence", "uncertainty"}),
-    ("dedup-m4-result.schema.json", "dedup_m4", {"pair", "proposition", "verification_result", "evidence", "counterevidence", "uncertainty"}),
+    ("issue-list.schema.json", "issue_list", {"ghsa_id", "issues"}),
+    ("issue-review.schema.json", "issue_review", {"ghsa_id", "kinds", "added_issues"}),
+    ("issue-compare.schema.json", "issue_compare", {"pair", "answers"}),
 ):
     SECURITY_VULN_ANALYZER_SCHEMAS[_filename] = {
         "role_type", "status", "provider", "model", "effort", "packet_revision", "declined_scope",
@@ -1516,7 +1516,7 @@ def security_discovery_post_schema_errors(payload: Mapping[str, Any]) -> list[st
     def visit(value: Any, path: str) -> None:
         if isinstance(value, Mapping):
             for key, item in value.items():
-                if key in ("role_local_id", "claim_ids") or (key == "quote" and value.get("source_kind") == "repository"):
+                if key in ("role_local_id", "issue_ids") or (key == "quote" and value.get("source_kind") == "repository"):
                     continue
                 visit(item, f"{path}.{key}")
         elif isinstance(value, list):
@@ -2015,7 +2015,7 @@ def portable_security_vuln_analyzer_case(workspace: Path) -> dict[str, Any]:
         "attacker_preconditions", "reachability_trace", "affected_boundary", "primitive_class",
         "variant_family", "enumerated_variants", "enumeration_source", "validity", "reachability",
         "impact", "mitigation_or_fix_state", "confidence", "priority", "deterministic_checks",
-        "invariant_test_contract", "scoring", "claim_ids", "control_site", "cwe_ids",
+        "invariant_test_contract", "scoring", "issue_ids", "control_site", "cwe_ids",
     }
     if not isinstance(candidate_properties, dict) or not detailed_candidate_fields <= set(candidate_properties):
         raise AssertionError("discovery schema lacks the detailed candidate contract")
@@ -2110,13 +2110,13 @@ def portable_security_vuln_analyzer_case(workspace: Path) -> dict[str, Any]:
     bounded_identity["candidates"][0]["assumptions"] = ["R1-C10 and xR1-C1 are different ASCII tokens."]
     if security_discovery_post_schema_errors(bounded_identity):
         raise AssertionError("finder-local ID matching ignored literal ASCII token boundaries")
-    claim_reference = {"candidates": [{"role_local_id": "C1", "claim_ids": ["C1"], "evidence": [], "assumptions": [],
+    issue_reference = {"candidates": [{"role_local_id": "I1", "issue_ids": ["I1"], "evidence": [], "assumptions": [],
                                         "enumerated_variants": []}]}
-    if security_discovery_post_schema_errors(claim_reference):
-        raise AssertionError("a claim_ids reference was treated as finder identity")
-    claim_reference["candidates"][0]["assumptions"] = ["Same sink as C1."]
-    if not security_discovery_post_schema_errors(claim_reference):
-        raise AssertionError("the claim_ids exemption hid a finder-local ID in prose")
+    if security_discovery_post_schema_errors(issue_reference):
+        raise AssertionError("an issue_ids reference was treated as finder identity")
+    issue_reference["candidates"][0]["assumptions"] = ["Same sink as I1."]
+    if not security_discovery_post_schema_errors(issue_reference):
+        raise AssertionError("the issue_ids exemption hid a finder-local ID in prose")
 
     negative_fixtures = {
         "stage1-empty-complete.json": {
@@ -4378,9 +4378,10 @@ def hplumb_case(workspace: Path) -> dict[str, Any]:
             Path("references/orchestrator-contract.md"), Path("references/discovery-contract.md"),
             Path("references/cross-model-verification.md"),
             Path("scripts/deterministic-check.py"), Path("scripts/repo-authorization.py"), Path("scripts/cvss4-score.py"),
+            Path("scripts/source-citations.py"),
             Path("references/ghsa-triage-mode.md"), Path("references/ghsa-deduplication.md"),
             Path("scripts/ghsa-fetch.py"), Path("scripts/intake-check.py"), Path("scripts/ghsa-writeback.py"),
-            Path("scripts/ghsa-dedup.py"), Path("schemas/ghsa-intake.schema.json"), Path("schemas/dedup-relation.schema.json"),
+            Path("scripts/ghsa-dedup.py"), Path("schemas/ghsa-intake.schema.json"),
             *{Path("schemas") / filename for filename in SECURITY_VULN_ANALYZER_SCHEMAS},
         },
     }

@@ -1,0 +1,119 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "role_type",
+    "status",
+    "provider",
+    "model",
+    "effort",
+    "packet_revision",
+    "pair",
+    "answers",
+    "declined_scope"
+  ],
+  "properties": {
+    "role_type": {
+      "type": "string",
+      "enum": [
+        "issue_compare"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "COMPLETE",
+        "MALFORMED",
+        "FAILED",
+        "MISSING"
+      ]
+    },
+    "provider": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "effort": {
+      "type": "string",
+      "enum": [
+        "high"
+      ]
+    },
+    "packet_revision": {
+      "type": "string"
+    },
+    "pair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "earlier_ghsa_id",
+        "later_ghsa_id"
+      ],
+      "properties": {
+        "earlier_ghsa_id": {
+          "type": "string",
+          "pattern": "^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$"
+        },
+        "later_ghsa_id": {
+          "type": "string",
+          "pattern": "^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$"
+        }
+      }
+    },
+    "answers": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "covered",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^I[0-9]{1,3}$"
+          },
+          "covered": {
+            "type": "string",
+            "enum": [
+              "YES",
+              "NO",
+              "UNSURE"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          }
+        }
+      }
+    },
+    "declined_scope": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "task_element",
+          "reason"
+        ],
+        "properties": {
+          "task_element": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "description": "Step 1a comparison: for each listed technical issue of the later report, whether the earlier report states the same mechanism through the same trigger. scripts/intake-check.py compare-check enforces the pair and the ID set."
+}

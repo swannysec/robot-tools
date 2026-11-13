@@ -96,6 +96,23 @@ class SourceCitationTest(unittest.TestCase):
         self.assertIn('/evidence/1', str(caught.exception))
         self.assertIn('outside the frozen allowed ranges', str(caught.exception))
 
+    def test_range_errors_state_the_cited_and_allowed_lines(self):
+        raw = copy.deepcopy(self.raw)
+        raw['evidence'][0] = dict(copy.deepcopy(self.citation), start_line=1, end_line=3)
+        with self.assertRaises(ValueError) as caught:
+            self.extract(raw)
+        self.assertIn('cited lines 1-3; allowed ranges 2-3', str(caught.exception))
+        registry = copy.deepcopy(self.registry)
+        registry['sources'][0]['files'][0]['allowed_ranges'] = [[2, 10], [12, 14]]
+        raw['evidence'][0] = dict(copy.deepcopy(self.citation), start_line=2, end_line=5)
+        with self.assertRaises(ValueError) as caught:
+            self.extract(raw, registry=registry)
+        self.assertIn('citation exceeds the pinned source file (cited lines 2-5; the file has 3 lines)', str(caught.exception))
+        raw['evidence'][0] = dict(copy.deepcopy(self.citation), start_line=11, end_line=12)
+        with self.assertRaises(ValueError) as caught:
+            self.extract(raw, registry=registry)
+        self.assertIn('cited lines 11-12; allowed ranges 2-10, 12-14', str(caught.exception))
+
     def test_changed_source_and_invalid_utf8_fail(self):
         (self.root / 'source.rs').write_bytes(b'changed source')
         with self.assertRaisesRegex(ValueError, 'SHA-256'):

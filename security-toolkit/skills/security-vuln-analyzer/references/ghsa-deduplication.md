@@ -1,194 +1,203 @@
 ---
 name: ghsa-deduplication
-description: Claim-level GHSA relations, the D0-D6 pipeline, the confidence rule, and the fix-oracle-backed membership check.
+description: Issue-level GHSA deduplication (step 1a) before analysis - a two-provider issue list, a directional per-issue comparison with earlier advisories, scripted dispositions, and human confirmation of obvious duplicates.
 ---
 
-# GHSA Deduplication
+# GHSA Deduplication (step 1a)
 
-A duplicate is a report that one fix resolves (the consensus definition used by Bugcrowd,
-Intigriti, OSV aliases, and AIxCC patch grouping). Deduplication records relations between
-claims as a separate artifact. It never modifies, merges, suppresses, or re-identifies a
-finding, and it never changes a finding's status. Confidence comes from the design: no
-public source reports a false-merge rate.
+A later report's issue is **covered** by an earlier report when both providers say the earlier
+report states the same vulnerable mechanism reached through the same trigger, so that fixing it
+as the earlier report describes would also stop the later issue. Similar is not same: sharing a
+component, file, function, or weakness class is not enough. This is the directional, fix-based
+test bug bounty programs use ("fixing one removes the need to fix the other"). Scripts and models
+propose; a human decides whether a report skips analysis, and write-back stays human-approved.
+Deduplication never modifies, merges, suppresses, or re-identifies a finding and never changes a
+finding's status.
 
-Deterministic work runs in `scripts/ghsa-dedup.py`; model work uses the analysis tier with
-both providers under [orchestrator-contract.md](orchestrator-contract.md), including the
-authorization statement, refusal handling, and fallback disclosure.
+Step 1a runs before analysis, once per selected advisory, oldest first. Deterministic work runs
+in `scripts/intake-check.py` (packets and role-output checks) and `scripts/ghsa-dedup.py`
+(comparison plan, dispositions, confirmation). Model legs use the analysis tier of both
+providers, with no tools, under [orchestrator-contract.md](orchestrator-contract.md): the
+authorization statement, refusal handling, and fallback disclosure apply. Launch forms are in the
+runtime guides under "Step 1a legs". Not yet implemented: the currency check against the
+default-branch commit at the advisory's creation time, and post-fix coverage checks inside
+`--develop-fix` (a test that already passes on a base containing the canonical's merged fix).
 
-## Relation vocabulary
+## Scope and preflight
 
-Relations are recorded per claim, after bundled advisories are split into claims (D1).
+- **Queue mode:** capture every listed advisory (`ghsa-fetch.py queue --state all`, then
+  `ghsa-fetch.py advisory` for each; capture is read-only). Step 1a runs on triage or draft
+  advisories that have no `step1a/dispositions.json` in any run of that advisory.
+- **Single `--ghsa`:** fetch the queue listing and capture each advisory that `compare-plan`
+  names for the report.
+- **Preflight:** before any model call, run `compare-plan` for each selected report and show the
+  number of reports, the number of comparisons, and an estimate: about $0.30 per report for
+  listing and classification, plus about $0.05 per comparison, plus one cross-provider run for
+  each comparison where the native leg says YES. The user confirms. Backfilling an existing queue
+  is the user's choice at this prompt.
 
-| Relation | Meaning |
-|---|---|
-| `SAME_TEXT` | Near-identical report text with identical extracted literal sets; human-confirmed |
-| `SAME_ROOT_CAUSE` | The only duplicate relation: one fix resolves both claims, including every member of each claim set (confidence rule below) |
-| `VARIANT` | Shares a root-cause family but needs its own analysis; never a duplicate. Recorded when both D4 legs say `VARIANT`, when the legs split and D5 failed, or when the legs split between `VARIANT` and `DISTINCT` with no D5 result. Needs no D6 confirmation unless a D4 leg said `SAME_ROOT_CAUSE` (D5 failed against it: possible incomplete fix) |
-| `RELATED` | Shares literals, lineage references, or context; recorded for ordering only |
-| `DISTINCT` | Compared and found to share no root-cause family |
-| `UNRESOLVED` | D4 verifiers split with one leg `SAME_ROOT_CAUSE` and no frozen D5 result applies, or D4 agreement on `SAME_ROOT_CAUSE` conflicts with a failed D5 result; both verdicts are preserved and the human decides at D6 |
+## Steps
 
-An advisory is a duplicate only if every one of its claims is `SAME_ROOT_CAUSE` with a
-canonical claim.
-
-## Pipeline
-
-| Stage | Who | What |
-|---|---|---|
-| D0 Fingerprint | Script (`ghsa-dedup.py index`, `cluster`) | Normalized-text hash and shingle similarity; literal extraction (paths, symbols, config keys, advisory and CVE IDs, SHAs, versions); compare against advisories in all states. The config-key pattern also matches file names and domains (`loader.rs`, `example.com`), so an entry's D0 config keys join only when it has no checked typed literals. Produces candidate pairs only |
-| D1 Claim split | Intake tier, one advisory per packet | Distinct claims with exact quotes, entry point, and typed literals (H1, see [ghsa-triage-mode.md](ghsa-triage-mode.md)) |
-| D2 Candidate clusters | Script (`ghsa-dedup.py cluster`) | Join on shared literals and lineage references: D0 paths and symbols, checked typed literals, D0 config keys of entries without checked typed literals (a typed and an untyped entry sharing only a D0 config key do not join), and anchor literals from analyzed advisories (below); orders the queue |
-| D3 Re-anchoring | Script (`ghsa-dedup.py reanchor`) | Map verified locations to one common revision; anchor on symbols, with lines as supporting detail; compare at the control site. Anchors come from `ghsa-dedup.py records` (`anchors.json`, built from role-named `control_site` values); pass both advisories' `anchors.json` files (`--anchors`, repeated) and the pair's two claim-set files (`--claim-set`, repeated), so only the pair's anchors are compared; zero anchors after `--claim-set` filtering (check the result's `anchors` count) means the anchors and claim-set files do not come from the same `records` runs, unless no member has a `control_site` symbol |
-| D4 Root-cause comparison | Analysis tier, both providers, cold | Code-derived records only, no reporter text (`ghsa-dedup.py d4-packet`); each side is a claim set from `records`, with every member listed unmerged and the set ID as the side's record ID; the packet carries a fixed `question`, worded for its input form (for two claim sets, one fix must resolve every member of both sets), that verifiers answer as written, without re-deciding claim scope. Each claim set is the claim as analyzed (discovery roles set scope through each member's `claim_ids`, and a member whose `claim_ids` also list other claims still counts), so `SAME_ROOT_CAUSE` requires one fix to resolve every member of both sets; returns `SAME_ROOT_CAUSE`, `VARIANT`, or `DISTINCT` (`schemas/dedup-d4-result.schema.json`) |
-| D5 Fix oracle | Deterministic (`scripts/deterministic-check.py`) | Run Y's skill-authored adversarial-input regression test on X's fix revision; pass supports `SAME_ROOT_CAUSE`, fail means `VARIANT` or an incomplete fix |
-| D6 Human confirmation | Human, with a decision brief | Confirm a proposed relation (`SAME_TEXT`, `SAME_ROOT_CAUSE`, `UNRESOLVED`, or a `VARIANT` from a failed D5 result against a `SAME_ROOT_CAUSE` leg), pick the canonical, or mark variant, distinct, related, or needs more; outward actions stay manual |
-
-`index` takes typed literals only from an H1 check whose `effective_status` is `COMPLETE`.
-Checked literals here means checked file paths, entry-point symbols, or config keys; typed
-advisory references and commands or settings never join. An advisory without checked
-literals clusters on D0 literals alone, including D0 config keys; an advisory with checked
-literals does not use its D0 config keys, because the regex also matches file names and
-domains. The command result counts entries without checked literals
-(`entries_without_typed_literals`) so they are not silently missed.
-
-`index` also reads an optional `anchors` path on each entry: the advisory's `anchors.json`
-from `ghsa-dedup.py records`. It stores the anchors' paths and symbols as `anchor_literals`.
-No H1-style status gate applies, because `records` writes anchors only for bridged
-(cross-model verified) records. Anchor paths always join; an anchor symbol joins only when
-it is `::`-qualified, since a bare name such as `list` is too common to mean the same code.
-This lets an analyzed advisory join an unanalyzed one whose report names its verified
-control-site path, or another analyzed advisory with the same anchor. Each pair records
-`shared_anchor_literal_count`: the number of shared literals that either advisory's anchors
-supply. A literal that both reports also name still counts, so a nonzero count does not mean
-the pair joined only because of anchors. Anchor literals stay out of the `SAME_TEXT` comparison.
-The join remains a proposal only: D3 and D4 still compare the pair. Residual misses:
-
-- Two advisories whose reports name no code can join only after both are analyzed, and then
-  only on a shared anchor path or `::`-qualified anchor symbol.
-- Anchor symbols join only when `::`-qualified, so dotted symbols (for example in Python,
-  JavaScript, Go, or Java) never join; for those languages only anchor paths join.
-- A file renamed between the two advisories' primary revisions does not match.
-- The join uses exact spelling at each advisory's own revision, so a path or symbol spelled
-  differently in a report or at another revision does not match.
-
-D5 tests are authored and their registry is frozen before D4 dispatch, so a D5 result can
-never be a check invented after seeing verifier results
-([deterministic-validation.md](deterministic-validation.md)). Y's test is authored by the
-fix-author role from Y's own claim record and contract, passes the registry PoC-overlap
-check (`intake-check.py poc-overlap`), and is never a reporter's proof of concept.
-
-**D5 execution path.** `deterministic-check.py` binds each registry test to one repository
-and revision and requires the checkout `HEAD` to equal it. Apply Y's frozen test patch to
-the base revision and to X's fix revision, producing two derived commits, and register two
-entries with the same argument vector, each bound to its derived SHA with its own expected
-exit status and the D5 proposition hash. The base entry's oracle expects the failing exit status, so its literal result `PASSED` means the test failed as expected on base; pass the two results to `ghsa-dedup.py route-d4` as `--d5-base` and `--d5-fix` (`route-m` uses `--m3-base` and `--m3-fix`). The adapter's routing table accepts only finding
-statuses, so every D5 registry routing entry preserves `DISPUTED`; `ghsa-dedup.py` maps the
-literal results to relations through the table below. A patch that does not apply, or a
-test that cannot run, yields `NOT_RUN` or `UNRESOLVED`, which counts as no D5 result.
-
-## Confidence rule
-
-`SAME_ROOT_CAUSE` requires both D4 providers to agree, or a D5 result when they split.
-Otherwise the relation is `VARIANT` or `DISTINCT`, never a duplicate, or `UNRESOLVED` when
-the verifiers split with one leg `SAME_ROOT_CAUSE` and no frozen D5 result applies, or when
-both legs say `SAME_ROOT_CAUSE` and D5 failed.
-
-## Mechanical routing (`ghsa-dedup.py route-d4`)
-
-A D5 result "passed" means Y's test failed as expected on the base revision and passed on
-X's fix revision; "failed" means it still failed on X's fix revision. Anything else is no
-D5 result. A D5 pass shows only that Y's skill-authored test, written from one claim's
-contract, passes on X's fix; when a claim set has more than one member, it does not show that
-one fix resolves every member, so the D6 decision brief must say which member's contract
-produced the test.
-
-| D4 native | D4 cross-provider | D5 | Relation |
+| Step | Who | Command | Output (conventional name in `<run>/step1a/`) |
 |---|---|---|---|
-| `SAME_ROOT_CAUSE` | `SAME_ROOT_CAUSE` | none or passed | `SAME_ROOT_CAUSE` |
-| `SAME_ROOT_CAUSE` | `SAME_ROOT_CAUSE` | failed | `UNRESOLVED` |
-| `VARIANT` | `VARIANT` | any | `VARIANT` |
-| `DISTINCT` | `DISTINCT` | any | `DISTINCT` |
-| any split | | passed | `SAME_ROOT_CAUSE` |
-| any split | | failed | `VARIANT` |
-| split involving `SAME_ROOT_CAUSE` | | none | `UNRESOLVED` |
-| `VARIANT`/`DISTINCT` split | | none | `VARIANT` |
-| either leg non-complete after its retry | | any | no relation; both advisories go to full analysis |
+| 1. Issue listing | Native provider | `intake-check.py issue-packet`, then `issue-check` | `issue.check.json` |
+| 2. Issue review | Cross provider, cold | `intake-check.py review-packet`, then `review-check` | `review.check.json` |
+| 3. Native classification of added issues (only when needed, below) | Native provider | `intake-check.py kinds-packet`, then `review-check` | `kinds.check.json` |
+| 4. Merge | Script | `intake-check.py issues` | `issues.json` |
+| 5. Comparison plan | Script | `ghsa-dedup.py compare-plan` | `compare-plan.json` |
+| 6. Comparisons | Native leg for every planned report; cross leg, cold on the same packet, only when the native leg answered YES for some issue | `intake-check.py compare-packet`, then `compare-check --leg native` or `--leg cross` | `compare/<earlier GHSA ID>/` |
+| 7. Dispositions | Script | `ghsa-dedup.py dispositions` | `dispositions.json` |
+| 8. Confirmation of an obvious-duplicate proposal | Human | `ghsa-dedup.py confirm`, then `dispositions --confirmation` | `confirmation.json` |
 
-Every relation other than `RELATED`, `DISTINCT`, and `VARIANT` is a proposal until the human
-confirms it at D6 (`ghsa-dedup.py human`). `VARIANT` and `DISTINCT` need no confirmation:
-neither is a duplicate, and both advisories already have their own analyses. The exception is
-a `VARIANT` from a failed D5 result against a `SAME_ROOT_CAUSE` leg, which goes to D6 as a
-possible incomplete fix. From D4, `SAME_ROOT_CAUSE`, `UNRESOLVED`, and that `VARIANT` go to D6;
-a D0 `SAME_TEXT` proposal and a membership `SAME_ROOT_CAUSE` also do. `ghsa-dedup.py relate`
-records a D0 `SAME_TEXT` proposal or a relation the human sets directly. `route-d4` and `route-m` take each leg's provider and model
-from runtime metadata, not role output, and refuse to record a relation unless the two legs
-come from different providers. The routers check pair identity, status, `declined_scope`, and
-verdict only; validate each D4 or M4 artifact against its schema and citations before
-routing it. A `SAME_TEXT` match is proposed by D0 only when the normalized texts are
-near-identical and the extracted literal sets are identical; one differing config key
-means it is not `SAME_TEXT`. After human confirmation, the original's analysis stands for
-both advisories.
+Check commands take `--provider` and `--model` from runtime metadata, never from role output, and
+`--fallback-model` and `--fallback-use-permitted` under the fallback rules. The commands check
+these bindings and refuse input that breaks one: every role result must echo its packet's
+`packet_revision` (the step name and the packet's random token), so a result from an earlier or
+other packet fails its check; `issue-check` and `review-check` require the
+packet to have been built from the same capture; `issues` requires the review and the native
+classification to belong to that native listing (and review); `dispositions` requires each
+comparison packet to match the planned pair and the current issue list, each leg check to answer
+that packet, and each earlier advisory's current capture to have the state the plan recorded.
+Other digests in packet metadata and checks are recorded for audit only. Every directory is
+created with mode 700 and every file 600.
 
-## Canonical advisory
+## Issue list
 
-The canonical advisory in a relation is the earliest received (`created_at`, then GHSA ID).
-A human may override the choice; record the reason. A canonical finding produced with a
-fallback model cannot serve as a membership-check canonical unless the user explicitly
-permits that use.
+The listing names each issue the report claims: one vulnerable mechanism reached through one
+trigger, with `mechanism`, `trigger`, `kind`, an exact `quote` (at most 300 characters), and the
+code `literals` the report writes for it (file paths, symbols, config keys). `issue-check` and
+`review-check` require every quote to be an exact substring of one captured advisory field after
+line endings are normalized; a failed quote makes the output `MALFORMED` (one identical-packet
+retry). A literal that is not verbatim is dropped and listed in `dropped_literals`, with no retry:
+literals only aid lookups. If the native listing is still non-complete after its retry, the
+refusal and incompleteness rules flag it to the user and step 1a stops for that report.
 
-## Membership check
+The review packet lists the native issues by fixed ID (`I1`, `I2`, ...) without their kinds. The
+cross provider classifies each listed ID and adds issues the listing missed; added issues take the
+next IDs. Kinds:
 
-The membership check avoids a full analysis of report Y when the canonical finding X is
-`CROSS-MODEL VERIFIED`, has an accepted contract, and has a fix revision (a candidate patch
-counts). X is the single finding record the fix was developed from, not a claim set. Y must be in X's D2 cluster. A membership check without the fix oracle may not
-skip analysis; clusters without a fix use D4, D5, and full analysis.
+- `TECHNICAL`: a behavior of the code as it is now (something vulnerable runs, is loaded, or is
+  reachable, or a protection fails to stop it).
+- `DOCUMENTATION_UI`: only documentation, user-interface wording, warnings, or guidance text.
+- `FIX_GUIDANCE`: a critique of a proposed, possible, or existing remediation rather than a
+  separate behavior of the current code.
 
-- **M1 (script, `ghsa-dedup.py m1`):** match each typed literal in Y's D1 claims against
-  X's locations, enumerated variants, and contract input classes. An unmatched control-site
-  literal (a file path) ends the fast path. An unmatched entry-point symbol, config key, or
-  command or setting name may proceed to M2 and M3, because the fix oracle is the evidence;
-  the unmatched literals are recorded.
-- **M2 (analysis tier, fix-author role):** one frozen adversarial-input regression test per
-  Y claim at Y's entry point. The packet (`ghsa-dedup.py m2-packet`) contains only Y's
-  script-validated typed literal fields and X's contract, never reporter free text. The
-  test passes the PoC-overlap check before registration.
-- **M3 (script, sandbox):** run Y's test through `deterministic-check.py` on derived
-  revisions; it must fail as expected on base and pass on X's fix.
-- **M4 (analysis tier, both providers, cold):** proposition "Y's claim shares X's root
-  cause and is resolved by X's fix", given X's code-derived records, Y's claim quotes, and
-  the M1 and M3 results, with no reporter text from X (`ghsa-dedup.py m4-packet`,
-  `schemas/dedup-m4-result.schema.json`).
-- **Routing (`ghsa-dedup.py route-m`):** `SAME_ROOT_CAUSE` (covered by X) only if M1 passed,
-  M3 failed then passed, both M4 verifiers returned `CONFIRMED`, and the human confirms.
-  Anything else sends Y to full analysis.
+An issue is ignored for deduplication only when both providers' kinds are non-technical. An added
+issue the cross provider calls technical is technical. An added issue it calls non-technical needs
+the native provider's kind: `issues` reports `PENDING_NATIVE_KINDS` and lists the IDs until
+`kinds-packet` and `--native-kinds-check` supply it; if that leg fails, the issue stays technical.
+If the review leg is missing, failed, or refused after its retry, comes from the listing's
+provider, or comes from a fallback model without the user's permission, `cross_leg` records why,
+nothing is ignored, and no obvious duplicate can be proposed. A native listing from a fallback
+model without the user's permission keeps its reported kinds, but its kinds never count toward
+ignoring an issue (`native_leg` records `FALLBACK_NOT_PERMITTED`). Packet builders and `issues`
+refuse checks that belong to another advisory. Ignored issues stay in the decision
+brief, and fix-guidance issues go to the fix author.
 
-Y then inherits X's scoring and gets a relation record, not its own verified finding. The
-membership check cannot discover new siblings that only Y hints at.
+## Comparison set
 
-**Per-cluster order:** analyze one advisory, fix it, then membership-check the rest of the
-cluster against that fix.
+`compare-plan` reads the queue listing and the captures. The listing must cover every state
+(`ghsa-fetch.py queue --state all`), since a filtered listing would omit comparison candidates.
+The later report must be in the listing
+in triage or draft state, and each earlier capture's description digest and `updated_at` must
+match its listing entry (otherwise the command asks for a recapture).
+
+| Earlier advisory (by `created_at`, then GHSA ID) | Role | Effect of a match |
+|---|---|---|
+| Triage or draft | `OPEN` | Covers the issue; canonical candidate |
+| Published | `PUBLISHED` | Flagged as a possible regression or incomplete fix; the issue is still analyzed |
+| Closed with comments (count above zero, unknown, or comment capture incomplete) | `CLOSED_WITH_COMMENTS` | Shown in the brief with its closing comment; the issue is still analyzed |
+| Closed with no comments | excluded | none |
+| Created later, or the report itself | excluded | none |
+
+## Comparison
+
+The packet holds both full rendered reports in labeled untrusted-data blocks whose BEGIN and END
+lines carry a random per-packet token (report text cannot know it, so it cannot imitate a data
+boundary), the later report's technical issues by ID as one-line summaries marked as data, and the
+fixed question: YES when the earlier report states the same
+mechanism through the same trigger; NO when the issue would need its own change; UNSURE when the
+reports lack the detail to decide. `compare-check` requires the packet's pair and each listed ID
+exactly once, and writes `native.check.json` or `cross.check.json` beside the packet. Rebuilding a
+packet deletes that pair's earlier leg checks.
+
+## Dispositions
+
+For each technical issue and each planned earlier report:
+
+| Answers | Open report | Published or closed report |
+|---|---|---|
+| Both providers YES | Covers the issue | Match flag |
+| Exactly one YES (including a cross YES after a native NO or UNSURE, or a native YES whose cross leg is missing, failed, same-provider, or an unpermitted fallback) | Unresolved: `ONE_PROVIDER_YES` | Information only |
+| Native leg not complete | Unresolved: `COMPARISON_INCOMPLETE` | Information only |
+| Earlier report's rendered text changed since its packet, and some provider said YES | Unresolved: `EARLIER_REPORT_CHANGED`; pair listed in `rerun_pairs` | Information only |
+| No YES | No effect | No effect |
+
+UNSURE counts as not YES. A fallback-model leg counts only with the user's recorded permission.
+An issue is `COVERED` when any open report covers it: the canonical is the earliest such report,
+and the rest are listed in `also_covered_by`. Coverage stands when another pair failed or a
+published report also matches. Otherwise the issue is `UNRESOLVED` when any open report gave an
+unresolved outcome, and `NEW` when none did. Non-technical issues are `IGNORED`.
+
+| Verdict | When | `analysis_issue_ids` |
+|---|---|---|
+| `LIST_UNREVIEWED` | The review leg is not complete | Every technical issue |
+| `NO_TECHNICAL_ISSUES` | Every issue is ignored | Every listed issue |
+| `OBVIOUS_DUPLICATE` (proposal) | Every technical issue is covered | None, once confirmed |
+| `PARTIAL` | Some technical issues are covered | New and unresolved issues |
+| `NOT_COVERED` | No technical issue is covered | Every technical issue |
+
+`analysis_status` is `AWAITING_CONFIRMATION` for an obvious-duplicate proposal without a current
+confirmation: the report is neither analyzed nor paused for missing evidence until the human
+decides. Otherwise it is `READY`. Covered issues of a partial report skip analysis without a
+separate confirmation; the write-back brief lists them.
+
+## Confirmation
+
+Queue mode continues past obvious-duplicate proposals and presents them in one decision brief at
+the end of step 1a. For each report the brief shows every issue with its canonical, both
+providers' reasons (from the check files), `cross_leg`, ignored issues and fix guidance, and
+published and closed matches. `confirm` records `CONFIRMED` or `REJECTED`, a reason, and the
+dispositions' `decision_digest`: a digest of what the human judged, namely the verdict, each
+issue's disposition and canonical, the issue list, and each canonical's rendered text, with no
+timestamps. Additional covering reports (`also_covered_by`) are listed in the brief but are not
+part of the digest. `dispositions --confirmation` accepts only `CONFIRMED` or `REJECTED` for the
+same report and applies the decision only when the digest still matches: confirmed means no
+analysis, and rejected sends every technical issue to analysis. A re-listed report, an edited
+canonical, or any other change to the decision voids the confirmation (`confirmation.stale`).
+
+## Reruns
+
+Rerun `dispositions` before each use; it makes no model calls. Write-back to an earlier advisory
+moves its `updated_at` but not its rendered text, so recapture it and later dispositions stay
+current. When an earlier report's text changed and the pair had a YES, rebuild that pair's packet
+and rerun its legs (`rerun_pairs`). When an earlier advisory's state changes, `dispositions`
+stops once its capture is refreshed: re-list the queue, recapture, and rerun `compare-plan` and
+then `dispositions`; a canonical that is published or closed no longer covers.
+A change to the report itself stops dependent steps through the change-since-capture check;
+rerun step 1a from the listing.
+
+## Formats
+
+- `issues.json`: `record_type` `ghsa_issue_list`, `ghsa_id`, `status` (`COMPLETE` or
+  `PENDING_NATIVE_KINDS`), `issues` (`issue_id`, `source`, `mechanism`, `trigger`, `quote`,
+  `literals`, `kinds` with `native` and `cross`, `technical`), `native_leg`, `cross_leg`, `native_kinds_leg`,
+  `dropped_literals`, `needs_native_kinds`, `inputs` (check digests).
+- `dispositions.json`: `record_type` `ghsa_dispositions`, `ghsa_id`, `verdict`, `cross_leg`,
+  `analysis_status`, `analysis_issue_ids`, `issues` (`issue_id`, `mechanism`, `technical`,
+  `kinds`, `disposition`, `canonical`, `also_covered_by`, `unresolved`, `published_matches`,
+  `closed_matches`, `information`), `ignored`, `fix_guidance`, `rerun_pairs`, `decision_digest`,
+  `confirmation`, `depends_on`.
+- `confirmation.json`: `record_type` `ghsa_confirmation`, `ghsa_id`, `decision_digest`,
+  `decision`, `reason`, `recorded_at_utc`.
 
 ## Confidentiality
 
-- Each advisory has its own run directory; the cross-advisory index holds IDs, digests,
-  hashed shingles, typed literals, and anchor literals (code-derived paths and symbols),
-  never report text.
-- D4 packets contain code-derived records only. D4 and M4 packets never contain reporter
-  text from the other advisory.
-- H4 drafts are scoped to the advisory's own records ([ghsa-triage-mode.md](ghsa-triage-mode.md)).
-  For an unpublished duplicate, use "previously reported" wording; disclosing that another
-  report exists is the human's decision.
-
-## Relation records
-
-`schemas/dedup-relation.schema.json`. Each record holds the relation ID, the canonical and
-other advisory and claim IDs, the relation, its basis (`D0`, `D4`, `D5`, `MEMBERSHIP`, or
-`HUMAN`), the D4 verdicts with provider, model, and artifact digests, D5 and M1-M4 result
-references, the canonical choice and any override reason, the human decision, and the
-digests it depends on. It contains no report text.
-
-**Invalidation (`ghsa-dedup.py invalidate`).** A relation is invalidated when any digest it
-depends on changes: either advisory's description digest or `updated_at`, either D1 claim
-set, X's finding record or final status, X's fix revision, or a D4, D5, or membership
-artifact superseded by a stage retry. Invalidated relations are preserved and labeled, and
-the pair is re-run from the earliest affected stage.
+- Comparison packets contain the full text of both reports and go to both providers; preflight
+  consent covers this. They stay in the later report's run directory inside the restricted run
+  root.
+- `dispositions.json` carries the later report's own mechanisms and other advisories' IDs, never
+  another report's text. Providers' reasons stay in the check files and reach only the human
+  brief.
+- H4 drafts never name another advisory. For a duplicate, use "previously reported" wording;
+  disclosing that another report exists is the human's decision.

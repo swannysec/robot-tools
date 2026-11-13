@@ -29,7 +29,7 @@ Requested model: ; actual model: ; how detected (runtime field and value):
 Effect: result keeps its computed status and is labeled "fallback model"
 Cross-provider requirement: still met | not met (native provider served the leg → INCOMPLETE)
 User choice: accepted | retried with original model | retried with user-selected model: | pending
-Permitted as membership canonical or write-back basis: yes, by explicit user permission recorded at: | no
+Permitted for step 1a coverage or as write-back basis: yes, by explicit user permission recorded at: | no
 Retry: run directory, stage name, and model choice (see "Stage retry")
 ```
 
@@ -53,7 +53,7 @@ Tell the user how to retry a stage: supply the preserved run directory, the stag
 
 ## Decision brief
 
-Use this format at every human decision point: preflight model confirmation, fallback choice, refusal flag, the GHSA completeness pause, a deduplication relation decision, and each write-back approval. Write it for a reader who has not watched the run. Present role-emitted evidence and verdicts with their citations; the orchestrator adds no analytical recommendation of its own.
+Use this format at every human decision point: preflight model confirmation, fallback choice, refusal flag, the GHSA completeness pause, the batched obvious-duplicate confirmations from step 1a, and each write-back approval. Write it for a reader who has not watched the run. Present role-emitted evidence and verdicts with their citations; the orchestrator adds no analytical recommendation of its own.
 
 ```text
 Decision needed:
@@ -110,7 +110,7 @@ Render the following exact fields for each role record, preserving states, numbe
 | EPSS | `candidate.scoring.epss.status`, `candidate.scoring.epss.cve`, `candidate.scoring.epss.probability`, `candidate.scoring.epss.percentile`, `candidate.scoring.epss.retrieved_at_utc`, `candidate.scoring.epss.version`, `candidate.scoring.epss.rationale`, `candidate.scoring.epss.evidence` |
 | KEV | `candidate.scoring.kev.status`, `candidate.scoring.kev.cve`, `candidate.scoring.kev.membership`, `candidate.scoring.kev.retrieved_at_utc`, `candidate.scoring.kev.version`, `candidate.scoring.kev.rationale`, `candidate.scoring.kev.evidence` |
 | CWE IDs | `candidate.cwe_ids` (the role's classification; empty means none supplied) |
-| Claims answered (GHSA mode) | `candidate.claim_ids` |
+| Issues answered (GHSA mode) | `candidate.issue_ids` |
 | Control site | `candidate.control_site.symbol`, `candidate.control_site.relative_path`, `candidate.control_site.line` |
 | Contract version | `candidate.invariant_test_contract.version` |
 | Implementation pitfalls | `candidate.invariant_test_contract.implementation_pitfalls` |
@@ -209,8 +209,10 @@ GHSA intake — advisory ID, repository, input form, state, created/updated:
 Captured artifacts: advisory and comments SHA-256, comments status, retrieval time, API version:
 Pinned target: revision, revision source (default-branch HEAD | exact tag | user selected):
 Reporter claims (labeled, not skill assessments): severity, CVSS vectors, CWE IDs, versions:
-Intake roles: H1/H2 provenance, effective status, intake-check result, typed literals:
-Records: claim sets built, claims without verified records, unassigned verified records, not-bridged records and reasons:
+Intake roles: H2 provenance, effective status, intake-check result:
+Step 1a legs: per leg, provider, requested and actual model, check result, fallback or refusal:
+Issue list: issues (ID, kind per provider, technical), cross_leg, dropped literals:
+Records: issues without records, unassigned verified records, not-bridged records and reasons:
 H4 packet: withheld values and reasons:
 ```
 
@@ -220,9 +222,16 @@ Decision brief presented; human choice: run anyway | request evidence; recorded 
 ```
 
 ```text
-Relation — relation ID, canonical advisory/claim, other advisory/claim, relation, basis:
-D4 verdicts (provider, model, artifact digest); D5 result; membership M1/M3/M4:
-Canonical rule or override reason; human decision (not required when the record's `proposed` is false); invalidation state and reasons:
+Step 1a dispositions — advisory ID, verdict, analysis status, analysis issue IDs, rerun pairs:
+Per issue: ID, mechanism, disposition, canonical and also covered by, unresolved reasons, published and closed matches, information:
+Ignored issues (kinds) and fix guidance for the fix author:
+```
+
+```text
+Obvious-duplicate confirmations (one brief per batch) — per report: advisory ID, each issue with its canonical,
+both providers' reasons (from the comparison checks), cross_leg, ignored issues and fix guidance,
+published matches (possible regression or incomplete fix) and closed matches with their closing comment:
+Human decision per report: CONFIRMED | REJECTED, reason, decision digest, recorded at:
 ```
 
 ```text

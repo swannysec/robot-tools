@@ -128,8 +128,10 @@ element; a human posts it.
 - **Analysis:** the intake record, the verbatim advisory (rendered with `intake-check.py
   render`), and the issues in `analysis_issue_ids` from `step1a/dispositions.json` become Phase 1
   input. List each such issue's ID with its mechanism, trigger, quote, and checked literals, and
-  state that these are the issues in scope, so discovery roles can fill `issue_ids`. Covered and
-  ignored issues are not listed, and no other advisory is named. Run analysis only when
+  state that these are the issues in scope, so discovery roles can fill `issue_ids`.
+  `analysis_issue_ids` is the only filter: it usually omits covered and ignored issues, but it
+  includes them after a rejected obvious-duplicate confirmation, under `LIST_UNREVIEWED`, and
+  under `NO_TECHNICAL_ISSUES`, so list exactly those IDs. No other advisory is named. Run analysis only when
   `analysis_status` is `READY`. The pinned target from intake is the primary target revision.
 - **Records:** after Mechanical Reconciliation, run `ghsa-dedup.py records` before H4. Inputs:
   the verified derived discovery artifacts (each extractor envelope's `artifact` member, not the

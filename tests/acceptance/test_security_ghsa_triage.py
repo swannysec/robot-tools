@@ -313,7 +313,9 @@ class Step1aWorkspace(Workspace):
         self.assertEqual(code, 0, err)
         return json.loads(out)
 
-    def check(self, command, meta, result, name, provider="anthropic", model="claude-opus-5-5", *extra):
+    def check(self, command, meta, result, name, provider="anthropic", model="claude-opus-5-5", *extra, echo=True):
+        if echo and "packet_revision" in result:  # a role echoes the revision its packet names
+            result = dict(result, packet_revision=json.loads(Path(meta).read_text(encoding="utf-8"))["packet_revision"])
         path = write(self.tmp / f"{name}.result.json", result)
         out_path = self.step / f"{name}.check.json"
         code, out, err = run("intake-check.py", command, "--intake", self.intake_path, "--packet-meta", meta, "--result", path,
@@ -353,7 +355,9 @@ class IssueListTest(Step1aWorkspace):
         self.assertIn(DATA["injection_text"], text.split(f"=== BEGIN REPORT [{token}]")[1])
         self.assertIn("exact excerpt of a proof-of-concept block is acceptable", text)
         self.assertIn("set `role_type` to `issue_list`, `status` to `COMPLETE`, `effort` to `high`", text)
-        self.assertIn(f"`packet_revision` to `issue-v1`, and set `ghsa_id` to `{self.ghsa}`.", text)
+        revision = json.loads(Path(result["meta"]).read_text(encoding="utf-8"))["packet_revision"]
+        self.assertRegex(revision, r"^issue-[0-9a-f]{16}$")
+        self.assertIn(f"`packet_revision` to `{revision}`, and set `ghsa_id` to `{self.ghsa}`.", text)
         meta = json.loads(Path(result["meta"]).read_text(encoding="utf-8"))
         self.assertEqual(meta["packet_sha256"], hashlib.sha256(text.encode("utf-8")).hexdigest())
 
@@ -616,6 +620,14 @@ class IssueListTest(Step1aWorkspace):
                 self.assertEqual((doc["issues"][0]["technical"], doc["native_leg"]), (technical, leg))
                 self.assertEqual(doc["issues"][0]["kinds"]["native"], "DOCUMENTATION_UI")  # the reported kind is kept
 
+    def test_result_for_an_earlier_packet_is_rejected(self):
+        old_meta = json.loads(Path(self.packet("issue-packet")["meta"]).read_text(encoding="utf-8"))
+        stale = dict(self.listing([BASE_ISSUE]), packet_revision=old_meta["packet_revision"])
+        new_meta = self.packet("issue-packet")["meta"]  # rebuilt: a new token and revision
+        _, out = self.check("issue-check", new_meta, stale, "issue", echo=False)
+        self.assertEqual(out["effective_status"], "MALFORMED")
+        self.assertTrue(any("packet_revision" in e for e in out["errors"]))
+
     def test_review_for_another_listing_is_rejected(self):
         native, _ = self.native_check([BASE_ISSUE])
         review, _ = self.review_check(native, [("I1", "TECHNICAL")])
@@ -684,10 +696,12 @@ class DedupWorkspace(Step1aWorkspace):
             advisory = json.loads(self.intake_of(key).read_text(encoding="utf-8"))["advisory"]
             entry = {"ghsa_id": advisory["ghsa_id"], "state": self.states.get(key, advisory["state"]),
                      "created_at": advisory["created_at"], "updated_at": advisory["updated_at"], "body_sha256": advisory["body_sha256"]}
-            entry.update(overrides.get(key, {}))
+            entry.update(overrides.get(key, {}) if key != "_states" else {})
             entries.append(entry)
         entries.sort(key=lambda e: (e["created_at"], e["ghsa_id"]))
-        return write(self.tmp / "listing.json", {"record_type": "ghsa_queue_listing", "repository": REPO, "advisories": entries})
+        states = overrides.get("_states", ["triage", "draft", "published", "closed"])
+        return write(self.tmp / "listing.json", {"record_type": "ghsa_queue_listing", "repository": REPO, "states": states,
+                                                 "advisories": entries})
 
     def captures(self, omit=()):
         return write(self.tmp / "captures.json", {self.gid(k): str(self.intake_of(k)) for k in self.records if k not in omit})
@@ -723,13 +737,16 @@ class DedupWorkspace(Step1aWorkspace):
         self.assertEqual(code, 0, err)
         return json.loads(out)
 
-    def compare_check(self, x_key, leg, votes, provider, model, *extra, result=None):
+    def compare_check(self, x_key, leg, votes, provider, model, *extra, result=None, echo=True):
         meta = self.compare_dir / self.gid(x_key) / "compare.meta.json"
         if votes == "FAIL":
             result = self.compare_result(x_key, {}, declined=[{"task_element": "compare", "reason": "fixture refusal"}])
         elif votes == "FAILED":
             result = {"role_type": "issue_compare", "status": "FAILED"}
-        path = write(self.tmp / f"{x_key}.{leg}.json", result or self.compare_result(x_key, votes))
+        result = result or self.compare_result(x_key, votes)
+        if echo and "packet_revision" in result:
+            result = dict(result, packet_revision=json.loads(meta.read_text(encoding="utf-8"))["packet_revision"])
+        path = write(self.tmp / f"{x_key}.{leg}.json", result)
         code, out, err = run("intake-check.py", "compare-check", "--packet-meta", meta, "--leg", leg, "--result", path,
                              "--provider", provider, "--model", model, *extra)
         self.assertIn(code, (0, 5), err)
@@ -793,6 +810,11 @@ class ComparePlanTest(DedupWorkspace):
         planned = [e["ghsa_id"] for e in plan["planned"]]
         self.assertIn(self.gid("variant"), planned)  # same time, lower GHSA ID: earlier
         self.assertNotIn(self.gid("no_repro"), planned)  # same time, higher GHSA ID: later
+
+    def test_listing_must_cover_every_state(self):
+        code, err = self.plan(_states=["triage"])
+        self.assertEqual(code, 2)
+        self.assertIn("--state all", err)
 
     def test_missing_capture_is_reported(self):
         code, err = self.plan(omit=("base",))
@@ -873,6 +895,15 @@ class CompareTest(DedupWorkspace):
             self.assertEqual(mode(path), 0o700 if path.is_dir() else 0o600, path)
         for name in ("compare-plan.json", "dispositions.json", "confirmation.json"):
             self.assertEqual(mode(self.step / name), 0o600, name)
+
+    def test_stale_comparison_result_is_rejected(self):
+        self.make_issues()
+        self.compare_packet("base")
+        meta = self.compare_dir / self.gid("base") / "compare.meta.json"
+        stale = dict(self.compare_result("base", BOTH), packet_revision=json.loads(meta.read_text(encoding="utf-8"))["packet_revision"])
+        self.compare_packet("base")  # rebuilt after, for example, the earlier report changed
+        out = self.compare_check("base", "native", None, "anthropic", "claude-opus-5-5", result=stale, echo=False)
+        self.assertEqual(out["effective_status"], "MALFORMED")
 
     def test_check_requires_every_id_once(self):
         self.make_issues()

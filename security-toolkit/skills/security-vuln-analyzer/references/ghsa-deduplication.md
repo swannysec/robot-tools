@@ -51,7 +51,9 @@ default-branch commit at the advisory's creation time, and post-fix coverage che
 
 Check commands take `--provider` and `--model` from runtime metadata, never from role output, and
 `--fallback-model` and `--fallback-use-permitted` under the fallback rules. The commands check
-these bindings and refuse input that breaks one: `issue-check` and `review-check` require the
+these bindings and refuse input that breaks one: every role result must echo its packet's
+`packet_revision` (the step name and the packet's random token), so a result from an earlier or
+other packet fails its check; `issue-check` and `review-check` require the
 packet to have been built from the same capture; `issues` requires the review and the native
 classification to belong to that native listing (and review); `dispositions` requires each
 comparison packet to match the planned pair and the current issue list, each leg check to answer
@@ -94,7 +96,9 @@ brief, and fix-guidance issues go to the fix author.
 
 ## Comparison set
 
-`compare-plan` reads the queue listing and the captures. The later report must be in the listing
+`compare-plan` reads the queue listing and the captures. The listing must cover every state
+(`ghsa-fetch.py queue --state all`), since a filtered listing would omit comparison candidates.
+The later report must be in the listing
 in triage or draft state, and each earlier capture's description digest and `updated_at` must
 match its listing entry (otherwise the command asks for a recapture).
 

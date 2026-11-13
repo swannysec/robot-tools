@@ -270,6 +270,9 @@ def order_key(entry: dict[str, Any]) -> tuple[str, str]:
 def command_compare_plan(args: argparse.Namespace) -> dict[str, Any]:
     listing = load(args.listing)
     captures = load(args.captures)
+    missing_states = sorted({"triage", "draft", "published", "closed"} - set(listing.get("states", [])))
+    if missing_states:
+        raise UsageError(f"the queue listing omits states {missing_states}; rerun ghsa-fetch.py queue --state all")
     entries = {entry["ghsa_id"]: entry for entry in listing.get("advisories", [])}
     later = entries.get(args.ghsa_id)
     if later is None:

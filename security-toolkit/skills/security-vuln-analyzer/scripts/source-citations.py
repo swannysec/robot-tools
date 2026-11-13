@@ -45,9 +45,10 @@ def relative_path(value):
     return value
 
 
-def line_range(start, end):
+def line_range(start, end) -> tuple[int, int]:
     if type(start) is not int or type(end) is not int or start < 1 or end < start:
         raise ValueError('line range must contain positive ordered integers')
+    return start, end
 
 
 def source_index(registry):
@@ -115,11 +116,11 @@ def extract_citations(raw_bytes, registry_bytes, expected_registry_sha256):
                     key = (repository, revision, relative)
                     if key not in index:
                         raise ValueError('citation is absent from the frozen source registry')
-                    start, end = value.get('start_line'), value.get('end_line')
-                    line_range(start, end)
+                    start, end = line_range(value.get('start_line'), value.get('end_line'))
                     root, entry = index[key]
                     if not any(low <= start <= end <= high for low, high in entry['allowed_ranges']):
-                        raise ValueError('citation is outside the frozen allowed ranges')
+                        allowed = ', '.join(f'{low}-{high}' for low, high in entry['allowed_ranges'])
+                        raise ValueError(f'citation is outside the frozen allowed ranges (cited lines {start}-{end}; allowed ranges {allowed})')
                     if value.get('artifact_id') != '' or not isinstance(value.get('quote'), str):
                         raise ValueError('repository citation requires empty artifact_id and string quote')
                     if key not in loaded:
@@ -133,7 +134,7 @@ def extract_citations(raw_bytes, registry_bytes, expected_registry_sha256):
                         loaded[key] = data.splitlines(keepends=True)
                     lines = loaded[key]
                     if end > len(lines):
-                        raise ValueError('citation exceeds the pinned source file')
+                        raise ValueError(f'citation exceeds the pinned source file (cited lines {start}-{end}; the file has {len(lines)} lines)')
                     quote_bytes = b''.join(lines[start - 1:end])
                     value['quote'] = quote_bytes.decode('utf-8')
                     citations.append({'json_pointer': pointer, 'repository': repository, 'revision': revision,

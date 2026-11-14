@@ -153,7 +153,8 @@ Follow [ghsa-triage-mode.md](ghsa-triage-mode.md) and [ghsa-deduplication.md](gh
 `ghsa-writeback.py`. No GitHub token or token reference is ever placed in an intake or
 step 1a child's environment.
 
-**Intake roles (H2, H4).** Freeze the packet to a file and launch a fresh `codex exec`
+**Intake roles (H2, H4).** Build the packet with `scripts/intake-check.py h2-packet` or
+`h4-packet` (check results with `--packet-meta`) and launch a fresh `codex exec`
 from an empty temporary directory, with temporary `HOME` and `CODEX_HOME` (mode 700) whose
 only content is a link to the existing Codex `auth.json`, and every tool surface disabled:
 

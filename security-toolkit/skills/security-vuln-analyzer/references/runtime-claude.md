@@ -104,9 +104,11 @@ dontAsk --tools Read,Bash`, launched from inside the pinned snapshot. In that pr
 read-only commands inside the working directory ran, while reads outside it, relative
 escapes (`../`), and writes were denied. Some legitimate searches were also denied: shell
 globs, `cd` into a sibling supporting-context snapshot, and compound pipelines. Give roles
-concrete paths in their packets. In a probe on 2026-11-11, a `curl` request was denied by the
-permission layer (`dontAsk` allows only commands Claude Code treats as read-only); no
-OS-level network sandbox was tested.
+concrete paths in their packets. Each read-only role's packet also states: run one command per
+shell call, with concrete paths; do not use pipelines, command chaining, shell globs, or `cd`;
+read whole outputs and filter them in your own reasoning. In a probe on 2026-11-11, a `curl`
+request was denied by the permission layer (`dontAsk` allows only commands Claude Code treats
+as read-only); no OS-level network sandbox was tested.
 
 Require exit status zero, `is_error: false`, and a `structured_output` object that
 validates against the complete applicable schema. Validate citations and other literal
@@ -231,9 +233,10 @@ Follow [ghsa-triage-mode.md](ghsa-triage-mode.md) and [ghsa-deduplication.md](gh
 child's environment. No GitHub token or token reference is ever placed in an intake or
 step 1a child's environment.
 
-**Intake roles (H2, H4).** Freeze the packet (authorization statement, role
-instructions, and the captured advisory as untrusted data) to a file, then launch from an
-empty temporary directory with a scrubbed environment and no tools:
+**Intake roles (H2, H4).** Build the packet with `scripts/intake-check.py h2-packet` or
+`h4-packet` (authorization statement, role instructions, and the data as untrusted data, frozen
+to `h2.packet.txt` or `h4.packet.txt`), then launch from an empty temporary directory with a
+scrubbed environment and no tools:
 
 ```bash
 cd "$EMPTY_TMP_DIR" && env -i HOME="$HOME" PATH="$PATH" ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
@@ -247,7 +250,8 @@ Use the H4 schema for H4. The init event must list only `StructuredOutput`
 as a tool and no MCP servers; otherwise the role is `MISSING`. `env -i` keeps GitHub tokens
 and `SVA_GHSA_*` variables out. Where only OAuth authentication is available, omit `--bare`
 and `ANTHROPIC_API_KEY`; `--restricted` still keeps user settings out. Check every result
-with `scripts/intake-check.py` and read model and refusal metadata as above.
+with `scripts/intake-check.py`, passing the packet's metadata (`--packet-meta`), and read model
+and refusal metadata as above.
 
 **Step 1a legs.** Follow [ghsa-deduplication.md](ghsa-deduplication.md) for the steps. Every leg
 runs on a frozen packet from `scripts/intake-check.py`, with no tools. Native legs (issue

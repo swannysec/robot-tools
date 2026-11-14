@@ -6,6 +6,7 @@ Subcommands:
   compare-plan step 1a: earlier advisories to compare a report with, by state, from a queue listing and captures
   dispositions step 1a: per-issue COVERED / NEW / UNRESOLVED / IGNORED, the report verdict, and what analysis receives
   confirm      record the human decision on an obvious-duplicate proposal, bound to its decision digest
+  brief        render the batched step 1a decision brief: both providers' reasons per referenced pair, never stale
 
 The script never weighs evidence, merges findings, or changes a finding's status.
 """
@@ -47,6 +48,13 @@ def dump(path: str | Path, value: Any) -> None:
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         os.fchmod(handle.fileno(), 0o600)  # O_CREAT's mode applies only to a new file
+        handle.write(text)
+
+
+def write_text_private(path: Path, text: str) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        os.fchmod(handle.fileno(), 0o600)
         handle.write(text)
 
 
@@ -138,6 +146,8 @@ def command_records(args: argparse.Namespace) -> dict[str, Any]:
         raise UsageError("the dispositions belong to a different advisory")
     if dispositions.get("depends_on", {}).get("issues_sha256") != file_sha256(args.issues):
         raise UsageError("the dispositions were computed from a different issue list")
+    if dispositions.get("analysis_status") == "NO_ANALYSIS":
+        raise UsageError("confirmed duplicate: nothing was analyzed, so there are no records to bridge")
     if dispositions.get("analysis_status") != "READY":
         raise UsageError("the report is awaiting confirmation of an obvious-duplicate proposal; nothing was analyzed")
     analysis_issues = list(dispositions.get("analysis_issue_ids", []))
@@ -233,6 +243,20 @@ def restricted_dir(path: Path) -> Path:
     return path
 
 
+def step1a_root(path: Path, ghsa_id: str, direct: bool = False) -> Path:
+    """Step 1a outputs live in <run>/step1a/ of the advisory's own run, where queue selection looks for them.
+
+    With `direct`, `path` is the output's directory and must be that step1a/ directory itself, not a level below it."""
+    resolved = Path(path).resolve()
+    root = next((p for p in (resolved, *resolved.parents) if p.name == "step1a"), None)
+    record = None if root is None else root.parent / "intake" / "intake-record.json"
+    if root is None or record is None or not record.is_file() or load(record).get("advisory", {}).get("ghsa_id") != ghsa_id \
+            or (direct and resolved != root):
+        raise UsageError(f"step 1a outputs for {ghsa_id} belong directly in <run>/step1a/ of a run directory whose "
+                         "intake/intake-record.json captures that advisory")
+    return root
+
+
 def dump_private(path: str | Path, value: Any) -> None:
     restricted_dir(Path(path).parent)
     dump(path, value)
@@ -268,6 +292,7 @@ def order_key(entry: dict[str, Any]) -> tuple[str, str]:
 
 
 def command_compare_plan(args: argparse.Namespace) -> dict[str, Any]:
+    step1a_root(Path(args.out).parent, args.ghsa_id, direct=True)
     listing = load(args.listing)
     captures = load(args.captures)
     missing_states = sorted({"triage", "draft", "published", "closed"} - set(listing.get("states", [])))
@@ -283,6 +308,7 @@ def command_compare_plan(args: argparse.Namespace) -> dict[str, Any]:
     for entry in sorted(entries.values(), key=order_key):
         ghsa_id = entry["ghsa_id"]
         if ghsa_id == args.ghsa_id:
+            excluded.append({"ghsa_id": ghsa_id, "reason": "the report itself"})
             continue
         if order_key(entry) > order_key(later):
             excluded.append({"ghsa_id": ghsa_id, "reason": "created later"})
@@ -363,6 +389,7 @@ def command_dispositions(args: argparse.Namespace) -> dict[str, Any]:
     if issues_doc.get("record_type") != "ghsa_issue_list" or issues_doc.get("status") != "COMPLETE":
         raise UsageError("the issue list is missing or not complete")
     ghsa_id = issues_doc["ghsa_id"]
+    step1a_root(Path(args.out).parent, ghsa_id, direct=True)
     if plan.get("record_type") != "ghsa_compare_plan" or plan.get("later_ghsa_id") != ghsa_id:
         raise UsageError("the comparison plan is for another report")
     issues_sha = file_sha256(args.issues)
@@ -459,7 +486,7 @@ def command_dispositions(args: argparse.Namespace) -> dict[str, Any]:
         if verdict == "OBVIOUS_DUPLICATE" and given.get("decision_digest") == decision:
             confirmation = {"applied": True, "stale": False, "decision": given["decision"], "reason": given.get("reason", ""),
                             "recorded_at_utc": given.get("recorded_at_utc", "")}
-            status = "READY"
+            status = "NO_ANALYSIS" if given["decision"] == "CONFIRMED" else "READY"
             if given["decision"] == "REJECTED":
                 analysis = [record["issue_id"] for record in tech]
         else:
@@ -476,10 +503,146 @@ def command_confirm(args: argparse.Namespace) -> dict[str, Any]:
     document = load(args.dispositions)
     if document.get("record_type") != "ghsa_dispositions" or document.get("verdict") != "OBVIOUS_DUPLICATE":
         raise UsageError("only an obvious-duplicate proposal can be confirmed or rejected")
+    step1a_root(Path(args.out).parent, document["ghsa_id"], direct=True)
     record = {"record_type": "ghsa_confirmation", "ghsa_id": document["ghsa_id"], "decision_digest": document["decision_digest"],
               "decision": args.decision, "reason": args.reason, "recorded_at_utc": utc_now()}
     dump_private(args.out, record)
     return {"status": "COMPLETE", "decision": args.decision, "decision_digest": document["decision_digest"]}
+
+
+OWNER_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def json_escape(char: str) -> str:
+    code = ord(char)
+    if code > 0xFFFF:  # JSON writes characters outside the BMP as a surrogate pair
+        code -= 0x10000
+        return "\\u%04x\\u%04x" % (0xD800 + (code >> 10), 0xDC00 + (code & 0x3FF))
+    return "\\u%04x" % code
+
+
+def one_line_json(value: Any) -> str:
+    """JSON with every control, format, and line or paragraph separator escaped (json.dumps leaves U+2028, U+2029, C1
+    controls, and bidirectional overrides raw), so a value can neither forge a line nor reorder or recolor one on a terminal."""
+    text = json.dumps(value, ensure_ascii=False)
+    return "".join(json_escape(char) if unicodedata.category(char) in ("Cc", "Cf", "Zl", "Zp") else char for char in text)
+
+
+def leg_line(check: dict[str, Any] | None, leg: str, issue_id: str, native_provider: str = "") -> str:
+    if check is None:
+        return f"{leg}: not run"
+    who = f"{leg} ({check.get('provider', '')} {check.get('model', '')})" + (" [fallback model]" if check.get("fallback_model") else "")
+    if check.get("fallback_model") and not check.get("fallback_use_permitted"):  # dispositions counts it as no answer
+        who += " (not counted: fallback not permitted)"
+    elif leg == "cross" and not distinct_providers(native_provider, str(check.get("provider", ""))):
+        who += " (not counted: same provider as native)"
+    answer = (check.get("answers") or {}).get(issue_id)
+    if check.get("effective_status") != "COMPLETE" or not isinstance(answer, dict):
+        return f"{who}: no usable answer ({check.get('effective_status', '')})"
+    return f"{who}: {answer.get('covered', '')}: {one_line_json(answer.get('reason', ''))}"
+
+
+def command_brief(args: argparse.Namespace) -> dict[str, Any]:
+    captures = load(args.captures) if args.captures else {}
+    lines = ["# Step 1a decision brief",
+             "Rendered by ghsa-dedup.py brief for the human decision. Provider reasons are model-written and report comments "
+             "are untrusted report data; both appear as one-line JSON strings.", ""]
+    reports, awaiting = [], []
+    for path in args.dispositions:
+        document = load(path)
+        if not isinstance(document, dict) or document.get("record_type") != "ghsa_dispositions":
+            raise UsageError(f"{path} is not a dispositions document")
+        ghsa_id, compare_dir = document["ghsa_id"], Path(path).parent / "compare"
+        pairs = document.get("depends_on", {}).get("pairs", {})
+        loaded: dict[str, tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any]]] = {}
+
+        def legs(earlier: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any]]:
+            """The pair's checks, refused when they differ from what dispositions read, so no reason shown is stale."""
+            if earlier not in loaded:
+                deps = pairs.get(earlier)
+                directory = compare_dir / earlier
+                native, cross = directory / "native.check.json", directory / "cross.check.json"
+                current = (file_sha256(native) if native.exists() else "", file_sha256(cross) if cross.exists() else "")
+                if deps is None or current != (deps.get("native_check_sha256", ""), deps.get("cross_check_sha256", "")):
+                    raise UsageError(f"{ghsa_id}: the comparison checks for {earlier} differ from those dispositions read; rerun dispositions")
+                loaded[earlier] = (load(native) if native.exists() else None, load(cross) if cross.exists() else None,
+                                   load(directory / "compare.meta.json"))
+            return loaded[earlier]
+
+        def answers(earlier: str, issue_id: str) -> list[str]:
+            native, cross, _ = legs(earlier)
+            native_provider = str((native or {}).get("provider", ""))
+            return ["    " + leg_line(native, "native", issue_id), "    " + leg_line(cross, "cross", issue_id, native_provider)]
+
+        for earlier in pairs:  # every pair dispositions read, referenced or not, so neither a reason nor the verdict is stale
+            legs(earlier)
+        status, confirmation = document.get("analysis_status"), document.get("confirmation", {})
+        lines += [f"## {ghsa_id}",
+                  f"Verdict: {document.get('verdict')} | analysis status: {status} | review leg (cross_leg): {document.get('cross_leg')} "
+                  f"| decision digest: {document.get('decision_digest')}"]
+        if document.get("rerun_pairs"):
+            lines.append("Rerun pairs (the earlier report changed after a YES): " + ", ".join(document["rerun_pairs"]))
+        lines.append("Issues:")
+        for item in document.get("issues", []):
+            if not item.get("technical"):
+                continue
+            issue_id = item["issue_id"]
+            lines.append(f"- {issue_id} {item['disposition']}: {one_line_json(item['mechanism'])}")
+            if item.get("canonical"):
+                also = item.get("also_covered_by") or []
+                lines.append(f"  canonical: {item['canonical']}" + (f" (also covered by: {', '.join(also)})" if also else ""))
+                lines += answers(item["canonical"], issue_id)
+            for entry in item.get("unresolved", []):
+                lines.append(f"  unresolved against {entry['earlier_ghsa_id']} ({entry['reason']})")
+                lines += answers(entry["earlier_ghsa_id"], issue_id)
+            for earlier in item.get("published_matches", []):
+                lines.append(f"  published match (possible regression or incomplete fix): {earlier}")
+                lines += answers(earlier, issue_id)
+            for earlier in item.get("closed_matches", []):
+                repository = str(legs(earlier)[2].get("repository", ""))
+                if not OWNER_REPO.match(repository):
+                    raise UsageError(f"{earlier}: the comparison packet names no OWNER/REPO repository")
+                link = "/".join(("https://github.com", repository, "security", "advisories", earlier))
+                lines.append(f"  closed match: {earlier} {link}")
+                lines += answers(earlier, issue_id)
+                if args.captures:
+                    if earlier not in captures:
+                        raise UsageError(f"the captures map has no capture for {earlier}")
+                    capture = load(captures[earlier])
+                    if capture.get("advisory", {}).get("ghsa_id") != earlier:
+                        raise UsageError(f"the capture given for {earlier} is for another advisory")
+                    comments = [c.get("body", "") for c in capture.get("advisory", {}).get("comments", []) or []
+                                if isinstance(c, dict) and c.get("body")]
+                    changed = rendered_sha256(capture) != pairs.get(earlier, {}).get("x_rendered_sha256")
+                    lines.append("    last captured comment (untrusted report data): "
+                                 + (one_line_json(comments[-1]) if comments else "none captured")
+                                 + (" (capture changed since the comparison)" if changed else ""))
+                else:
+                    lines.append("    last captured comment: not shown (pass --captures)")
+            for entry in item.get("information", []):
+                lines.append(f"  information: {entry['earlier_ghsa_id']} ({entry['role']}, {entry['reason']})")
+        ignored = document.get("ignored", [])
+        if ignored:
+            lines.append("Ignored (kinds): " + "; ".join(f"{entry['issue_id']} (native {entry['kinds'].get('native', '')}, cross "
+                                                        f"{entry['kinds'].get('cross', '')})" for entry in ignored))
+        if document.get("fix_guidance"):
+            lines.append("Fix guidance for the fix author: " + ", ".join(document["fix_guidance"]))
+        if status == "AWAITING_CONFIRMATION":
+            if confirmation.get("stale"):
+                lines.append("An earlier confirmation no longer matches this decision (the dispositions changed); decide again.")
+            lines.append(f"Decision: CONFIRMED | REJECTED (record it with ghsa-dedup.py confirm --dispositions {path})")
+            lines.append("Decision required: until it is recorded and dispositions is rerun, this report is not analyzed and "
+                         "gets no H4 draft and no write-back.")
+            awaiting.append(ghsa_id)
+        elif confirmation.get("applied"):
+            lines.append(f"Decision applied: {confirmation['decision']}, reason {one_line_json(confirmation.get('reason', ''))}, "
+                         f"recorded {confirmation.get('recorded_at_utc', '')}")
+        lines.append("")
+        reports.append(ghsa_id)
+    out = Path(args.out)
+    restricted_dir(out.parent)
+    write_text_private(out, "\n".join(lines))
+    return {"status": "COMPLETE", "reports": len(reports), "awaiting_confirmation": awaiting, "out": str(out)}
 
 
 def main() -> int:
@@ -500,9 +663,12 @@ def main() -> int:
     p = sub.add_parser("confirm"); p.add_argument("--dispositions", required=True)
     p.add_argument("--decision", required=True, choices=["CONFIRMED", "REJECTED"]); p.add_argument("--reason", required=True)
     p.add_argument("--out", required=True)
+    p = sub.add_parser("brief"); p.add_argument("--dispositions", required=True, action="append", help="a step1a/dispositions.json; repeat per report")
+    p.add_argument("--captures", help="captures map, to show each closed match's last captured comment")
+    p.add_argument("--out", required=True, help="text file for the human; it may name other advisories")
     args = parser.parse_args()
     handlers = {"records": command_records, "compare-plan": command_compare_plan, "dispositions": command_dispositions,
-                "confirm": command_confirm}
+                "confirm": command_confirm, "brief": command_brief}
     try:
         outcome = handlers[args.command](args)
     except (UsageError, KeyError, TypeError, IndexError, AttributeError, OSError) as error:

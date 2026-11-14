@@ -228,9 +228,9 @@ Ignored issues (kinds) and fix guidance for the fix author:
 ```
 
 ```text
-Obvious-duplicate confirmations (one brief per batch) — per report: advisory ID, each issue with its canonical,
+Obvious-duplicate confirmations (one brief per batch, rendered by ghsa-dedup.py brief) — per report: advisory ID, each issue with its canonical,
 both providers' reasons (from the comparison checks), cross_leg, ignored issues and fix guidance,
-published matches (possible regression or incomplete fix) and closed matches with their closing comment:
+unresolved entries, published matches (possible regression or incomplete fix), and closed matches with their advisory link and last captured comment:
 Human decision per report: CONFIRMED | REJECTED, reason, decision digest, recorded at:
 ```
 

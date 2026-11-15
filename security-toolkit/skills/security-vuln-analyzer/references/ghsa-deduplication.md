@@ -38,7 +38,7 @@ default-branch commit at the advisory's creation time, and post-fix coverage che
 
 ## Steps
 
-| Step | Who | Command | Output (conventional name in `<run>/step1a/`) |
+| Step | Who | Command | Output (in `<run>/step1a/`; file names conventional) |
 |---|---|---|---|
 | 1. Issue listing | Native provider | `intake-check.py issue-packet`, then `issue-check` | `issue.check.json` |
 | 2. Issue review | Cross provider, cold | `intake-check.py review-packet`, then `review-check` | `review.check.json` |
@@ -58,6 +58,11 @@ packet to have been built from the same capture; `issues` requires the review an
 classification to belong to that native listing (and review); `dispositions` requires each
 comparison packet to match the planned pair and the current issue list, each leg check to answer
 that packet, and each earlier advisory's current capture to have the state the plan recorded.
+Every step 1a output must lie in `<run>/step1a/` of a run directory whose
+`intake/intake-record.json` captures the same advisory, and a comparison packet must be in
+`step1a/compare/<earlier GHSA ID>/` for its own earlier report (`dispositions --compare-dir` must
+be the `compare/` directory in the same `step1a/` as its `--out`); the commands refuse any other
+location, because queue selection looks only for `dispositions.json` in each run's `step1a/`.
 Other digests in packet metadata and checks are recorded for audit only. Every directory is
 created with mode 700 and every file 600.
 
@@ -100,7 +105,9 @@ brief, and fix-guidance issues go to the fix author.
 (`ghsa-fetch.py queue --state all`), since a filtered listing would omit comparison candidates.
 The later report must be in the listing
 in triage or draft state, and each earlier capture's description digest and `updated_at` must
-match its listing entry (otherwise the command asks for a recapture).
+match its listing entry (otherwise the command asks for a recapture). Every listed advisory
+appears in the plan, either under `planned` or under `excluded` with its reason, including the
+report itself.
 
 | Earlier advisory (by `created_at`, then GHSA ID) | Role | Effect of a match |
 |---|---|---|
@@ -149,22 +156,39 @@ unresolved outcome, and `NEW` when none did. Non-technical issues are `IGNORED`.
 
 `analysis_status` is `AWAITING_CONFIRMATION` for an obvious-duplicate proposal without a current
 confirmation: the report is neither analyzed nor paused for missing evidence until the human
-decides. Otherwise it is `READY`. Covered issues of a partial report skip analysis without a
-separate confirmation; the write-back brief lists them.
+decides. A current `CONFIRMED` decision makes it `NO_ANALYSIS` (nothing is analyzed and
+`records` does not run; H4 may still draft a "previously reported" comment). Otherwise, including
+after a current `REJECTED` decision, it is `READY`. Covered issues of a partial report skip
+analysis without a separate confirmation; the write-back brief lists them.
 
 ## Confirmation
 
 Queue mode continues past obvious-duplicate proposals and presents them in one decision brief at
-the end of step 1a. For each report the brief shows every issue with its canonical, both
-providers' reasons (from the check files), `cross_leg`, ignored issues and fix guidance, and
-published and closed matches. `confirm` records `CONFIRMED` or `REJECTED`, a reason, and the
+the end of step 1a, rendered by `ghsa-dedup.py brief --dispositions <dispositions.json> --out
+<file>` (repeat `--dispositions` for each report; add `--captures <map>` to show each closed
+match's last captured comment). For each report the brief shows the verdict, analysis status,
+`cross_leg`, and decision digest; for each technical issue, its canonical and `also_covered_by`;
+both providers' answers and reasons for the canonical pair, for each unresolved entry, and for
+each published or closed match; a link to each closed-match advisory; `information` entries;
+ignored issues with their kinds; fix guidance; and a decision line for each proposal awaiting
+confirmation (or the decision already applied), with a warning that until the decision is
+recorded and `dispositions` is rerun, the report is not analyzed and gets no H4 draft or
+write-back. A leg that `dispositions` did not count is labeled ("not counted: fallback not
+permitted" or "same provider as native"). It reads the checks in `compare/` beside each
+dispositions file and refuses when any pair's checks differ from what `dispositions` read,
+whether or not the brief prints that pair, so rerun `dispositions` first. With `--captures` it
+refuses a capture for another advisory, and marks a closed match's comment "(capture changed
+since the comparison)" when the capture no longer matches the text the providers compared. The
+brief names other advisories and is for the human only: keep it in the restricted run root and
+never send it to a model. `confirm` records `CONFIRMED` or `REJECTED`, a reason, and the
 dispositions' `decision_digest`: a digest of what the human judged, namely the verdict, each
 issue's disposition and canonical, the issue list, and each canonical's rendered text, with no
 timestamps. Additional covering reports (`also_covered_by`) are listed in the brief but are not
 part of the digest. `dispositions --confirmation` accepts only `CONFIRMED` or `REJECTED` for the
 same report and applies the decision only when the digest still matches: confirmed means no
-analysis, and rejected sends every technical issue to analysis. A re-listed report, an edited
-canonical, or any other change to the decision voids the confirmation (`confirmation.stale`).
+analysis (`NO_ANALYSIS`), and rejected sends every technical issue to analysis (`READY`). A
+re-listed report, an edited canonical, or any other change to the decision voids the
+confirmation (`confirmation.stale`).
 
 ## Reruns
 

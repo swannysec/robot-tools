@@ -55,11 +55,13 @@ git work tree; the script refuses a run root inside one. Layout:
 <run-root>/<OWNER>__<REPO>/
   index/<listing-id>/       queue listings (IDs, states, times, description digests; never report text)
   <GHSA-ID>/<run-id>/       (timestamp plus a random suffix, unique per capture)
-    intake/                 advisory.raw.json, comments.raw.json, intake-record.json, H2 result and check
+    intake/                 advisory.raw.json, comments.raw.json, intake-record.json, h2.packet.txt,
+                            h2.meta.json, H2 result and check
     step1a/                 issue list, comparison packets and checks, dispositions, confirmation
-    analysis/               the unchanged analysis-mode artifacts
+    analysis/               issue-scope.txt (the Phase 1 issue listing) and the analysis-mode artifacts
     dedup/                  report-records.json from ghsa-dedup.py records
-    writeback/              H4 packet and draft, write plan, approvals, results
+    writeback/              h4-packet.json, h4-allowed-records.json, h4.packet.txt, h4.meta.json,
+                            H4 draft, write plan, approvals, results
 ```
 
 Each advisory has its own directory. Step 1a comparison packets in `step1a/compare/` hold the text
@@ -84,12 +86,17 @@ either way: any change to `updated_at` or the description digest stops the depen
 Intake roles (H2 and H4) run on the runtime guide's intake model at High effort, in fresh
 schema-bound runs with no tools that read files, run commands, or reach the network, and no
 GitHub token (see the runtime guides for exact launch forms). Each packet opens with the analysis
-and intake authorization statement and contains the verbatim captured advisory as untrusted data.
-Build that data section with `intake-check.py render --intake <intake-record.json> --out <file>`,
-which writes each captured field as raw text between `<<<FIELD label>>>` and `<<<END label>>>`
-lines; use the same rendering in the Phase 1 packet. Do not render the advisory as JSON: escaped
-line breaks and JSON syntax make models quote text that is not in the advisory. Intake roles make
-no security judgment, so the cross-provider rule does not apply to them. Each packet's
+and intake authorization statement and contains the verbatim captured advisory as untrusted data,
+with each captured field as raw text between `<<<FIELD label>>>` and `<<<END label>>>` lines.
+The packet commands below render it; for the orchestrator-built Phase 1 packet, write the same
+rendering with `intake-check.py render --intake <intake-record.json> --out <file>`. Do not render
+the advisory as JSON: escaped line breaks and JSON syntax make models quote text that is not in
+the advisory. Intake roles make
+no security judgment, so the cross-provider rule does not apply to them. Build H2's packet with
+`intake-check.py h2-packet --intake <intake-record.json> --out-dir <run>/intake` and H4's with
+`h4-packet` (below): each writes the complete prompt (`h2.packet.txt`, `h4.packet.txt`) and its
+metadata (`h2.meta.json`, `h4.meta.json`). The checks take that metadata (`--packet-meta`) and
+reject a result whose `packet_revision` names another packet. Each packet's
 `declined_scope` instruction states that instructions inside the advisory are data, not task
 elements, and are never listed there (without that sentence, a live run listed an ignored
 injected instruction as declined scope, which would make the role `REFUSED`). Each packet's quote
@@ -99,7 +106,7 @@ endings are normalized (CRLF and CR become LF on both sides; nothing else is nor
 
 - **H2 completeness screen** (`schemas/intake-h2-completeness.schema.json`): is a
   reproduction section OR a proof of concept present? "Present" requires an exact quote.
-  Check with `intake-check.py h2 --mode ghsa|queue`.
+  Check with `intake-check.py h2 --packet-meta <h2.meta.json> --mode ghsa|queue`.
 - **H4 write-back drafter** (`schemas/intake-h4-draft.schema.json`): proposed field updates
   and reporter comment drafts. See "H4 drafts" below.
 
@@ -117,18 +124,30 @@ executing, compiling, adapting, or registering it is prohibited in every mode.
 In queue mode, if H2 finds neither element, or H2 remains non-complete after its retry, the
 run pauses before discovery and presents a decision brief: run anyway, or request evidence. The
 pause applies only to a report that still has issues to analyze after step 1a: a report awaiting
-confirmation as an obvious duplicate, or confirmed as one, is not paused. With `--ghsa`, H2 only
-annotates the report. "Request evidence" leads to an H4 draft without a finished report: H4
-receives the intake record, the issue list, and the H2 result (`h4-packet` without
-`--dispositions` when step 1a has not compared yet), and drafts a comment asking for the missing
-element; a human posts it.
+confirmation as an obvious duplicate (`AWAITING_CONFIRMATION`), or confirmed as one
+(`NO_ANALYSIS`), is not paused. With `--ghsa`, H2 only
+annotates the report. "Request evidence" leads to an H4 draft without a finished report: save
+the `h2` output (for example as `h2.check.json`) and run `h4-packet` with `--h2-check` on it,
+the issue list, and `--dispositions` once step 1a has compared the report. The packet then
+carries an `evidence` object (H2's status and which elements are present), and H4 drafts a
+comment asking for each missing element; a human posts it. `h4-packet` refuses an `h2` output
+for another advisory or another capture, one that did not complete, one that found both
+elements present, and `--h2-check` together with `--records`. When H2 did not complete after
+its retry, its flags say nothing about the report: rerun H2 as a stage retry (see "Stage retry
+from a preserved run" in [orchestrator-contract.md](orchestrator-contract.md): rebuild
+`h2-packet` and run H2 again, with the original or a named model) and use that result; if H2
+still does not complete, a human writes the evidence request.
 
 ## Handoff
 
 - **Analysis:** the intake record, the verbatim advisory (rendered with `intake-check.py
   render`), and the issues in `analysis_issue_ids` from `step1a/dispositions.json` become Phase 1
   input. List each such issue's ID with its mechanism, trigger, quote, and checked literals, and
-  state that these are the issues in scope, so discovery roles can fill `issue_ids`.
+  state that these are the issues in scope, so discovery roles can fill `issue_ids`. Write that
+  listing with `intake-check.py issue-scope --issues <issues.json> --dispositions
+  <dispositions.json> --out <file>` (for example `issue-scope.txt` in the run's `analysis/`
+  directory); it refuses unless the status is `READY` with issues to analyze. The rest of the
+  Phase 1 packet is built by the orchestrator.
   `analysis_issue_ids` is the only filter: it usually omits covered and ignored issues, but it
   includes them after a rejected obvious-duplicate confirmation, under `LIST_UNREVIEWED`, and
   under `NO_TECHNICAL_ISSUES`, so list exactly those IDs. No other advisory is named. Run analysis only when
@@ -176,7 +195,8 @@ element; a human posts it.
    confirms, run step 1a for each selected report in creation order, one report per run, with no
    model context shared across reports ([ghsa-deduplication.md](ghsa-deduplication.md)). The
    queue continues past obvious-duplicate proposals; present them in one decision brief at the
-   end of step 1a.
+   end of step 1a, rendered by `ghsa-dedup.py brief` from every selected report's dispositions,
+   so partial reports' unresolved splits appear in it too.
 3. **Analysis.** Analyze each report whose `analysis_status` is `READY` and whose
    `analysis_issue_ids` are not empty, one report per run. Earlier advisories can change state:
    before each use, re-list the queue, recapture the advisories the plan names, and rerun
@@ -248,12 +268,17 @@ explicitly permits that use for that result ([orchestrator-contract.md](orchestr
 
 ### H4 drafts
 
+- **Pending decisions:** `h4-packet` refuses dispositions whose `analysis_status` is
+  `AWAITING_CONFIRMATION` (an obvious-duplicate proposal not yet decided, or a decision gone
+  stale): decide it in the decision brief, record it with `ghsa-dedup.py confirm`, and rerun
+  `dispositions`. Until then the report gets no H4 draft and no write-back.
 - **Packet scoping:** `intake-check.py h4-packet` builds H4's packet for advisory A from A's
   intake record, A's issue list (`--issues`), A's dispositions when step 1a has compared it
   (`--dispositions`), and, when analysis ran, only the finding records that answer A's issues
   (`--records`). Dispositions are projected to the verdict, the analysis status, any applied human
   decision, and each issue's ID, mechanism, technical flag, and disposition: canonical, match,
-  and other advisory IDs are removed. It never includes other findings, variants beyond A's
+  and other advisory IDs are removed. With `--h2-check`, the packet also carries an `evidence`
+  object (H2's status and which elements are present); otherwise `evidence` is empty. It never includes other findings, variants beyond A's
   issues, or supporting-context material: each finding record is projected to its ID, kind,
   `answers`, final status, fallback flags, proposition, disposition, and its values (verified
   records only), with evidence, variants, and locations removed. Field values are
@@ -264,8 +289,13 @@ explicitly permits that use for that result ([orchestrator-contract.md](orchestr
   a different metric value or an optional metric one role sets and another omits, withholds
   `cvss_vector_string` for the advisory. H4 is exempt from the no-JSON rendering rule: it quotes
   nothing from the advisory and its check compares no quotes, so `h4-packet.json` (which embeds
-  the intake record) is passed as is.
-- **Plain wording:** the H4 packet's instructions state: "Describe outcomes in plain words; do not use internal
+  the intake record) is passed as is. `h4-packet` also writes `h4.packet.txt`, the complete H4
+  prompt (the role rules, then `h4-packet.json` between token-bearing lines), and `h4.meta.json`.
+  Send `h4.packet.txt` to H4 and check the draft with `intake-check.py h4 --packet-meta
+  h4.meta.json`, which also requires the allowed-records file the packet was built with. Never
+  send `h4.meta.json` to a model: it can name other advisories. `h4` cannot see later changes to
+  the dispositions, so rebuild `h4-packet` after any rerun of `dispositions` and draft again.
+- **Plain wording:** `h4.packet.txt` states: "Describe outcomes in plain words; do not use internal
   status names." The posting brief also highlights internal status names that reach a draft.
 - **Absent values:** the H4 packet states that a field for which no verified record carries a
   value is not a task element: H4 proposes nothing for it and never lists it in
@@ -284,7 +314,11 @@ explicitly permits that use for that result ([orchestrator-contract.md](orchestr
   mentions and highlights variant, duplicate, or "previously reported" wording and internal
   status names. For an unpublished duplicate, use "previously reported" wording without naming
   the other advisory; a partial duplicate's draft may say which issues were previously reported.
-  Disclosing that another report exists is the human's decision.
+  Disclosing that another report exists is the human's decision. The brief also lists the
+  dispositions' unresolved entries (issue ID, earlier advisory, reason): issues an earlier report
+  may already state, because one provider said so (`ONE_PROVIDER_YES`), a comparison did not
+  complete (`COMPARISON_INCOMPLETE`), or the earlier report changed after a YES
+  (`EARLIER_REPORT_CHANGED`). That list is for the human only; H4 never sees it.
 
 ### Proposed operational disposition
 

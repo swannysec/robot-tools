@@ -60,7 +60,8 @@ comparison packet to match the planned pair and the current issue list, each leg
 that packet, and each earlier advisory's current capture to have the state the plan recorded.
 Every step 1a output must lie in `<run>/step1a/` of a run directory whose
 `intake/intake-record.json` captures the same advisory, and a comparison packet must be in
-`step1a/compare/<earlier GHSA ID>/` for its own earlier report; the commands refuse any other
+`step1a/compare/<earlier GHSA ID>/` for its own earlier report (`dispositions --compare-dir` must
+be the `compare/` directory in the same `step1a/` as its `--out`); the commands refuse any other
 location, because queue selection looks only for `dispositions.json` in each run's `step1a/`.
 Other digests in packet metadata and checks are recorded for audit only. Every directory is
 created with mode 700 and every file 600.

@@ -389,7 +389,10 @@ def command_dispositions(args: argparse.Namespace) -> dict[str, Any]:
     if issues_doc.get("record_type") != "ghsa_issue_list" or issues_doc.get("status") != "COMPLETE":
         raise UsageError("the issue list is missing or not complete")
     ghsa_id = issues_doc["ghsa_id"]
-    step1a_root(Path(args.out).parent, ghsa_id, direct=True)
+    root = step1a_root(Path(args.out).parent, ghsa_id, direct=True)
+    if Path(args.compare_dir).resolve() != root / "compare":  # brief reads the checks beside the dispositions file
+        raise UsageError("--compare-dir must be the compare/ directory inside the same step1a/ as --out, "
+                         "so dispositions and the decision brief read the same comparison checks")
     if plan.get("record_type") != "ghsa_compare_plan" or plan.get("later_ghsa_id") != ghsa_id:
         raise UsageError("the comparison plan is for another report")
     issues_sha = file_sha256(args.issues)

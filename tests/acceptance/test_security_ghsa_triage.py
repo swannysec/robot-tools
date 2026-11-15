@@ -1699,6 +1699,18 @@ class Step1aLocationTest(DedupWorkspace):
                      "--compare-dir", self.compare_dir, "--out", other)
         self.assertFalse(misplaced.exists())
 
+    def test_dispositions_reads_only_its_own_compare_dir(self):
+        self.case({"base": (BOTH, BOTH)})
+        other_run = self.records["base"][0].parent / "step1a" / "compare"  # another run directory's comparisons
+        for source in (self.step / "old-compare", other_run):
+            with self.subTest(compare_dir=str(source.relative_to(self.tmp))):
+                shutil.copytree(self.compare_dir, source)
+                code, out, err = run("ghsa-dedup.py", "dispositions", "--issues", self.step / "issues.json", "--plan", self.step / "compare-plan.json",
+                                     "--compare-dir", source, "--out", self.step / "dispositions.json")
+                self.assertEqual(code, 2, out or err)
+                self.assertIn("compare/ directory inside the same step1a/", err)
+        self.assertEqual(self.dispositions()["verdict"], "OBVIOUS_DUPLICATE")  # its own compare/ still works
+
     def test_location_helper_matches_across_scripts(self):
         intake_check = runpy.run_path(str(SCRIPTS / "intake-check.py"))
         cases = [(self.step / "issue.packet.txt", self.ghsa, False), (self.step / "compare" / "X" / "native.check.json", self.ghsa, False),

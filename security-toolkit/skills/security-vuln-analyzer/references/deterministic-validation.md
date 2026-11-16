@@ -30,7 +30,7 @@ registered before discovery. Record the SHA-256 of the complete registry bytes i
 discovery packet and do not modify the registry after dispatch. Before any test enters a
 registry (pre-discovery, supplemental, or `--develop-fix`), when the finding came from a GHSA
 advisory, run `scripts/intake-check.py poc-overlap --intake <intake-record.json>` on each test
-source file; `REJECT` blocks registration. The check matches long verbatim spans from any
+source file; `REJECT` blocks registration. Its output names the advisory (`ghsa_id`) and the test file's digest (`test_file_sha256`), so `currency-check.py test-result` can bind an `ACCEPT` to that advisory and file. The check matches long verbatim spans from any
 captured advisory field (summary, description, comments); outside GHSA mode, or for a reworded
 copy, the execution prohibition in `orchestrator-contract.md` is the only safeguard, so the
 test author must write tests from the frozen contract, never from a reporter's proof of

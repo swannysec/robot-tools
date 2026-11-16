@@ -206,14 +206,15 @@ def command_records(args: argparse.Namespace) -> dict[str, Any]:
             "fallback_model": bool(entry and entry.get("fallback_model")),
             "fallback_use_permitted": bool(entry and entry.get("fallback_use_permitted")),
             "normalized_proposition": item["normalized_proposition"], "proposed_disposition": item["proposed_disposition"],
-            "values": values,
+            "values": values, "control_site": item.get("control_site", {}),  # the currency check's anchors; H4's projection omits it
         })
         if bridged:
             answered.update(issue_ids)
             if not issue_ids:
                 unassigned.append(record_id)
     out = restricted_dir(Path(args.out_dir))
-    dump(out / "report-records.json", {"repository": args.repository, "ghsa_id": args.ghsa_id, "records": records})
+    dump(out / "report-records.json", {"repository": args.repository, "ghsa_id": args.ghsa_id, "primary_revision": args.primary_revision,
+                                       "issues_sha256": file_sha256(args.issues), "records": records})
     return {"status": "COMPLETE", "records": len(records), "bridged": len(records) - len(not_bridged),
             "issues_without_records": [issue_id for issue_id in analysis_issues if issue_id not in answered],
             "unassigned": unassigned, "not_bridged": not_bridged}

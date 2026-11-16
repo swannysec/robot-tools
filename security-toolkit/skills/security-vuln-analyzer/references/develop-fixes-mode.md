@@ -37,6 +37,97 @@ The deterministic check contract and test evidence states are defined in [determ
 
 Use an isolated branch and the host's enforced sandbox. Phase 1 permits only dependency/toolchain preparation such as `cargo fetch`, build prerequisites, and approved nightly components. Record fetched versions and hashes. Phase 2 disables network access and runs frozen adversarial-input regression tests and benign controls, sink and class coverage, full regression tests, deeper checks, and mutation testing with Cargo offline. Cargo's `--offline` is a package-manager control, not the sandbox boundary; verify the host's network denial is effective. Do not expose user credential directories or permit unsandboxed commands.
 
+## Test-only entry (currency check)
+
+**Status: designed, not yet usable (phase 2b).** `currency-check.py outcome` refuses test results
+in this version, so the currency check's outcomes come from the analyses alone. Known blockers:
+`scripts/deterministic-check.py` binds each frozen-test registry entry to one revision, so one
+test cannot produce a result at both revisions; it reports any nonzero exit as `FAILED`, so a
+test that no longer compiles reads as a failing test; the coverage input is not yet bound to one
+checkout and file; and the sandbox profile below still shares the user's temporary directory and
+has untested gaps (hard links, LaunchServices, launch jobs). The commands and the profile stay in
+the package for phase 2b and are not to be relied on for evidence until then.
+
+The GHSA currency check ([ghsa-currency-check.md](ghsa-currency-check.md)) may ask whether an
+issue that analysis at the current pin did not confirm was fixed since the report. This entry
+answers with a frozen test at two revisions and authors no fix.
+
+**Entry gate.** `--develop-fix --test-only` for one planned issue (listed in the run's currency
+`plan.json`), with the report revision's analysis carrying a converged Invariant + Adversarial
+Test Contract for a `CROSS-MODEL VERIFIED` candidate answering that issue. Before acting, confirm
+with the user the issue, the contract, the two revisions (`report_revision` and `pin` from the
+run's currency `revision.json`), and the cost: one build per revision, both cold when the two
+revisions pin different Rust toolchains. Refuse when the contract is `DISPUTED`, `NOT VERIFIED`,
+or `INCOMPLETE`, or when the target is not Rust. The execution prohibition in
+[orchestrator-contract.md](orchestrator-contract.md) applies in full: tests are written from the
+frozen contract, pass `scripts/intake-check.py poc-overlap`, and never copy or adapt a reporter's
+proof of concept.
+
+**Steps.**
+
+1. **Sandbox.** Choose an empty sandbox directory outside the home directory, the run root, and
+   the clone, and write the Phase 2 profile with `scripts/currency-check.py sandbox-profile
+   --sandbox-dir <dir> --run-root <run root> --repo-dir <clone> --out <file>`. It creates the
+   sandbox's own Cargo home and home directory and reports the environment Phase 2 must set
+   (`HOME`, `RUSTUP_HOME`, `CARGO_HOME`).
+2. **Checkouts.** `currency-check.py checkout --repo-dir <clone> --revision <revision.json>
+   --which report` and `--which pin` make a detached checkout of each endpoint inside the
+   sandbox (`git clone --local --no-hardlinks`, hooks disabled), so `deterministic-check.py` can
+   confirm each checkout's HEAD. The clone itself is only read.
+3. **Freeze.** Freeze the contract and tests as in "Authoring flow" steps 1-3, with the base
+   revision set to `report_revision`. Declare which frozen tests are adversarial-input tests and
+   which are benign controls (at least one of each), and run `intake-check.py poc-overlap` on
+   every test file.
+4. **Phase 1 (network on), per checkout.** Let `rustup` provide the revision's toolchain and run
+   `cargo fetch --locked` with `CARGO_HOME` set to the sandbox's Cargo home, so every dependency is
+   downloaded fresh into the sandbox. A fetch failure that names a missing or older package version
+   may be a package firewall or a registry problem, not the code: check the firewall's events
+   first. If the endpoint still cannot be prepared, its tests are `UNRESOLVED`.
+5. **Phase 2 (network off), per checkout.** Under `sandbox-exec -f <profile>` with the reported
+   environment: run every declared test through `scripts/deterministic-check.py` and collect
+   `cargo-llvm-cov` JSON for the sink, building only the crate under test (`cargo ... -p <crate>
+   --offline --locked`). The two revisions may pin different Rust toolchains; then both builds are
+   cold. `deterministic-check.py` caps a frozen test at 600 seconds and runs outside the profile,
+   so the frozen argument vector itself starts with `sandbox-exec`; build the crate first, under
+   the profile, so the test run does not include a cold build.
+6. **Result.** `currency-check.py test-result` builds the result for the currency check from those
+   outputs alone (see [ghsa-currency-check.md](ghsa-currency-check.md) step 5); never write it by
+   hand. A pass at the pin counts as evidence only when the sink is reached there and the benign
+   controls still pass there.
+
+No fix is authored, no branch is created or landed, and nothing goes to `--verify-fix`. A human
+reviews the frozen tests with the currency brief: a test that passes at the pin is evidence that
+the behavior changed, and only the human decides that the issue was fixed.
+
+**Sandbox profile (macOS Seatbelt, v1).** Every compiled dependency's build scripts and
+procedural macros run inside this profile, so it is the boundary for third-party code. It allows
+everything except:
+
+- all network access, LaunchServices (`lsopen`), and Apple events (handing work to an
+  unsandboxed process);
+- reads of the whole home directory, except the home directory entry itself, the rustup home, and
+  the rustup proxies directory; and reads of credential paths (`.ssh`, `.aws`, `.gnupg`,
+  `.netrc`, `.git-credentials`, `.docker`, Cargo's credentials, the GitHub CLI and 1Password CLI
+  configuration, the keychains), the run root, and the clone, each also at its real path when it
+  is a symbolic link;
+- writes anywhere other than the sandbox directory, the temporary directory, and the null,
+  terminal, and descriptor devices. The Cargo and rustup homes in the home directory are not
+  writable; the user's temporary directory is shared and writable, so a build script's writes can
+  persist there (moving `TMPDIR` into the sandbox is a phase 2b item).
+
+Paths are resolved, because Seatbelt matches real paths. The command refuses a sandbox directory
+inside, or containing, the home directory, the run root, or the clone. Verified on macOS on
+2026-11-16 with a real Rust workspace checkout: under this profile, network access, a credential file, an
+ordinary home file, the run root, and a write to the home directory were denied; a write in the
+sandbox directory and reads of the toolchain were allowed; and with the reported environment, an
+offline `cargo test --no-run` of one crate completed from a Cargo home filled by a fresh Phase 1
+fetch. Without the sandbox's own `HOME`, the same build failed: Cargo's git library could not
+read the real home's configuration and reported a git dependency as needing an update. The
+`lsopen` and `appleevent-send` denials were not tested live. A microVM is the v2 hardening.
+
+Other hosts (Linux, Codex's own sandbox) are not verified for this entry; on them, run the
+test-only entry only after an equivalent denial check.
+
 ## Candidate-patch provenance
 
 Render, without inventing missing values:

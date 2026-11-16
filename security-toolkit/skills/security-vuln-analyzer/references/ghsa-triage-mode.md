@@ -102,11 +102,21 @@ elements, and are never listed there (without that sentence, a live run listed a
 injected instruction as declined scope, which would make the role `REFUSED`). Each packet's quote
 instruction also states that a multi-line quote keeps every line's leading whitespace exactly as
 rendered. Every quote must be an exact substring of one captured advisory field after line
-endings are normalized (CRLF and CR become LF on both sides; nothing else is normalized).
+endings are normalized (CRLF and CR become LF on both sides; nothing else is normalized). H2's
+check is the one exception, below.
 
 - **H2 completeness screen** (`schemas/intake-h2-completeness.schema.json`): is a
-  reproduction section OR a proof of concept present? "Present" requires an exact quote.
-  Check with `intake-check.py h2 --packet-meta <h2.meta.json> --mode ghsa|queue`.
+  reproduction section OR a proof of concept present? "Present" requires a quote from the
+  advisory. Check with `intake-check.py h2 --packet-meta <h2.meta.json> --mode ghsa|queue`.
+  H2 decides only whether queue mode pauses for missing evidence, never a finding, so its check
+  compares every run of whitespace as one space, and it judges each element on its own: an
+  element whose quote matches is present; one marked present whose quote does not match is
+  listed in the output's `unverified`, counts as not present, and is explained in `warnings`.
+  A failed quote does not fail the screen when the other element is present. When no element
+  matches and a quote failed, the result is `MALFORMED` (the message is in `errors`) and the
+  stage retry runs. The output fields are `check`, `effective_status`, `errors`, `warnings`,
+  `mode`, `ghsa_id`, `intake_sha256`, `packet_revision`, `present`, `unverified`,
+  `pause_decision`, `reason`, and `declined_scope`.
 - **H4 write-back drafter** (`schemas/intake-h4-draft.schema.json`): proposed field updates
   and reporter comment drafts. See "H4 drafts" below.
 
@@ -132,8 +142,9 @@ the issue list, and `--dispositions` once step 1a has compared the report. The p
 carries an `evidence` object (H2's status and which elements are present), and H4 drafts a
 comment asking for each missing element; a human posts it. `h4-packet` refuses an `h2` output
 for another advisory or another capture, one that did not complete, one that found both
-elements present, and `--h2-check` together with `--records`. When H2 did not complete after
-its retry, its flags say nothing about the report: rerun H2 as a stage retry (see "Stage retry
+elements present, one with an `unverified` element (the reporter may already have supplied it,
+so a human reviews the report first), and `--h2-check` together with `--records`. When H2 did
+not complete after its retry, its flags say nothing about the report: rerun H2 as a stage retry (see "Stage retry
 from a preserved run" in [orchestrator-contract.md](orchestrator-contract.md): rebuild
 `h2-packet` and run H2 again, with the original or a named model) and use that result; if H2
 still does not complete, a human writes the evidence request.
@@ -277,7 +288,9 @@ explicitly permits that use for that result ([orchestrator-contract.md](orchestr
   (`--dispositions`), and, when analysis ran, only the finding records that answer A's issues
   (`--records`). Dispositions are projected to the verdict, the analysis status, any applied human
   decision, and each issue's ID, mechanism, technical flag, and disposition: canonical, match,
-  and other advisory IDs are removed. With `--h2-check`, the packet also carries an `evidence`
+  and other advisory IDs are removed. After an applied `REJECTED` decision, a covered issue's
+  disposition is projected as `NEW (decision rejected)`, so no issue reaches H4 as covered.
+  With `--h2-check`, the packet also carries an `evidence`
   object (H2's status and which elements are present); otherwise `evidence` is empty. It never includes other findings, variants beyond A's
   issues, or supporting-context material: each finding record is projected to its ID, kind,
   `answers`, final status, fallback flags, proposition, disposition, and its values (verified

@@ -178,6 +178,20 @@ def is_exact_quote(text: str, fields: list[str]) -> bool:
     return bool(text) and any(text in field for field in fields)
 
 
+def collapse_whitespace(text: str) -> str:
+    return " ".join(normalize_newlines(text).split())
+
+
+def is_h2_quote(text: str, collapsed_fields: list[str]) -> bool:
+    """H2 only: substring match with every whitespace run compared as one space. H2 decides only whether queue mode pauses
+    for missing evidence, never a finding, so a quoting slip in spacing should not pause a report; step 1a quotes stay exact."""
+    quote = collapse_whitespace(text)
+    return bool(quote) and any(quote in field for field in collapsed_fields)
+
+
+H2_ELEMENTS = ("reproduction_steps", "proof_of_concept")
+
+
 def effective_status(result: Any, errors: list[str]) -> str:
     if isinstance(result, dict) and result.get("declined_scope"):
         return "REFUSED"
@@ -198,28 +212,42 @@ def command_h2(args: argparse.Namespace) -> dict[str, Any]:
     if meta.get("intake_sha256") != file_digest(args.intake):
         raise UsageError("the packet was built from a different capture of this advisory")
     errors = schema_errors(result, load_schema("intake-h2-completeness.schema.json"))
+    unverified: list[str] = []
+    warnings: list[str] = []
     if not errors:
-        fields = captured_fields(intake)
+        collapsed = [collapse_whitespace(field) for field in captured_fields(intake)]
         check_identity(result, intake, errors)
         check_revision(result, meta, errors)
-        for element in ("reproduction_steps", "proof_of_concept"):
+        for element in H2_ELEMENTS:
             record = result[element]
-            if record["present"] and not is_exact_quote(record["quote"], fields):
-                errors.append(f"{element}: 'present' requires a non-empty exact quote")
+            if record["present"] and not is_h2_quote(record["quote"], collapsed):
+                unverified.append(element)
             if not record["present"] and record["quote"]:
                 errors.append(f"{element}: absent element must have an empty quote")
+        # Each element is judged on its own: one verified element completes the screen and the other is reported as
+        # unverified; with no verified element, a failed quote makes the result MALFORMED so the stage retry runs.
+        messages = [f"{element}: the quote is not a substring of any captured field (whitespace runs compared as one space)"
+                    for element in unverified]
+        if any(result[element]["present"] and element not in unverified for element in H2_ELEMENTS):
+            warnings = messages
+        else:
+            errors += messages
     status = effective_status(result, errors)
-    neither = status == "COMPLETE" and not result["reproduction_steps"]["present"] and not result["proof_of_concept"]["present"]
+    if status != "COMPLETE":
+        errors += [message for message in warnings if message not in errors]
+        unverified, warnings = [], []
+    present = {element: status == "COMPLETE" and bool(result[element]["present"]) and element not in unverified
+               for element in H2_ELEMENTS}
+    neither = status == "COMPLETE" and not any(present.values())
     if args.mode == "queue":
         decision = "PAUSE" if status != "COMPLETE" or neither else "PROCEED"
         reason = "H2 did not complete" if status != "COMPLETE" else "neither reproduction steps nor a proof of concept is present" if neither else ""
     else:
         decision = "ANNOTATE"
         reason = "H2 did not complete" if status != "COMPLETE" else "neither element present" if neither else "element present"
-    present = {element: status == "COMPLETE" and bool(result[element]["present"]) for element in ("reproduction_steps", "proof_of_concept")}
-    return {"check": "h2", "effective_status": status, "errors": errors, "mode": args.mode,
+    return {"check": "h2", "effective_status": status, "errors": errors, "warnings": warnings, "mode": args.mode,
             "ghsa_id": intake.get("advisory", {}).get("ghsa_id", ""), "intake_sha256": meta.get("intake_sha256", ""),
-            "packet_revision": meta.get("packet_revision", ""), "present": present,
+            "packet_revision": meta.get("packet_revision", ""), "present": present, "unverified": unverified,
             "pause_decision": decision, "reason": reason,
             "declined_scope": result.get("declined_scope", []) if isinstance(result, dict) else []}
 
@@ -301,9 +329,13 @@ def command_h4_packet(args: argparse.Namespace) -> dict[str, Any]:
                              "stale): decide it in the decision brief, record it with ghsa-dedup.py confirm, and rerun dispositions; "
                              "until then the report gets no H4 draft and no write-back")
         confirmation = document.get("confirmation", {})
+        human_decision = confirmation.get("decision", "") if confirmation.get("applied") else ""
+        projected = [{key: item[key] for key in DISPOSITION_FIELDS} for item in document.get("issues", [])]
+        if human_decision == "REJECTED":  # the human rejected the coverage, so no issue reaches H4 as covered
+            projected = [dict(item, disposition="NEW (decision rejected)") if item["disposition"] == "COVERED" else item
+                         for item in projected]
         dispositions = {"verdict": document["verdict"], "analysis_status": document["analysis_status"],
-                        "human_decision": confirmation.get("decision", "") if confirmation.get("applied") else "",
-                        "issues": [{key: item[key] for key in DISPOSITION_FIELDS} for item in document.get("issues", [])]}
+                        "human_decision": human_decision, "issues": projected}
     evidence: dict[str, Any] = {}
     if args.h2_check:  # the completeness pause chose "request evidence": H4 asks for what H2 found missing
         if args.records:
@@ -319,6 +351,9 @@ def command_h4_packet(args: argparse.Namespace) -> dict[str, Any]:
             raise UsageError("the H2 screen did not complete, so its flags say nothing about the report: rerun H2 as a stage retry "
                              "(rebuild h2-packet and run H2 again, with the original or a named model) and pass that result; if H2 "
                              "still does not complete, write the evidence request by hand")
+        if h2.get("unverified"):
+            raise UsageError("an element's quote could not be verified; review the report before requesting evidence, since the "
+                             f"reporter may already have supplied it (unverified: {', '.join(map(str, h2['unverified']))})")
         present = h2.get("present", {})
         if present.get("reproduction_steps") is True and present.get("proof_of_concept") is True:
             raise UsageError("H2 found both reproduction steps and a proof of concept; there is no evidence to request")

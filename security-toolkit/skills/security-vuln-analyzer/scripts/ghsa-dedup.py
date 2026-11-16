@@ -492,8 +492,9 @@ def command_dispositions(args: argparse.Namespace) -> dict[str, Any]:
             status = "NO_ANALYSIS" if given["decision"] == "CONFIRMED" else "READY"
             if given["decision"] == "REJECTED":
                 analysis = [record["issue_id"] for record in tech]
-        else:
-            confirmation["stale"] = True
+        else:  # keep what was decided, so the brief can tell the human it no longer applies; only `applied` counts as a decision
+            confirmation = {"applied": False, "stale": True, "decision": given["decision"], "reason": given.get("reason", ""),
+                            "recorded_at_utc": given.get("recorded_at_utc", "")}
     document = {"record_type": "ghsa_dispositions", "ghsa_id": ghsa_id, "verdict": verdict, "cross_leg": issues_doc.get("cross_leg", ""),
                 "analysis_status": status, "analysis_issue_ids": analysis, "issues": out_issues, "ignored": ignored,
                 "fix_guidance": fix_guidance, "rerun_pairs": rerun_pairs, "decision_digest": decision, "confirmation": confirmation,
@@ -580,7 +581,10 @@ def command_brief(args: argparse.Namespace) -> dict[str, Any]:
         for earlier in pairs:  # every pair dispositions read, referenced or not, so neither a reason nor the verdict is stale
             legs(earlier)
         status, confirmation = document.get("analysis_status"), document.get("confirmation", {})
+        run_dir = step1a_root(Path(path).parent, ghsa_id, direct=True).parent  # the context comes from the report's own run
+        pinned = load(run_dir / "intake" / "intake-record.json").get("pinned_target", {})
         lines += [f"## {ghsa_id}",
+                  f"Context: run {run_dir.name}, target {pinned.get('repository', '')} at {pinned.get('revision', '')}, mode GHSA step 1a",
                   f"Verdict: {document.get('verdict')} | analysis status: {status} | review leg (cross_leg): {document.get('cross_leg')} "
                   f"| decision digest: {document.get('decision_digest')}"]
         if document.get("rerun_pairs"):
@@ -626,13 +630,22 @@ def command_brief(args: argparse.Namespace) -> dict[str, Any]:
                 lines.append(f"  information: {entry['earlier_ghsa_id']} ({entry['role']}, {entry['reason']})")
         ignored = document.get("ignored", [])
         if ignored:
+            mechanisms = {item.get("issue_id"): item.get("mechanism", "") for item in document.get("issues", [])}
             lines.append("Ignored (kinds): " + "; ".join(f"{entry['issue_id']} (native {entry['kinds'].get('native', '')}, cross "
-                                                        f"{entry['kinds'].get('cross', '')})" for entry in ignored))
+                                                        f"{entry['kinds'].get('cross', '')}): "
+                                                        f"{one_line_json(mechanisms.get(entry['issue_id'], ''))}" for entry in ignored))
         if document.get("fix_guidance"):
             lines.append("Fix guidance for the fix author: " + ", ".join(document["fix_guidance"]))
+        if confirmation.get("stale"):  # whatever the status: a change can also move the report out of the proposal
+            decided = (f"Recorded decision {confirmation['decision']} (recorded {confirmation.get('recorded_at_utc', '')})"
+                       if confirmation.get("decision") else "A recorded decision")
+            now = (f"The report is now {status}, and the issues in analysis_issue_ids go to analysis." if status == "READY"
+                   else f"The report is now {status}.")
+            lines.append(f"{decided} no longer applies: the dispositions changed after it was recorded. {now}")
         if status == "AWAITING_CONFIRMATION":
-            if confirmation.get("stale"):
-                lines.append("An earlier confirmation no longer matches this decision (the dispositions changed); decide again.")
+            lines.append("Options: CONFIRMED: nothing is analyzed (NO_ANALYSIS); an H4 draft may still say an issue was previously "
+                         "reported. REJECTED: every technical issue goes to analysis (READY), and no issue is treated as previously "
+                         "reported.")
             lines.append(f"Decision: CONFIRMED | REJECTED (record it with ghsa-dedup.py confirm --dispositions {path})")
             lines.append("Decision required: until it is recorded and dispositions is rerun, this report is not analyzed and "
                          "gets no H4 draft and no write-back.")
@@ -642,6 +655,7 @@ def command_brief(args: argparse.Namespace) -> dict[str, Any]:
                          f"recorded {confirmation.get('recorded_at_utc', '')}")
         lines.append("")
         reports.append(ghsa_id)
+    lines[2:2] = [f"Decision needed: {', '.join(awaiting) or 'none'}"]
     out = Path(args.out)
     restricted_dir(out.parent)
     write_text_private(out, "\n".join(lines))

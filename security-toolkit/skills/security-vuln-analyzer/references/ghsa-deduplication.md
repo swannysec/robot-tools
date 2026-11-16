@@ -166,14 +166,23 @@ analysis without a separate confirmation; the write-back brief lists them.
 Queue mode continues past obvious-duplicate proposals and presents them in one decision brief at
 the end of step 1a, rendered by `ghsa-dedup.py brief --dispositions <dispositions.json> --out
 <file>` (repeat `--dispositions` for each report; add `--captures <map>` to show each closed
-match's last captured comment). For each report the brief shows the verdict, analysis status,
-`cross_leg`, and decision digest; for each technical issue, its canonical and `also_covered_by`;
-both providers' answers and reasons for the canonical pair, for each unresolved entry, and for
-each published or closed match; a link to each closed-match advisory; `information` entries;
-ignored issues with their kinds; fix guidance; and a decision line for each proposal awaiting
-confirmation (or the decision already applied), with a warning that until the decision is
-recorded and `dispositions` is rerun, the report is not analyzed and gets no H4 draft or
-write-back. A leg that `dispositions` did not count is labeled ("not counted: fallback not
+match's last captured comment). It opens with a "Decision needed" line naming the reports
+awaiting a decision (or "none"). For each report the brief shows a context line (the run
+directory, the target repository and pinned revision from the run's
+`intake/intake-record.json`, and the mode; `brief` refuses a dispositions file outside a run
+with that capture), the verdict, analysis status, `cross_leg`, and decision digest; for each
+technical issue, its canonical and `also_covered_by`; both providers' answers and reasons for
+the canonical pair, for each unresolved entry, and for each published or closed match; a link to
+each closed-match advisory; `information` entries; ignored issues with their kinds and
+mechanisms; fix guidance; for each proposal awaiting confirmation, the options with their
+consequences (`CONFIRMED`: nothing is analyzed, and an H4 draft may still say an issue was
+previously reported; `REJECTED`: every technical issue goes to analysis, and no issue is treated
+as previously reported) and a decision line, with a warning that until the decision is recorded
+and `dispositions` is rerun, the report is not analyzed and gets no H4 draft or write-back; or the
+decision already applied. When a recorded decision no longer applies (`confirmation.stale`), the
+brief says so for any analysis status, naming the decision, when it was recorded, and the
+report's status now; a report the change moved to `READY` goes to analysis without a new
+decision. A leg that `dispositions` did not count is labeled ("not counted: fallback not
 permitted" or "same provider as native"). It reads the checks in `compare/` beside each
 dispositions file and refuses when any pair's checks differ from what `dispositions` read,
 whether or not the brief prints that pair, so rerun `dispositions` first. With `--captures` it
@@ -211,7 +220,9 @@ rerun step 1a from the listing.
   `analysis_status`, `analysis_issue_ids`, `issues` (`issue_id`, `mechanism`, `technical`,
   `kinds`, `disposition`, `canonical`, `also_covered_by`, `unresolved`, `published_matches`,
   `closed_matches`, `information`), `ignored`, `fix_guidance`, `rerun_pairs`, `decision_digest`,
-  `confirmation`, `depends_on`.
+  `confirmation` (`applied`, `stale`, `decision`, `reason`, `recorded_at_utc`; a stale decision
+  keeps its `decision`, `reason`, and time with `applied` false, and only an applied decision
+  counts), `depends_on`.
 - `confirmation.json`: `record_type` `ghsa_confirmation`, `ghsa_id`, `decision_digest`,
   `decision`, `reason`, `recorded_at_utc`.
 

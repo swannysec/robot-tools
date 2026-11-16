@@ -292,6 +292,84 @@ class IntakeCheckTest(Workspace):
         self.assertEqual(out["effective_status"], "MALFORMED")
         self.assertEqual(out["pause_decision"], "PAUSE")
 
+    def h2_quotes(self, repro, poc, mode="queue", description=None, declined=()):
+        """H2 on the base capture with explicit (present, quote) pairs; `description` replaces the captured text first."""
+        intake_dir, record = self.capture("base")
+        if description is not None:
+            record["advisory"]["description"] = description
+            write(intake_dir / "intake-record.json", record)
+        meta = self.h2_packet(intake_dir)
+        result = {"role_type": "intake_h2", "status": "COMPLETE", "provider": "fixture", "model": "fixture", "effort": "high",
+                  "packet_revision": json.loads(meta.read_text(encoding="utf-8"))["packet_revision"], "ghsa_id": IDS["base"],
+                  "reproduction_steps": {"present": repro[0], "quote": repro[1]},
+                  "proof_of_concept": {"present": poc[0], "quote": poc[1]}, "declined_scope": list(declined)}
+        path = write(self.tmp / "h2-quotes.json", result)
+        code, out, err = run("intake-check.py", "h2", "--intake", intake_dir / "intake-record.json", "--packet-meta", meta,
+                             "--result", path, "--mode", mode)
+        self.assertIn(code, (0, 5), err)
+        return json.loads(out)
+
+    H2_REPRO = (True, "## Reproduction steps")
+    H2_POC = (True, DATA["poc_block"])
+    H2_ABSENT = (False, "")
+    H2_WRONG = (True, "a sentence the report never contains")
+    H2_UNVERIFIED = "the quote is not a substring of any captured field (whitespace runs compared as one space)"
+
+    def test_h2_judges_each_element_on_its_own(self):
+        # (reproduction steps, proof of concept) -> (effective_status, queue pause_decision, unverified); routing rows H2-1 to H2-8, H2-11, H2-12
+        cases = {"H2-1 both verified": (self.H2_REPRO, self.H2_POC, ("COMPLETE", "PROCEED", [])),
+                 "H2-2 repro only": (self.H2_REPRO, self.H2_ABSENT, ("COMPLETE", "PROCEED", [])),
+                 "H2-3 poc only": (self.H2_ABSENT, self.H2_POC, ("COMPLETE", "PROCEED", [])),
+                 "H2-4 repro verified, poc unverified": (self.H2_REPRO, self.H2_WRONG, ("COMPLETE", "PROCEED", ["proof_of_concept"])),
+                 "H2-5 repro unverified, poc verified": (self.H2_WRONG, self.H2_POC, ("COMPLETE", "PROCEED", ["reproduction_steps"])),
+                 "H2-6 both absent": (self.H2_ABSENT, self.H2_ABSENT, ("COMPLETE", "PAUSE", [])),
+                 "H2-7 unverified and absent": (self.H2_WRONG, self.H2_ABSENT, ("MALFORMED", "PAUSE", [])),
+                 "H2-8 both unverified": (self.H2_WRONG, self.H2_WRONG, ("MALFORMED", "PAUSE", [])),
+                 "H2-11 whitespace-only quote": ((True, " \n\t "), self.H2_ABSENT, ("MALFORMED", "PAUSE", [])),
+                 "H2-12 absent element with a quote": (self.H2_REPRO, (False, DATA["poc_block"]), ("MALFORMED", "PAUSE", []))}
+        for name, (repro, poc, expected) in cases.items():
+            with self.subTest(case=name):
+                out = self.h2_quotes(repro, poc)
+                self.assertEqual((out["effective_status"], out["pause_decision"], out["unverified"]), expected, out["errors"])
+                if expected[0] != "COMPLETE":
+                    self.assertEqual(out["present"], {"reproduction_steps": False, "proof_of_concept": False})
+        out = self.h2_quotes(self.H2_REPRO, self.H2_WRONG)
+        self.assertEqual(out["present"], {"reproduction_steps": True, "proof_of_concept": False})  # an unverified element is not present
+
+    def test_h2_refusal_wins_over_elements(self):
+        # H2-13: a refused screen counts nothing, even with one element verified and one unverified
+        out = self.h2_quotes(self.H2_REPRO, self.H2_WRONG, declined=[{"task_element": "quote the proof of concept", "reason": "fixture"}])
+        self.assertEqual((out["effective_status"], out["pause_decision"], out["unverified"], out["warnings"]), ("REFUSED", "PAUSE", [], []))
+        self.assertEqual(out["present"], {"reproduction_steps": False, "proof_of_concept": False})
+        self.assertIn(f"proof_of_concept: {self.H2_UNVERIFIED}", out["errors"])
+
+    def test_h2_unverified_message(self):
+        # H2-15: the message names the real failure, in errors when nothing is verified and in warnings otherwise
+        malformed = self.h2_quotes(self.H2_WRONG, self.H2_ABSENT)
+        self.assertEqual(malformed["errors"], [f"reproduction_steps: {self.H2_UNVERIFIED}"])
+        self.assertEqual(malformed["warnings"], [])
+        complete = self.h2_quotes(self.H2_REPRO, self.H2_WRONG)
+        self.assertEqual((complete["errors"], complete["warnings"]), ([], [f"proof_of_concept: {self.H2_UNVERIFIED}"]))
+        self.assertNotIn("non-empty exact quote", json.dumps([malformed, complete]))
+
+    def test_h2_whitespace_runs_compare_as_one_space(self):
+        # H2-9: a hard-wrapped sentence quoted on one line, tabs, and doubled spaces still match
+        description = DATA["advisories"]["base"]["description"] + "\n\nWrapped: the loader skips the\n   trust prompt when\tthe  key is set.\n"
+        out = self.h2_quotes((True, "the loader skips the trust prompt when the key is set."), self.H2_ABSENT, description=description)
+        self.assertEqual((out["effective_status"], out["pause_decision"], out["unverified"]), ("COMPLETE", "PROCEED", []), out["errors"])
+
+    def test_h2_tolerance_stops_at_whitespace(self):
+        # H2-10: a newline is not a literal backslash-n (invented text, not advisory text)
+        description = DATA["advisories"]["base"]["description"] + "\n\nRun: printf 'first\\nsecond' > fixture.txt\n"
+        out = self.h2_quotes((True, "printf 'first\nsecond' > fixture.txt"), self.H2_ABSENT, description=description)
+        self.assertEqual((out["effective_status"], out["pause_decision"]), ("MALFORMED", "PAUSE"))
+
+    def test_h2_unverified_element_in_ghsa_mode(self):
+        # H2-14: --ghsa only annotates, and still reports the unverified element
+        out = self.h2_quotes(self.H2_REPRO, self.H2_WRONG, mode="ghsa")
+        self.assertEqual((out["effective_status"], out["pause_decision"], out["reason"], out["unverified"]),
+                         ("COMPLETE", "ANNOTATE", "element present", ["proof_of_concept"]))
+
     def test_h2_packet_contents_and_privacy(self):
         permissive_umask(self)
         intake_dir, record = self.capture("base")
@@ -465,6 +543,17 @@ class IssueListTest(Step1aWorkspace):
                                 (span.replace("Create", "Build"), "MALFORMED")):
             _, out = self.native_check([dict(BASE_ISSUE, quote=quote[:300])])
             self.assertEqual(out["effective_status"], expected, quote)
+
+    def test_issue_quote_stays_exact_on_whitespace(self):
+        # H2-16: H2's whitespace tolerance does not reach step 1a quotes
+        span = "1. Create a fixture workspace.\n2. Set `workspace.auto_trust` to true."
+        for quote in (span.replace("\n", " "), span.replace(". ", ".  ")):
+            _, out = self.native_check([dict(BASE_ISSUE, quote=quote)])
+            self.assertEqual(out["effective_status"], "MALFORMED", quote)
+        native, _ = self.native_check([BASE_ISSUE])
+        for quote in (span, span.replace("\n", " ")):  # review-check: an exact added quote passes, a whitespace variant does not
+            _, out = self.review_check(native, [("I1", "TECHNICAL")], added=[issue("an added issue", quote)])
+            self.assertEqual(out["effective_status"], "COMPLETE" if quote == span else "MALFORMED", quote)
 
     def test_declined_scope_is_refused(self):
         meta = self.packet("issue-packet")["meta"]
@@ -1333,6 +1422,25 @@ class ConfirmTest(DedupWorkspace):
         self.assertEqual((doc["verdict"], doc["confirmation"]["stale"], doc["analysis_status"]),
                          ("OBVIOUS_DUPLICATE", True, "AWAITING_CONFIRMATION"))
 
+    def test_stale_decision_keeps_its_details(self):
+        # B-2 to B-5: a decision that no longer applies keeps what was decided, so the brief can say so; applied stays false
+        self.case({"base": (BOTH, BOTH)})
+        self.assertEqual(self.dispositions()["confirmation"],
+                         {"applied": False, "stale": False, "decision": "", "reason": "", "recorded_at_utc": ""})  # B-5
+        for decision in ("CONFIRMED", "REJECTED"):
+            with self.subTest(decision=decision):
+                self.case({"base": (BOTH, BOTH)})
+                self.dispositions()
+                recorded = json.loads(self.confirm(decision).read_text(encoding="utf-8"))
+                self.case({"base": (BOTH, BOTH)}, issues=(dict(ISSUE_ONE, mechanism="a different mechanism"), ISSUE_TWO))
+                awaiting = self.dispositions("--confirmation", self.step / "confirmation.json")  # B-2: still a proposal
+                self.case({"base": (YES1, YES1)})
+                ready = self.dispositions("--confirmation", self.step / "confirmation.json")  # B-3: now partial
+                for doc, status in ((awaiting, "AWAITING_CONFIRMATION"), (ready, "READY")):
+                    self.assertEqual(doc["analysis_status"], status)
+                    self.assertEqual(doc["confirmation"], {"applied": False, "stale": True, "decision": decision, "reason": "reviewed",
+                                                           "recorded_at_utc": recorded["recorded_at_utc"]})
+
     def test_confirmation_must_be_a_known_decision_for_this_report(self):
         self.case({"base": (BOTH, BOTH)})
         self.dispositions()
@@ -1419,6 +1527,7 @@ class BriefTest(DedupWorkspace):
         self.assertIn("NO_ANALYSIS", text)
         self.assertIn("Decision applied: CONFIRMED", text)
         self.assertNotIn("Decision: CONFIRMED | REJECTED", text)
+        self.assertNotIn("no longer applies", text)  # B-1: an applied decision is not stale
 
     def test_unresolved_split_is_shown(self):
         self.case({"base": (YES1, {"I1": "NO", "I2": "NO"})})
@@ -1467,7 +1576,9 @@ class BriefTest(DedupWorkspace):
         self.case(issues=(ISSUE_ONE, ISSUE_TWO, ISSUE_DOC, dict(ISSUE_DOC, mechanism="a complete fix must cover every loader", kind="FIX_GUIDANCE")))
         self.dispositions()
         _, text = self.brief()
-        self.assertIn("Ignored (kinds): I3 (native DOCUMENTATION_UI, cross DOCUMENTATION_UI); I4 (native FIX_GUIDANCE, cross FIX_GUIDANCE)", text)
+        # B-9: each ignored issue shows its mechanism
+        self.assertIn(f"Ignored (kinds): I3 (native DOCUMENTATION_UI, cross DOCUMENTATION_UI): {json.dumps(ISSUE_DOC['mechanism'])}; "
+                      'I4 (native FIX_GUIDANCE, cross FIX_GUIDANCE): "a complete fix must cover every loader"', text)
         self.assertIn("Fix guidance for the fix author: I4", text)
 
     def test_stale_check_refuses_the_brief(self):
@@ -1555,9 +1666,60 @@ class BriefTest(DedupWorkspace):
         self.compare("base", BOTH, BOTH)  # rerun pair on the edited text: a duplicate again, but not the decision the human made
         self.dispositions("--confirmation", confirmation)
         _, text = self.brief(out=self.tmp / "briefs" / "stale.txt")
-        self.assertIn("no longer matches", text)
-        self.assertIn("decide again", text)
+        self.assertIn("Recorded decision CONFIRMED (recorded ", text)
+        self.assertIn("no longer applies: the dispositions changed after it was recorded. The report is now AWAITING_CONFIRMATION.", text)
         self.assertIn("Decision required", text)
+
+    def test_stale_decision_is_shown_whatever_the_status(self):
+        # B-3 and B-4 in the brief: the dry-run-5 case, where the change also moved the report out of the proposal
+        self.case({"base": (BOTH, BOTH)})
+        self.dispositions()
+        confirmation = self.step / "confirmation.json"
+        for decision in ("CONFIRMED", "REJECTED"):
+            with self.subTest(decision=decision):
+                self.case({"base": (BOTH, BOTH)})
+                self.dispositions()
+                code, _, err = run("ghsa-dedup.py", "confirm", "--dispositions", self.step / "dispositions.json", "--decision", decision,
+                                   "--reason", "same", "--out", confirmation)
+                self.assertEqual(code, 0, err)
+                self.case({"base": (YES1, YES1)})  # partial now: READY, not a proposal
+                self.dispositions("--confirmation", confirmation)
+                _, text = self.brief(out=self.tmp / "briefs" / f"ready-{decision}.txt")
+                self.assertIn(f"Recorded decision {decision} (recorded ", text)
+                self.assertIn("The report is now READY, and the issues in analysis_issue_ids go to analysis.", text)
+                self.assertNotIn("Decision applied", text)
+                self.assertNotIn("Decision: CONFIRMED | REJECTED", text)
+        document = json.loads((self.step / "dispositions.json").read_text(encoding="utf-8"))  # written by 0.18.0: no decision kept
+        write(self.step / "dispositions.json", dict(document, confirmation=dict(document["confirmation"], decision="", recorded_at_utc="")))
+        _, text = self.brief(out=self.tmp / "briefs" / "old-stale.txt")
+        self.assertIn("A recorded decision no longer applies: the dispositions changed after it was recorded.", text)
+
+    def test_context_and_decision_needed_lines(self):
+        # B-7 and B-8: context per report from its own run, the reports awaiting a decision, and each option's consequence
+        self.case({"base": (BOTH, BOTH)})
+        self.dispositions()
+        pinned = json.loads((self.step.parent / "intake" / "intake-record.json").read_text(encoding="utf-8"))["pinned_target"]
+        _, text = self.brief()
+        self.assertIn(f"Decision needed: {self.ghsa}", text)
+        self.assertIn(f"Context: run {self.step.parent.name}, target {pinned['repository']} at {pinned['revision']}, mode GHSA step 1a", text)
+        self.assertIn("Options: CONFIRMED: nothing is analyzed (NO_ANALYSIS); an H4 draft may still say an issue was previously reported. "
+                      "REJECTED: every technical issue goes to analysis (READY), and no issue is treated as previously reported.", text)
+        self.case({"base": (YES1, YES1)})  # partial: nothing to decide
+        self.dispositions()
+        _, text = self.brief(out=self.tmp / "briefs" / "partial.txt")
+        self.assertIn("Decision needed: none", text)
+        self.assertIn(f"Context: run {self.step.parent.name}", text)
+        self.assertNotIn("Options:", text)
+
+    def test_brief_needs_the_run_capture(self):
+        # B-10: the context comes from the run's own capture
+        self.case()
+        self.dispositions()
+        lone = self.tmp / "lone" / "step1a"
+        shutil.copytree(self.step, lone)
+        code, out, err = run("ghsa-dedup.py", "brief", "--dispositions", lone / "dispositions.json", "--out", self.tmp / "briefs" / "lone.txt")
+        self.assertEqual(code, 2, out or err)
+        self.assertIn("intake/intake-record.json", err)
 
     def test_model_text_cannot_forge_lines(self):
         self.case({"base": (YES1, YES1)})
@@ -1577,7 +1739,7 @@ class BriefTest(DedupWorkspace):
         self.case({"base": (BOTH, BOTH)})
         self.dispositions()
         other = self.tmp / "other-run" / "step1a"
-        shutil.copytree(self.step, other)
+        shutil.copytree(self.step.parent, other.parent)  # a whole run: the brief reads the run's capture for its context line
         result, text = self.brief("--dispositions", other / "dispositions.json")
         self.assertEqual((result["reports"], result["awaiting_confirmation"]), (2, [self.ghsa, self.ghsa]))
         self.assertEqual(text.count(f"## {self.ghsa}"), 2)
@@ -2016,6 +2178,41 @@ class H4DraftTest(Workspace):
                                      "--h2-check", path, *extra, "--out-dir", self.tmp / f"h4-{name.replace(' ', '-')}")
                 self.assertEqual(code, 2, out or err)
                 self.assertIn(message, err)
+
+    def projected(self, confirmation, verdict="OBVIOUS_DUPLICATE", status="READY", name="proj"):
+        """The H4 packet's dispositions projection for I1 covered, I2 new, under the given confirmation."""
+        issues, dispositions = step1a_documents(self.tmp, IDS["base"], analysis=("I2",), status=status, verdict=verdict, name=name)
+        write(dispositions, dict(json.loads(dispositions.read_text(encoding="utf-8")), confirmation=confirmation))
+        code, out, err = run("intake-check.py", "h4-packet", "--intake", self.intake_dir / "intake-record.json", "--issues", issues,
+                             "--dispositions", dispositions, "--out-dir", self.tmp / f"h4-{name}")
+        self.assertEqual(code, 0, out or err)
+        return json.loads((self.tmp / f"h4-{name}/h4-packet.json").read_text(encoding="utf-8"))["dispositions"]
+
+    def test_rejected_decision_projects_covered_issues_as_new(self):
+        # D-1 to D-4 and B-6
+        decided = {"stale": False, "reason": "r", "recorded_at_utc": "2026-11-15T00:00:00Z"}
+        rejected = self.projected(dict(decided, applied=True, decision="REJECTED"), name="rejected")
+        self.assertEqual(rejected["human_decision"], "REJECTED")
+        self.assertEqual([i["disposition"] for i in rejected["issues"]], ["NEW (decision rejected)", "NEW"])  # D-1
+        confirmed = self.projected(dict(decided, applied=True, decision="CONFIRMED"), status="NO_ANALYSIS", name="confirmed")
+        self.assertEqual([i["disposition"] for i in confirmed["issues"]], ["COVERED", "NEW"])  # D-2
+        partial = self.projected({"applied": False, "stale": False, "decision": "", "reason": "", "recorded_at_utc": ""},
+                                 verdict="PARTIAL", name="partial")
+        self.assertEqual((partial["human_decision"], [i["disposition"] for i in partial["issues"]]), ("", ["COVERED", "NEW"]))  # D-3
+        for decision in ("CONFIRMED", "REJECTED"):  # D-4 and B-6: a stale decision is not a decision
+            stale = self.projected(dict(decided, applied=False, stale=True, decision=decision), verdict="PARTIAL", name=f"stale-{decision}")
+            self.assertEqual((stale["human_decision"], [i["disposition"] for i in stale["issues"]]), ("", ["COVERED", "NEW"]))
+
+    def test_evidence_request_refuses_an_unverified_element(self):
+        # E-2: an element H2 could not verify may still be in the report, so no evidence request is drafted from it
+        h2_check, _ = self.h2_check(self.intake_dir)
+        document = json.loads(h2_check.read_text(encoding="utf-8"))
+        self.assertEqual(document["unverified"], [])  # E-1's input: a real h2 output carries the field
+        unverified = write(self.tmp / "h2-unverified.json", dict(document, unverified=["proof_of_concept"]))
+        code, out, err = run("intake-check.py", "h4-packet", "--intake", self.intake_dir / "intake-record.json", "--issues", self.issues,
+                             "--h2-check", unverified, "--out-dir", self.tmp / "h4-unverified")
+        self.assertEqual(code, 2, out or err)
+        self.assertIn("could not be verified; review the report before requesting evidence", err)
 
     def test_pending_proposal_gets_no_draft(self):
         issues, dispositions = step1a_documents(self.tmp, IDS["base"], analysis=(), status="AWAITING_CONFIRMATION",

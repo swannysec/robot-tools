@@ -19,9 +19,10 @@ in `scripts/intake-check.py` (packets and role-output checks) and `scripts/ghsa-
 (comparison plan, dispositions, confirmation). Model legs use the analysis tier of both
 providers, with no tools, under [orchestrator-contract.md](orchestrator-contract.md): the
 authorization statement, refusal handling, and fallback disclosure apply. Launch forms are in the
-runtime guides under "Step 1a legs". Not yet implemented: the currency check against the
-default-branch commit at the advisory's creation time, and post-fix coverage checks inside
-`--develop-fix` (a test that already passes on a base containing the canonical's merged fix).
+runtime guides under "Step 1a legs". The currency check against the default-branch commit at the
+advisory's creation time runs after analysis ([ghsa-currency-check.md](ghsa-currency-check.md)).
+Not yet implemented: post-fix coverage checks inside `--develop-fix` (a test that already passes
+on a base containing the canonical's merged fix).
 
 ## Scope and preflight
 

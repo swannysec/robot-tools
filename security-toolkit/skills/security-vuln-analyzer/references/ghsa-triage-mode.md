@@ -60,6 +60,8 @@ git work tree; the script refuses a run root inside one. Layout:
     step1a/                 issue list, comparison packets and checks, dispositions, confirmation
     analysis/               issue-scope.txt (the Phase 1 issue listing) and the analysis-mode artifacts
     dedup/                  report-records.json from ghsa-dedup.py records
+    currency/               currency check: revision, plan, flags, test results, outcome, brief, and the
+                            report revision's records (ghsa-currency-check.md)
     writeback/              h4-packet.json, h4-allowed-records.json, h4.packet.txt, h4.meta.json,
                             H4 draft, write plan, approvals, results
 ```
@@ -186,13 +188,21 @@ still does not complete, a human writes the evidence request.
   (see [orchestrator-contract.md](orchestrator-contract.md) "Computed CVSS v4.0 scores"); it
   reaches H4 only when every verified record with a vector agrees, and any write is
   human-approved. It writes `report-records.json` (for `h4-packet` and the writer) in a mode-700
-  directory. It refuses a manifest that does not match the recomputed IDs (a candidate that no
+  directory, with the analysis pin (`primary_revision`), the digest of the issue list
+  (`issues_sha256`), and each record's `control_site` for the currency check
+  ([ghsa-currency-check.md](ghsa-currency-check.md)); H4's record projection omits the control
+  site. It refuses a manifest that does not match the recomputed IDs (a candidate that no
   role marked `affects_security_claim` may be absent), an inconsistent verified status, and issue
   IDs that analysis did not receive. Its result lists `unassigned` verified records (no issue ID;
   they stay in the report), `issues_without_records` (analyzed issues with no bridged record),
   and `not_bridged` records with reasons: every record with `ghsa_eligible: false` appears exactly
   once, with its reason (not routed to verification, a verified status not backed by two
   CONFIRMED Stage 2 results, or `final status <status>` for any other final status).
+- **Currency check:** after `records`, technical issues that analysis at the pin did not confirm
+  get the currency check in [ghsa-currency-check.md](ghsa-currency-check.md): the report's
+  creation-time revision, analysis there, change flags, and an outcome proposal for each issue in a
+  human brief (a `--develop-fix` test-only run at both revisions is designed but not yet usable). It never
+  dismisses an issue or writes back by itself.
 - **`--develop-fix`:** receives the GHSA ID so landing can reuse the advisory's temporary
   private fork (ADR-014 path) instead of creating a new advisory.
 - **`--verify-fix --tracker <GHSA URL>`:** the tracker is captured through `ghsa-fetch.py`.

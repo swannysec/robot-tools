@@ -428,19 +428,52 @@ def command_issue_scope(args: argparse.Namespace) -> dict[str, Any]:
     unknown = [issue_id for issue_id in ids if issue_id not in by_id]
     if unknown:
         raise UsageError(f"analysis_issue_ids name issues not in the issue list: {unknown}")
-    lines = [SCOPE_HEADER]
+    blind_fields: list[str] = []
+    if args.currency_plan:  # the currency check's analysis at the report revision: only the planned issues
+        plan = load_json(args.currency_plan)
+        if plan.get("record_type") != "ghsa_currency_plan" or plan.get("ghsa_id") != document.get("ghsa_id"):
+            raise UsageError("the currency plan belongs to another advisory")
+        if plan.get("issues_sha256") != file_digest(args.issues):
+            raise UsageError("the currency plan was computed from another issue list")
+        if plan.get("dispositions_sha256") != file_digest(args.dispositions):
+            raise UsageError("the currency plan was computed from other dispositions; rerun currency-check.py plan")
+        planned = [entry.get("issue_id") for entry in plan.get("planned", [])]
+        outside = [issue_id for issue_id in planned if issue_id not in ids]
+        if outside:
+            raise UsageError(f"the currency plan names issues not in analysis_issue_ids: {outside}")
+        if not planned:
+            raise UsageError("the currency plan has no planned issues")
+        if not args.intake:
+            raise UsageError("--currency-plan needs --intake, so quotes from text the fix-blind rendering leaves out are withheld")
+        intake = load_json(args.intake)
+        if intake.get("advisory", {}).get("ghsa_id") != document.get("ghsa_id"):
+            raise UsageError("the intake record belongs to another advisory")
+        blind_fields = [value for label, value in labeled_fields(intake) if label in ("summary", "description")]
+        ids = planned
+    lines, withheld = [SCOPE_HEADER], []
     for issue_id in ids:
         item = by_id[issue_id]
         literals = {key: value for key, value in item.get("literals", {}).items() if value}
+        quote = one_line_json(item["quote"])
+        if args.currency_plan and not is_exact_quote(item["quote"], blind_fields):
+            # The currency check's analysis must not see a fix named in a comment or reporter field: withhold that quote.
+            withheld.append(issue_id)
+            quote = "(withheld: it comes from text the fix-blind rendering leaves out)"
         lines.append(f"- Issue ID `{issue_id}`\n"
                      f"  - mechanism: {one_line_json(item['mechanism'])}\n"
                      f"  - trigger: {one_line_json(item['trigger'])}\n"
-                     f"  - quote: {one_line_json(item['quote'])}\n"
+                     f"  - quote: {quote}\n"
                      f"  - checked literals: {one_line_json(literals)}\n")
     out = Path(args.out)
     restricted_dir(out.parent)
-    write_private(out, "".join(lines))
-    return {"check": "issue-scope", "effective_status": "COMPLETE", "errors": [], "issue_ids": ids, "out": str(out)}
+    text = "".join(lines)
+    write_private(out, text)
+    result = {"check": "issue-scope", "effective_status": "COMPLETE", "errors": [], "issue_ids": ids, "out": str(out),
+              "ghsa_id": document.get("ghsa_id", "")}
+    if args.currency_plan:
+        lowered = " ".join(text.lower().split())
+        result.update(quotes_withheld=withheld, fix_terms_found=sorted(term for term in FIX_TERMS if term in lowered))
+    return result
 
 
 def command_h4(args: argparse.Namespace) -> dict[str, Any]:
@@ -902,16 +935,34 @@ def command_compare_check(args: argparse.Namespace) -> dict[str, Any]:
     return finish_check(args, outcome, result)
 
 
+# Wording that announces a fix. A fix-blind rendering cannot remove it from a description without editing report text,
+# so it is reported for the human instead.
+FIX_TERMS = ("fixed in", "patched in", "## patches", "patched versions")
+
+
 def command_render(args: argparse.Namespace) -> dict[str, Any]:
-    """Render each captured field as raw text, so intake roles see exactly the strings the checks compare."""
+    """Render each captured field as raw text, so intake roles see exactly the strings the checks compare.
+
+    With --fix-blind (the currency check's analysis at the report revision), only the summary and description are
+    rendered: comments, which may name a fixing change, and the reporter's version range and patched versions are left out."""
     intake = load_json(args.intake)
     fields = labeled_fields(intake)
-    text = rendered_text(intake)
+    if args.fix_blind:  # everything else is left out: comments, and every reporter vulnerability field (package, range, patched
+        # versions, vulnerable functions)
+        fields = [(label, value) for label, value in fields if label in ("summary", "description")]
+        text = "".join(f"<<<FIELD {label}>>>\n{value}\n<<<END {label}>>>\n" for label, value in fields)
+    else:
+        text = rendered_text(intake)
     try:
         write_private(Path(args.out), text)
     except OSError as error:
         raise UsageError(f"cannot write {args.out}: {error}") from error
-    return {"check": "render", "effective_status": "COMPLETE", "errors": [], "fields": [label for label, _ in fields]}
+    result: dict[str, Any] = {"check": "render", "effective_status": "COMPLETE", "errors": [], "fields": [label for label, _ in fields]}
+    if args.fix_blind:
+        lowered = " ".join(text.lower().split())  # a phrase wrapped across lines still matches
+        result["fix_terms_found"] = sorted(term for term in FIX_TERMS if term in lowered)
+        result["ghsa_id"] = intake.get("advisory", {}).get("ghsa_id", "")
+    return result
 
 
 def normalize_whitespace(text: str) -> str:
@@ -936,6 +987,7 @@ def command_poc_overlap(args: argparse.Namespace) -> dict[str, Any]:
                 break
     decision = "REJECT" if overlaps else "ACCEPT"
     return {"check": "poc-overlap", "effective_status": "COMPLETE", "errors": [], "decision": decision,
+            "ghsa_id": intake.get("advisory", {}).get("ghsa_id", ""), "test_file_sha256": file_digest(args.test_file),
             "threshold_chars": width, "overlaps": overlaps}
 
 
@@ -966,6 +1018,8 @@ def main() -> int:
     scope.add_argument("--issues", required=True, help="step1a/issues.json")
     scope.add_argument("--dispositions", required=True, help="the current step1a/dispositions.json")
     scope.add_argument("--out", required=True, help="text file for the Phase 1 packet, for example in the run's analysis/")
+    scope.add_argument("--currency-plan", help="currency-check.py plan output: list only its planned issues")
+    scope.add_argument("--intake", help="the advisory's intake record (required with --currency-plan)")
     overlap = sub.add_parser("poc-overlap")
     overlap.add_argument("--intake", required=True, help="intake record of the advisory the test was written for")
     overlap.add_argument("--test-file", required=True)
@@ -1005,6 +1059,7 @@ def main() -> int:
     render = sub.add_parser("render")
     render.add_argument("--intake", required=True)
     render.add_argument("--out", required=True, help="text file holding the packet's advisory data section")
+    render.add_argument("--fix-blind", action="store_true", help="summary and description only (currency check)")
     args = parser.parse_args()
     handlers = {"h2-packet": command_h2_packet, "h2": command_h2, "h4-packet": command_h4_packet, "h4": command_h4,
                 "issue-scope": command_issue_scope,

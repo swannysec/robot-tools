@@ -244,6 +244,36 @@ class IntakeCheckTest(Workspace):
         for field in intake_check["captured_fields"](record):
             self.assertIn(field, text)
 
+    def test_render_fix_blind(self):
+        # X-1: no comments, no vulnerability range or patched versions; X-2: fix wording inside the description is reported
+        intake_dir, record = self.capture("base")
+        record["advisory"]["comments"] = [{"body": "Maintainer: this went out in PR 99."}]
+        record["advisory"]["description"] += "\n\n## Patches\nFixed in v9.9.9."
+        record["advisory"]["reporter_claims"] = {"vulnerabilities": [{"package": "fixture", "vulnerable_version_range": "< 9.9.9",
+                                                                      "patched_versions": "9.9.9", "vulnerable_functions": []}]}
+        intake = write(intake_dir / "intake-record.json", record)
+        blind = self.tmp / "blind.txt"
+        code, out, err = run("intake-check.py", "render", "--intake", intake, "--fix-blind", "--out", blind)
+        self.assertEqual(code, 0, err)
+        result, text = json.loads(out), blind.read_text(encoding="utf-8")
+        self.assertEqual(result["fields"], ["summary", "description"])
+        self.assertEqual((result["fix_terms_found"], result["ghsa_id"]), (["## patches", "fixed in"], IDS["base"]))
+        self.assertNotIn("PR 99", text)
+        self.assertNotIn("patched_versions", text)
+        self.assertNotIn("< 9.9.9", text)
+        self.assertIn("Fixed in v9.9.9.", text)  # description text is never edited
+        full = self.tmp / "full.txt"
+        code, out, err = run("intake-check.py", "render", "--intake", intake, "--out", full)
+        self.assertEqual(code, 0, err)
+        self.assertIn("PR 99", full.read_text(encoding="utf-8"))  # without --fix-blind, unchanged
+        self.assertNotIn("fix_terms_found", json.loads(out))
+        intake_check = runpy.run_path(str(SCRIPTS / "intake-check.py"))
+        self.assertEqual(full.read_text(encoding="utf-8"), intake_check["rendered_text"](record))  # default rendering unchanged
+        record["advisory"]["description"] = "Released with the change; it was fixed\n   in the next tag."
+        write(intake_dir / "intake-record.json", record)
+        code, out, err = run("intake-check.py", "render", "--intake", intake, "--fix-blind", "--out", blind)
+        self.assertEqual(json.loads(out)["fix_terms_found"], ["fixed in"])  # a phrase wrapped across lines still matches
+
     def test_render_output_is_private(self):
         permissive_umask(self)
         intake_dir, _ = self.capture("base")
@@ -1746,9 +1776,11 @@ class BriefTest(DedupWorkspace):
 
     def test_one_line_json_matches_across_scripts(self):
         intake_check = runpy.run_path(str(SCRIPTS / "intake-check.py"))
+        currency = runpy.run_path(str(SCRIPTS / "currency-check.py"))
         for value in ("plain", "a\u2028b\u2029c\u0085d\ne", {"k": ["x\u2028y"]}, "x\u202ey\u009bz\U000e0001w\u007f"):
             with self.subTest(value=value):
                 self.assertEqual(DEDUP["one_line_json"](value), intake_check["one_line_json"](value))
+                self.assertEqual(DEDUP["one_line_json"](value), currency["one_line_json"](value))
                 self.assertEqual(len(DEDUP["one_line_json"](value).splitlines()), 1)
                 self.assertEqual(json.loads(DEDUP["one_line_json"](value)), value)  # still valid JSON for the same value
                 self.assertFalse(any(ch in DEDUP["one_line_json"](value) for ch in "\u202e\u009b\U000e0001\u007f"))
@@ -2061,7 +2093,8 @@ class H4DraftTest(Workspace):
         records = {"records": [
             {"record_id": "F-1", "kind": "finding", "answers": [{"ghsa_id": IDS["base"], "issue_id": "I2"}], "final_status": "CROSS-MODEL VERIFIED", "ghsa_eligible": True,
              "values": {"cwe_ids": ["CWE-863"]}, "enumerated_variants": ["VARIANT-TEXT-OUTSIDE-SCOPE"],
-             "evidence": [{"observation": "EVIDENCE-TEXT"}], "supporting_context": ["SUPPORTING-CONTEXT-TEXT"]},
+             "evidence": [{"observation": "EVIDENCE-TEXT"}], "supporting_context": ["SUPPORTING-CONTEXT-TEXT"],
+             "control_site": {"symbol": "CONTROL-SITE-SYMBOL", "relative_path": "src/control_site.rs", "line": 4}},
             {"record_id": "F-3", "kind": "finding", "answers": [{"ghsa_id": IDS["base"], "issue_id": "I2"}], "final_status": "REFUTED",
              "values": {"cwe_ids": ["CWE-79"]}},
             {"record_id": "F-2", "kind": "finding", "answers": [{"ghsa_id": IDS["variant"], "issue_id": "I2"}], "values": {"cwe_ids": ["CWE-284"]}},
@@ -2268,7 +2301,7 @@ class H4DraftTest(Workspace):
     def test_packet_excludes_other_findings(self):
         packet = json.loads((self.tmp / "h4/h4-packet.json").read_text(encoding="utf-8"))
         self.assertEqual([r["record_id"] for r in packet["finding_records"]], ["F-1", "F-3"])
-        for leaked in ("VARIANT-TEXT-OUTSIDE-SCOPE", "EVIDENCE-TEXT", "SUPPORTING-CONTEXT-TEXT"):
+        for leaked in ("VARIANT-TEXT-OUTSIDE-SCOPE", "EVIDENCE-TEXT", "SUPPORTING-CONTEXT-TEXT", "CONTROL-SITE-SYMBOL", "control_site.rs"):
             self.assertNotIn(leaked, json.dumps(packet))
         self.assertNotIn(IDS["variant"], json.dumps(packet))
 
@@ -2438,6 +2471,70 @@ class IssueScopeTest(Workspace):
         self.assertEqual(code, expect, stdout or err)
         return (json.loads(stdout), out.read_text(encoding="utf-8")) if code == 0 else err
 
+    def currency_plan(self, issues, ids, ghsa=None, digest=None, name="currency-plan", dispositions_digest=None):
+        dispositions = issues.parent / "dispositions.json"
+        return write(self.tmp / f"{name}.json", {
+            "record_type": "ghsa_currency_plan", "ghsa_id": ghsa or IDS["base"],
+            "issues_sha256": digest or hashlib.sha256(issues.read_bytes()).hexdigest(),
+            "dispositions_sha256": dispositions_digest or hashlib.sha256(dispositions.read_bytes()).hexdigest(),
+            "planned": [{"issue_id": issue_id, "mechanism": "m", "reason": "REFUTED"} for issue_id in ids], "not_planned": []})
+
+    def test_scope_subset_from_currency_plan(self):
+        issues, dispositions = self.documents(analysis=("I1", "I2"))
+        plan = self.currency_plan(issues, ["I2"])
+        out = self.tmp / "currency" / "issue-scope.txt"
+        intake_dir, _ = self.capture("base")
+        intake = intake_dir / "intake-record.json"
+        code, stdout, err = run("intake-check.py", "issue-scope", "--issues", issues, "--dispositions", dispositions,
+                                "--currency-plan", plan, "--intake", intake, "--out", out)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(stdout)["issue_ids"], ["I2"])  # X-3
+        text = out.read_text(encoding="utf-8")
+        self.assertIn("Issue ID `I2`", text)
+        self.assertNotIn("Issue ID `I1`", text)
+        cases = {"X-4 not analyzed": (self.currency_plan(issues, ["I2", "I9"], name="p1"), "not in analysis_issue_ids"),
+                 "another advisory": (self.currency_plan(issues, ["I2"], ghsa=IDS["variant"], name="p2"), "another advisory"),
+                 "another issue list": (self.currency_plan(issues, ["I2"], digest="0" * 64, name="p3"), "another issue list"),
+                 "stale dispositions": (self.currency_plan(issues, ["I2"], dispositions_digest="0" * 64, name="p4"), "other dispositions"),
+                 "empty plan": (self.currency_plan(issues, [], name="p5"), "no planned issues")}
+        for name, (path, message) in cases.items():
+            with self.subTest(case=name):
+                code, stdout, err = run("intake-check.py", "issue-scope", "--issues", issues, "--dispositions", dispositions,
+                                        "--currency-plan", path, "--intake", intake, "--out", out)
+                self.assertEqual(code, 2, stdout or err)
+                self.assertIn(message, err)
+        result, text = self.scope(issues, dispositions)  # X-5: without the plan, unchanged
+        self.assertEqual(result["issue_ids"], ["I1", "I2"])
+
+    def test_currency_scope_withholds_quotes_outside_the_blind_text(self):
+        issues, dispositions = self.documents(analysis=("I1", "I2"))
+        document = json.loads(issues.read_text(encoding="utf-8"))
+        document["issues"][0].update(quote="apply_profile skips authorization; fixed in PR 99",
+                                     mechanism="loader skips the check (fixed in a later release)")
+        write(issues, document)
+        bound = json.loads(dispositions.read_text(encoding="utf-8"))
+        bound["depends_on"]["issues_sha256"] = hashlib.sha256(issues.read_bytes()).hexdigest()
+        write(dispositions, bound)
+        intake_dir, record = self.capture("base")
+        record["advisory"]["comments"] = [{"body": "Maintainer: apply_profile skips authorization; fixed in PR 99"}]
+        intake = write(intake_dir / "intake-record.json", record)
+        plan = self.currency_plan(issues, ["I1", "I2"])
+        out = self.tmp / "currency" / "issue-scope.txt"
+        code, stdout, err = run("intake-check.py", "issue-scope", "--issues", issues, "--dispositions", dispositions,
+                                "--currency-plan", plan, "--intake", intake, "--out", out)
+        self.assertEqual(code, 0, err)
+        result, text = json.loads(stdout), out.read_text(encoding="utf-8")
+        self.assertEqual(result["quotes_withheld"], ["I1"])  # I1's quote is only in a comment; I2's is in the description
+        self.assertNotIn("PR 99", text)
+        self.assertIn("withheld", text)
+        self.assertEqual(result["ghsa_id"], IDS["base"])
+        self.assertEqual(result["fix_terms_found"], ["fixed in"])  # the model-written mechanism still carries fix wording
+        self.assertIn("reads the key without checking", text)
+        code, stdout, err = run("intake-check.py", "issue-scope", "--issues", issues, "--dispositions", dispositions,
+                                "--currency-plan", plan, "--out", out)
+        self.assertEqual(code, 2, stdout or err)
+        self.assertIn("--intake", err)
+
     def test_scope_lists_exactly_the_analysis_issues(self):
         result, text = self.scope(*self.documents())
         self.assertEqual((result["check"], result["effective_status"], result["issue_ids"]), ("issue-scope", "COMPLETE", ["I2"]))
@@ -2532,6 +2629,17 @@ class RecordsTest(Workspace):
         paths = [self.discovery(f"role{i}.json", [item]) for i, item in enumerate(roles, 1)]
         ids = [expected_candidate_id(item, REV) for item in roles]
         return roles, paths, ids
+
+    def test_records_carry_revision_issue_list_and_control_site(self):
+        # Currency check inputs (phase 2): the pin the records describe, the issue list they answer, each candidate's control site
+        roles, paths, ids = self.three_role_fixture()
+        code, out = self.run_records(paths, {cid: self.verified(cid) for cid in ids})
+        self.assertEqual(code, 0, out)
+        document = json.loads((self.tmp / "records-out" / "report-records.json").read_text(encoding="utf-8"))
+        self.assertEqual(document["primary_revision"], REV)
+        self.assertEqual(document["issues_sha256"], hashlib.sha256(self.issues.read_bytes()).hexdigest())
+        sites = sorted(record["control_site"]["symbol"] for record in document["records"])
+        self.assertEqual(sites, sorted(item["control_site"]["symbol"] for item in roles))
 
     def test_records_recomputes_ids_and_keys_by_issue(self):
         roles, paths, ids = self.three_role_fixture()
@@ -2789,6 +2897,679 @@ class RecordsTest(Workspace):
         self.assertEqual({r["candidate_id"] for r in records}, {cid})
         self.assertEqual(self.run_records([first, first], {cid: self.verified(cid)})[0], 2)  # the same artifact twice
 
+GIT_ENV = {"PATH": os.environ.get("PATH", os.defpath), "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+           "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid", "GIT_COMMITTER_NAME": "Fixture",
+           "GIT_COMMITTER_EMAIL": "fixture@example.invalid", "LC_ALL": "C"}
+
+
+def fixture_git(repo, *args, date=None):
+    env = dict(GIT_ENV, **({"GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date} if date else {}))
+    process = subprocess.run(["git", "-C", str(repo), "-c", "commit.gpgsign=false", *args], check=True,
+                             capture_output=True, text=True, env=env, timeout=60)
+    return process.stdout.strip()
+
+
+def build_currency_repo(root):
+    """A small history for the currency check: first-parent commits with a merge whose second parent is older,
+    a rename, a removed function, and one generic function name defined in two files. Returns commit IDs by name."""
+    repo = root / "clone"
+    repo.mkdir()
+    fixture_git(repo, "init", "-q", "-b", "main")
+
+    def put(path, text):
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text(text, encoding="utf-8")
+
+    def commit(message, date):
+        fixture_git(repo, "add", "-A")
+        fixture_git(repo, "commit", "-q", "-m", message, date=date)
+        return fixture_git(repo, "rev-parse", "HEAD")
+
+    # removed_fn sits right after apply_profile: git -L ranges run to the next definition line, so its removal
+    # touches apply_profile's range (which the pin changes anyway) and no other function's.
+    lib = ("pub fn early_fn() -> u32 {\n    5\n}\n\npub fn apply_profile(x: u32) -> u32 {\n    x + 1\n}\n\n"
+           "pub fn removed_fn() -> u32 {\n    0\n}\n\n"
+           "pub fn stable_fn() -> u32 {\n    7\n}\n\npub fn build_command() -> u32 {\n    1\n}\n")
+    put("src/lib.rs", lib)
+    put("src/other.rs", "pub fn build_command() -> u32 {\n    2\n}\n")
+    imp = "pub struct S;\n\nimpl S {\n    pub fn handle(&self) -> u32 {\n        1\n    }\n}\n"
+    put("src/imp.rs", imp)
+    twice = ("pub struct A;\npub struct B;\n\nimpl A {\n    pub fn run(&self) -> u32 {\n        1\n    }\n}\n\n"
+             "impl B {\n    pub fn run(&self) -> u32 {\n        2\n    }\n}\n")
+    put("src/twice.rs", twice)
+    ids = {"c1": commit("first", "2026-01-01T00:00:00Z")}
+    put("src/lib.rs", lib.replace("x + 1", "x + 2"))
+    ids["c2"] = commit("change apply_profile", "2026-02-01T00:00:00Z")
+    fixture_git(repo, "checkout", "-q", "-b", "side")
+    put("src/other.rs", "pub fn build_command() -> u32 {\n    3\n}\n")
+    ids["side"] = commit("change other build_command", "2026-02-10T00:00:00Z")
+    fixture_git(repo, "checkout", "-q", "main")
+    fixture_git(repo, "merge", "-q", "--no-ff", "-m", "merge side", "side", date="2026-03-01T00:00:00Z")
+    ids["merge"] = fixture_git(repo, "rev-parse", "HEAD")
+    put("src/lib.rs", (repo / "src/lib.rs").read_text(encoding="utf-8").replace("    5\n", "    6\n"))
+    put("src/imp.rs", imp.replace("        1\n", "        4\n"))
+    put("src/twice.rs", twice.replace("        2\n", "        5\n"))  # only B::run changes
+    ids["c3"] = commit("change early_fn and handle", "2026-03-15T00:00:00Z")
+    fixture_git(repo, "mv", "src/lib.rs", "src/core.rs")
+    ids["rename"] = commit("rename lib to core", "2026-04-01T00:00:00Z")
+    core = (repo / "src/core.rs").read_text(encoding="utf-8")
+    core = core.replace("x + 2", "x.saturating_add(2)").replace("pub fn removed_fn() -> u32 {\n    0\n}\n\n", "")
+    put("src/core.rs", core)
+    ids["pin"] = commit("fix apply_profile and drop removed_fn", "2026-05-01T00:00:00Z")
+    fixture_git(repo, "remote", "add", "origin", f"https://github.com/{REPO}.git")
+    fixture_git(repo, "update-ref", "refs/remotes/origin/main", ids["pin"])
+    return repo, ids
+
+
+def currency_issue(issue_id, paths=(), symbols=(), technical=True):
+    return {"issue_id": issue_id, "source": "native", "mechanism": f"fixture mechanism {issue_id}", "trigger": "fixture trigger",
+            "quote": "fixture", "literals": {"file_paths": list(paths), "symbols": list(symbols), "config_keys": []},
+            "kinds": {"native": "TECHNICAL" if technical else "DOCUMENTATION_UI", "cross": "TECHNICAL" if technical else "DOCUMENTATION_UI"},
+            "technical": technical}
+
+
+class CurrencyTest(Workspace):
+    """Currency check (ADR-016 decision 5): report revision, scope of the two-revision check, and change flags."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo, self.ids = build_currency_repo(self.tmp)
+        self.intake_dir, record = self.capture("base")
+        record["advisory"]["created_at"] = "2026-02-15T00:00:00Z"
+        record["pinned_target"]["revision"] = self.ids["pin"]
+        self.intake = write(self.intake_dir / "intake-record.json", record)
+        self.run_dir = self.intake_dir.parent
+        self.out = self.run_dir / "currency"
+
+    def currency(self, *args, expect=0):
+        code, out, err = run("currency-check.py", *args)
+        self.assertEqual(code, expect, out or err)
+        return json.loads(out) if code == 0 else err
+
+    def revision(self, *extra, expect=0, branch="main"):
+        result = self.currency("revision", "--repo-dir", self.repo, "--intake", self.intake, "--default-branch", branch,
+                               "--out", self.out / "revision.json", *extra, expect=expect)
+        return json.loads((self.out / "revision.json").read_text(encoding="utf-8")) if expect == 0 else result
+
+    # ---- revision (R-1 to R-5)
+
+    def test_revision_is_the_first_parent_commit_at_creation(self):
+        document = self.revision()  # R-1: the side commit (2026-02-10) is older than creation but only a second parent
+        self.assertEqual((document["report_revision"], document["pin"]), (self.ids["c2"], self.ids["pin"]))
+        self.assertEqual((document["ghsa_id"], document["created_at"]), (IDS["base"], "2026-02-15T00:00:00Z"))
+        self.assertEqual(document["first_parent_commits_between"], 4)  # merge, c3, rename, pin
+        self.assertEqual((mode(self.out), mode(self.out / "revision.json")), (0o700, 0o600))
+
+    def test_revision_refusals(self):
+        record = json.loads(self.intake.read_text(encoding="utf-8"))
+        cases = {"R-2 created before the first commit": (dict(record, advisory=dict(record["advisory"], created_at="2025-01-01T00:00:00Z")), "main", "no commit"),
+                 "R-5 no creation time": (dict(record, advisory=dict(record["advisory"], created_at="")), "main", "created_at"),
+                 "malformed creation time": (dict(record, advisory=dict(record["advisory"], created_at="not-a-date")), "main", "ISO-8601"),
+                 "R-3 no such branch": (record, "trunk", "origin/trunk"),
+                 "bad branch name": (record, "--upload-pack=x", "branch")}
+        for name, (document, branch, message) in cases.items():
+            with self.subTest(case=name):
+                write(self.intake, document)
+                self.assertIn(message, self.revision(branch=branch, expect=2))
+        write(self.intake, record)
+        fixture_git(self.repo, "remote", "set-url", "origin", "https://github.com/someone/else.git")
+        self.assertIn("names another repository", self.revision(expect=2))  # R-4
+        fixture_git(self.repo, "remote", "set-url", "origin", f"https://github.com/{REPO}.git")
+        err = self.currency("revision", "--repo-dir", self.repo / "src", "--intake", self.intake, "--default-branch", "main",
+                            "--out", self.out / "revision.json", expect=2)
+        self.assertIn("top-level", err)
+
+    def test_revision_needs_the_pin_in_the_clone_and_a_run_directory(self):
+        record = json.loads(self.intake.read_text(encoding="utf-8"))
+        write(self.intake, dict(record, pinned_target=dict(record["pinned_target"], revision="d" * 40)))
+        self.assertIn("fetch", self.revision(expect=2))
+        write(self.intake, record)
+        err = self.currency("revision", "--repo-dir", self.repo, "--intake", self.intake, "--default-branch", "main",
+                            "--out", self.tmp / "elsewhere" / "revision.json", expect=2)
+        self.assertIn("<run>/currency/", err)
+
+    # ---- plan (P-1 to P-9)
+
+    def plan_inputs(self, statuses, status="READY", verdict="PARTIAL", records_issues_sha=None, analysis=("I1", "I2", "I3")):
+        """Issues I1-I5 (I5 not technical), I4 covered; one record per (issue, final_status, eligible) entry."""
+        issues = [currency_issue(f"I{n}") for n in range(1, 5)] + [currency_issue("I5", technical=False)]
+        issues_path = write(self.tmp / "issues.json", {"record_type": "ghsa_issue_list", "ghsa_id": IDS["base"], "status": "COMPLETE",
+                                                        "issues": issues})
+        sha = hashlib.sha256(issues_path.read_bytes()).hexdigest()
+        rows = [{"issue_id": item["issue_id"], "mechanism": item["mechanism"], "technical": item["technical"],
+                 "disposition": "COVERED" if item["issue_id"] == "I4" else "NEW" if item["technical"] else "IGNORED"} for item in issues]
+        dispositions = write(self.tmp / "dispositions.json", {"record_type": "ghsa_dispositions", "ghsa_id": IDS["base"], "verdict": verdict,
+                                                              "analysis_status": status, "analysis_issue_ids": list(analysis),
+                                                              "issues": rows, "depends_on": {"issues_sha256": sha}})
+        records = [{"record_id": f"R{n}", "answers": [{"ghsa_id": IDS["base"], "issue_id": issue_id}], "final_status": final,
+                    "ghsa_eligible": eligible, "control_site": {"symbol": "", "relative_path": "", "line": 0}}
+                   for n, (issue_id, final, eligible) in enumerate(statuses)]
+        records_path = write(self.tmp / "report-records.json", {"repository": REPO, "ghsa_id": IDS["base"], "primary_revision": self.ids["pin"],
+                                                                  "issues_sha256": records_issues_sha or sha, "records": records})
+        return issues_path, dispositions, records_path
+
+    def plan(self, statuses, expect=0, **kwargs):
+        issues, dispositions, records = self.plan_inputs(statuses, **kwargs)
+        result = self.currency("plan", "--issues", issues, "--dispositions", dispositions, "--records", records,
+                               "--out", self.out / "plan.json", expect=expect)
+        return json.loads((self.out / "plan.json").read_text(encoding="utf-8")) if expect == 0 else result
+
+    def test_plan_lists_issues_main_did_not_confirm(self):
+        document = self.plan([("I1", "CROSS-MODEL VERIFIED", True),  # P-1
+                              ("I2", "REFUTED", False), ("I2", "NOT VERIFIED", False)])  # P-2/P-3 mix: NOT VERIFIED ranks above REFUTED
+        planned = {entry["issue_id"]: entry["reason"] for entry in document["planned"]}
+        self.assertEqual(planned, {"I2": "NOT VERIFIED", "I3": "NO_RECORD"})  # P-5 for I3
+        not_planned = {entry["issue_id"]: entry["reason"] for entry in document["not_planned"]}
+        self.assertEqual(not_planned, {"I1": "CONFIRMED"})  # P-9: covered I4 and ignored I5 are never in analysis_issue_ids
+        self.assertEqual(document["primary_revision"], self.ids["pin"])
+
+    def test_plan_reasons_and_precedence(self):
+        # P-2, P-3, P-4, plus INCOMPLETE; mixed statuses rank DISPUTED > INCOMPLETE > NOT VERIFIED > REFUTED
+        cases = {"REFUTED": [("I1", "REFUTED", False)], "NOT VERIFIED": [("I1", "NOT VERIFIED", False)],
+                 "DISPUTED": [("I1", "REFUTED", False), ("I1", "DISPUTED", False)],
+                 "INCOMPLETE": [("I1", "NOT VERIFIED", False), ("I1", "INCOMPLETE", False)]}
+        for reason, statuses in cases.items():
+            with self.subTest(reason=reason):
+                planned = {e["issue_id"]: e["reason"] for e in self.plan(statuses)["planned"]}
+                self.assertEqual(planned["I1"], reason)
+
+    def test_plan_skips_non_technical_issues(self):
+        issues, dispositions, records = self.plan_inputs([], analysis=("I1", "I5"))
+        self.currency("plan", "--issues", issues, "--dispositions", dispositions, "--records", records, "--out", self.out / "plan.json")
+        document = json.loads((self.out / "plan.json").read_text(encoding="utf-8"))
+        self.assertEqual(document["not_planned"], [{"issue_id": "I5", "reason": "NOT_TECHNICAL"}])
+        self.assertEqual([entry["issue_id"] for entry in document["planned"]], ["I1"])
+
+    def test_plan_unknown_status_is_incomplete(self):
+        # An empty or unknown final status is never read as "no record"
+        for status in ("", "MYSTERY"):
+            with self.subTest(status=status):
+                planned = {e["issue_id"]: e["reason"] for e in self.plan([("I1", status, False), ("I1", "REFUTED", False)])["planned"]}
+                self.assertEqual(planned["I1"], "INCOMPLETE")
+
+    def test_plan_verified_but_not_bridged_counts_as_confirmed(self):
+        # P-6 (corrected): a verified split resolved by a frozen test is not bridged, but main still confirms the issue
+        document = self.plan([("I1", "CROSS-MODEL VERIFIED", False)])
+        self.assertNotIn("I1", [entry["issue_id"] for entry in document["planned"]])
+
+    def test_plan_refusals(self):
+        # P-7 and P-8
+        for status in ("NO_ANALYSIS", "AWAITING_CONFIRMATION"):
+            with self.subTest(status=status):
+                self.assertIn("READY", self.plan([], status=status, expect=2))
+        self.assertIn("another issue list", self.plan([], records_issues_sha="0" * 64, expect=2))
+
+    # ---- flags (F-1 to F-9)
+
+    def flags(self, issues, records=(), expect=0, issues_digest=None):
+        self.revision()
+        issues_path = write(self.tmp / "flag-issues.json", {"record_type": "ghsa_issue_list", "ghsa_id": IDS["base"], "issues": issues})
+        args = ["flags", "--repo-dir", self.repo, "--revision", self.out / "revision.json", "--issues", issues_path]
+        issues_sha = hashlib.sha256(issues_path.read_bytes()).hexdigest()
+        for index, sites in enumerate(records):
+            path = write(self.tmp / f"flag-records-{index}.json", {"repository": REPO, "ghsa_id": IDS["base"], "records": sites,
+                                                                    "issues_sha256": issues_sha if issues_digest is None else issues_digest})
+            args += ["--records", path]
+        result = self.currency(*args, "--out", self.out / "flags.json", expect=expect)
+        if expect:
+            return result
+        return {entry["issue_id"]: entry for entry in json.loads((self.out / "flags.json").read_text(encoding="utf-8"))["issues"]}
+
+    def test_flags_function_and_file_changes(self):
+        flags = self.flags([currency_issue("I1", paths=["src/lib.rs"], symbols=["apply_profile"]),
+                            currency_issue("I2", paths=["src/lib.rs"], symbols=["stable_fn"])])
+        self.assertEqual([c["commit"] for c in flags["I1"]["function_commits"]], [self.ids["pin"]])  # F-1, followed through the rename (F-3)
+        self.assertEqual(flags["I1"]["renames"], [{"from": "src/lib.rs", "to": "src/core.rs"}])
+        self.assertEqual(flags["I2"]["function_commits"], [])  # F-2: function unchanged
+        self.assertGreater(flags["I2"]["file_commit_count"], 0)
+        self.assertEqual(flags["I1"]["presence"]["src/lib.rs"],
+                         {"report_revision": True, "pin": True, "report_path": "src/lib.rs", "pin_path": "src/core.rs"})
+
+    def test_flags_presence_scope_and_boundaries(self):
+        flags = self.flags([currency_issue("I1", paths=["src/lib.rs"], symbols=["removed_fn", "profile"]),
+                            currency_issue("I2", paths=["src/lib.rs"], symbols=["build_command"])])
+        self.assertEqual(flags["I1"]["symbols"]["removed_fn"], {"report_revision": True, "pin": False})  # F-4
+        self.assertEqual(flags["I1"]["symbols"]["profile"], {"report_revision": False, "pin": False})  # F-8: no substring match
+        self.assertEqual(flags["I2"]["function_commits"], [])  # F-5: other.rs's build_command changed, but the issue names lib.rs
+        self.assertEqual(flags["I2"]["definitions"]["build_command"], {"files": ["src/lib.rs"], "definition_count": 2})
+
+    def test_flags_anchors(self):
+        site = {"record_id": "R1", "answers": [{"ghsa_id": IDS["base"], "issue_id": "I2"}], "final_status": "CROSS-MODEL VERIFIED",
+                "ghsa_eligible": True, "control_site": {"symbol": "apply_profile", "relative_path": "src/lib.rs", "line": 1}}
+        unverified = dict(site, record_id="R2", final_status="REFUTED", control_site={"symbol": "stable_fn", "relative_path": "src/lib.rs", "line": 5})
+        flags = self.flags([currency_issue("I1"), currency_issue("I2"),
+                            currency_issue("I3", paths=["../outside.rs", "/etc/passwd", "-L", "src/lib.rs"], symbols=["bad;name", "apply_profile"])],
+                           records=[[site, unverified]])
+        self.assertTrue(flags["I1"]["no_anchor"])  # F-6
+        self.assertEqual(flags["I2"]["anchors"], [{"kind": "path", "value": "src/lib.rs", "source": "control_site"},
+                                                  {"kind": "symbol", "value": "apply_profile", "source": "control_site"}])  # F-7; REFUTED site unused
+        self.assertEqual([c["commit"] for c in flags["I2"]["function_commits"]], [self.ids["pin"]])
+        self.assertEqual(sorted(a["value"] for a in flags["I3"]["rejected_anchors"]), ["-L", "../outside.rs", "/etc/passwd", "bad;name"])  # F-9
+        self.assertFalse(flags["I3"]["no_anchor"])
+
+    def test_flags_function_range_runs_to_the_next_definition(self):
+        # git -L :funcname ranges end at the next definition line, so an edit just below a function flags it (documented noise)
+        fixture_git(self.repo, "checkout", "-q", "main")
+        core = (self.repo / "src/core.rs").read_text(encoding="utf-8")
+        (self.repo / "src/core.rs").write_text(core + "\n// a note after the last function\n", encoding="utf-8")
+        fixture_git(self.repo, "commit", "-q", "-am", "note after build_command", date="2026-06-01T00:00:00Z")
+        new_pin = fixture_git(self.repo, "rev-parse", "HEAD")
+        fixture_git(self.repo, "update-ref", "refs/remotes/origin/main", new_pin)
+        record = json.loads(self.intake.read_text(encoding="utf-8"))
+        write(self.intake, dict(record, pinned_target=dict(record["pinned_target"], revision=new_pin)))
+        flags = self.flags([currency_issue("I1", paths=["src/lib.rs"], symbols=["build_command"])])
+        self.assertEqual([c["commit"] for c in flags["I1"]["function_commits"]], [new_pin])
+
+    def test_flags_follow_renames_and_indented_methods(self):
+        # F-3 with a change before the rename; M1: an indented method in an impl block (git's Rust function-header rule)
+        flags = self.flags([currency_issue("I1", paths=["src/lib.rs"], symbols=["early_fn"]),
+                            currency_issue("I2", paths=["src/imp.rs"], symbols=["handle"])])
+        self.assertEqual([c["commit"] for c in flags["I1"]["function_commits"]], [self.ids["c3"]])
+        self.assertEqual([c["commit"] for c in flags["I2"]["function_commits"]], [self.ids["c3"]])
+
+    def test_flags_pin_side_control_site(self):
+        # M3: a control site from the pin's analysis carries the renamed path; it still names the report revision's file
+        site = {"record_id": "R1", "answers": [{"ghsa_id": IDS["base"], "issue_id": "I1"}], "final_status": "CROSS-MODEL VERIFIED",
+                "ghsa_eligible": True, "control_site": {"symbol": "build_command", "relative_path": "src/core.rs", "line": 9}}
+        flags = self.flags([currency_issue("I1")], records=[[site]])
+        self.assertEqual(flags["I1"]["definitions"]["build_command"]["files"], ["src/lib.rs"])
+        self.assertEqual(flags["I1"]["function_commits"], [])  # not other.rs's side commit
+        self.assertEqual(flags["I1"]["presence"]["src/core.rs"],
+                         {"report_revision": True, "pin": True, "report_path": "src/lib.rs", "pin_path": "src/core.rs"})
+
+    def test_flags_same_named_methods_in_one_file_are_ambiguous(self):
+        flags = self.flags([currency_issue("I1", paths=["src/twice.rs"], symbols=["B::run"])])
+        self.assertEqual(flags["I1"]["function_history"], [{"symbol": "run", "path": "src/twice.rs", "status": "AMBIGUOUS_IN_FILE"}])
+        self.assertEqual(flags["I1"]["function_commits"], [])
+
+    def test_flags_record_unavailable_history(self):
+        # M2: the function is gone at the pin, so git cannot follow it: recorded, not read as unchanged
+        flags = self.flags([currency_issue("I1", paths=["src/lib.rs"], symbols=["removed_fn"])])
+        self.assertEqual(flags["I1"]["function_history"], [{"symbol": "removed_fn", "path": "src/lib.rs", "status": "UNAVAILABLE_AT_PIN"}])
+
+    def test_flags_definition_fallback_only_when_unique(self):
+        # M4 (maintainer decision): without a named file, only a unique definition is used
+        flags = self.flags([currency_issue("I1", symbols=["build_command"]), currency_issue("I2", symbols=["handle"])])
+        self.assertEqual(flags["I1"]["definitions"]["build_command"], {"files": [], "definition_count": 2})
+        self.assertEqual(flags["I1"]["function_commits"], [])
+        self.assertEqual(flags["I2"]["definitions"]["handle"], {"files": ["src/imp.rs"], "definition_count": 1})
+        self.assertEqual([c["commit"] for c in flags["I2"]["function_commits"]], [self.ids["c3"]])
+
+    def test_flags_no_anchor_and_record_identity(self):
+        flags = self.flags([currency_issue("I1", symbols=["io"])])
+        self.assertTrue(flags["I1"]["no_anchor"])  # L2: kept as an anchor but nothing could be checked
+        self.assertIn("another issue list", self.flags([currency_issue("I1")], records=[[]], expect=2, issues_digest="0" * 64))  # L7
+
+    def test_git_runs_hardened(self):
+        # H1, H2, L7: the clone's own config cannot start a signature program; no lazy fetch, no transport, literal pathspecs
+        currency = runpy.run_path(str(SCRIPTS / "currency-check.py"))
+        calls = []
+
+        class Done:
+            returncode, stdout, stderr = 0, "", ""
+
+        class FakeSubprocess:
+            PIPE, SubprocessError = subprocess.PIPE, subprocess.SubprocessError
+
+            @staticmethod
+            def run(argv, **kwargs):
+                calls.append((argv, kwargs))
+                return Done()
+
+        currency["git"].__globals__["subprocess"] = FakeSubprocess
+        currency["git"](self.repo, "log", "--format=%H")
+        argv, kwargs = calls[0]
+        self.assertIn("log.showSignature=false", argv)
+        self.assertIn("core.fsmonitor=false", argv)
+        environment = kwargs["env"]
+        self.assertEqual((environment["GIT_NO_LAZY_FETCH"], environment["GIT_ALLOW_PROTOCOL"], environment["GIT_LITERAL_PATHSPECS"]),
+                         ("1", "", "1"))
+        self.assertEqual((environment["GIT_CONFIG_GLOBAL"], environment["GIT_CONFIG_NOSYSTEM"]), (os.devnull, "1"))
+        self.assertEqual(kwargs["errors"], "replace")  # L3: a non-UTF-8 subject cannot crash the command
+
+    # ---- outcome (O-1 to O-12), test results, brief, checkout, sandbox profile
+
+    V = "CROSS-MODEL VERIFIED"
+
+    def outcome_inputs(self, rows, report_records=True, report_revision=None, issues_sha="a" * 64):
+        """rows: issue_id -> (main reason, report-revision status or None, test spec or None). A report status of
+        "UNBRIDGED" writes a verified record that is not ghsa_eligible. A test spec is (state, at_pin[, base, pin]) where
+        base and pin override base_validation and pin_validation fields."""
+        revision = self.revision()
+        plan = write(self.out / "plan.json", {"record_type": "ghsa_currency_plan", "ghsa_id": IDS["base"], "issues_sha256": issues_sha,
+                                              "primary_revision": revision["pin"],
+                                              "planned": [{"issue_id": i, "mechanism": f"m {i}", "reason": row[0]} for i, row in rows.items()],
+                                              "not_planned": []})
+        records = [{"record_id": f"R-{i}-{n}", "answers": [{"ghsa_id": IDS["base"], "issue_id": i}],
+                    "final_status": self.V if status == "UNBRIDGED" else status, "ghsa_eligible": status == self.V}
+                   for i, row in rows.items() if row[1] is not None
+                   for n, status in enumerate(row[1] if isinstance(row[1], tuple) else (row[1],))]
+        args = ["outcome", "--revision", self.out / "revision.json", "--plan", plan]
+        if report_records:
+            path = write(self.tmp / "report-revision-records.json", {"repository": REPO, "ghsa_id": IDS["base"], "issues_sha256": issues_sha,
+                                                                      "primary_revision": report_revision or revision["report_revision"],
+                                                                      "records": records})
+            args += ["--report-records", path]
+        for i, row in rows.items():
+            if row[2]:
+                state, at_pin, *extra = row[2]
+                document = self.make_test_result(i, state, at_pin, revision)
+                if extra:
+                    document["base_validation"].update(extra[0])
+                if len(extra) > 1:
+                    document["pin_validation"].update(extra[1])
+                args += ["--test", write(self.tmp / f"test-{i}.json", document)]
+        return args
+
+    def make_test_result(self, issue_id, state, at_pin, revision, **overrides):
+        observed = state == "TEST_OBSERVED"
+        document = {"record_type": "ghsa_currency_test", "producer": "currency-check.py test-result", "ghsa_id": IDS["base"],
+                    "issue_id": issue_id, "issues_sha256": "a" * 64, "report_revision": revision["report_revision"], "pin": revision["pin"],
+                    "registry_sha256": "b" * 64,
+                    "base_validation": {"state": state, "fails_at_base": observed, "controls_hold": observed, "sink_reached": observed},
+                    "pin_validation": {"controls_hold": True, "sink_reached": True}, "at_pin": at_pin}
+        document.update(overrides)
+        return document
+
+    def outcome(self, args, expect=0):
+        result = self.currency(*args, "--out", self.out / "outcome.json", expect=expect)
+        if expect:
+            return result
+        return {e["issue_id"]: e for e in json.loads((self.out / "outcome.json").read_text(encoding="utf-8"))["issues"]}
+
+    def test_outcome_rule(self):
+        # Analysis-only rows through the command (test results are refused until phase 2b)
+        V = self.V
+        rows = {"I4": ("REFUTED", V, None),                                   # O-4
+                "I5": ("REFUTED", "DISPUTED", None),                          # O-5
+                "I6": ("DISPUTED", V, None),                                  # O-6
+                "I7": ("REFUTED", "REFUTED", None),                           # O-7
+                "I8": ("NO_RECORD", "NOT VERIFIED", None),                    # O-8
+                "I10": ("REFUTED", "INCOMPLETE", None),                       # O-10
+                "I11": ("REFUTED", None, None),                               # report-revision analysis ran, no record for it
+                "I12": ("INCOMPLETE", V, None),                               # the pin's analysis did not finish
+                "I13": ("DISPUTED", "REFUTED", None),                         # disputed at either revision (D4)
+                "I17": ("REFUTED", "UNBRIDGED", None),                        # verified but not bridged at the report revision
+                "I18": ("REFUTED", "MYSTERY", None),                          # an unknown status is INCOMPLETE
+                "I20": ("REFUTED", (V, "DISPUTED"), None),                    # a dispute is not masked by another verified record
+                "I21": ("REFUTED", (V, "INCOMPLETE"), None),
+                "I22": ("REFUTED", (V, "REFUTED"), None)}                     # a verified record still outranks a refutation
+        result = self.outcome(self.outcome_inputs(rows))
+        expected = {"I4": ("FIXED_SINCE_REPORT", "ANALYSIS", ""), "I5": ("UNDECIDED", "ANALYSIS", "DISPUTED"),
+                    "I6": ("UNDECIDED", "ANALYSIS", "DISPUTED"), "I7": ("NOT_CONFIRMED_AT_REPORT", "ANALYSIS", "REFUTED"),
+                    "I8": ("NOT_CONFIRMED_AT_REPORT", "ANALYSIS", "NOT VERIFIED"), "I10": ("UNDECIDED", "ANALYSIS", "INCOMPLETE"),
+                    "I11": ("NOT_CONFIRMED_AT_REPORT", "ANALYSIS", "NO_RECORD"), "I12": ("UNDECIDED", "ANALYSIS", "INCOMPLETE"),
+                    "I13": ("UNDECIDED", "ANALYSIS", "DISPUTED"), "I17": ("UNDECIDED", "ANALYSIS", "UNBRIDGED_AT_REPORT"),
+                    "I18": ("UNDECIDED", "ANALYSIS", "INCOMPLETE"), "I20": ("UNDECIDED", "ANALYSIS", "DISPUTED"),
+                    "I21": ("UNDECIDED", "ANALYSIS", "INCOMPLETE"), "I22": ("FIXED_SINCE_REPORT", "ANALYSIS", "")}
+        self.assertEqual({i: (e["outcome"], e["evidence"], e["reason"]) for i, e in result.items()}, expected)
+        self.assertFalse(any(e["contradiction"] for e in result.values()))
+        document = json.loads((self.out / "outcome.json").read_text(encoding="utf-8"))
+        self.assertIn("proposal for the human", document["note"])
+
+    def test_outcome_refuses_test_results(self):
+        # The --develop-fix test-only entry is not yet usable (phase 2b), so outcome accepts no test result
+        revision = self.revision()
+        args = self.outcome_inputs({"I1": ("REFUTED", None, None)})
+        path = write(self.tmp / "a-test.json", self.make_test_result("I1", "TEST_OBSERVED", "PASSED", revision))
+        self.assertIn("not yet usable", self.outcome(args + ["--test", path], expect=2))
+
+    def test_decide_test_rules(self):
+        # The test rules kept for phase 2b, checked directly (O-1 to O-3, O-9, pin evidence, base controls, same revision)
+        currency = runpy.run_path(str(SCRIPTS / "currency-check.py"))
+        decide, V = currency["decide"], self.V
+        revision = {"report_revision": "1" * 40, "pin": "2" * 40}
+
+        def test(state, at_pin, base=None, pin=None):
+            document = self.make_test_result("I1", state, at_pin, revision)
+            document["base_validation"].update(base or {})
+            document["pin_validation"].update(pin or {})
+            return document
+
+        cases = [(("REFUTED", None, test("TEST_OBSERVED", "PASSED")), ("FIXED_SINCE_REPORT", "TEST", "")),
+                 (("NOT VERIFIED", V, test("TEST_OBSERVED", "FAILED")), ("STILL_PRESENT", "TEST", "")),
+                 (("REFUTED", V, test("TEST_OBSERVED", "UNRESOLVED")), ("UNDECIDED", "TEST", "TEST_UNRESOLVED_AT_PIN")),
+                 (("NO_RECORD", V, test("TEST_UNVALIDATED", "PASSED")), ("FIXED_SINCE_REPORT", "ANALYSIS", "")),
+                 (("REFUTED", "REFUTED", test("TEST_UNVALIDATED", "PASSED", {"fails_at_base": True, "controls_hold": True, "sink_reached": True})),
+                  ("NOT_CONFIRMED_AT_REPORT", "ANALYSIS", "REFUTED")),
+                 (("REFUTED", V, test("TEST_OBSERVED", "PASSED", pin={"sink_reached": False})), ("UNDECIDED", "TEST", "TEST_NOT_AT_SINK_AT_PIN")),
+                 (("REFUTED", V, test("TEST_OBSERVED", "FAILED", pin={"controls_hold": False})), ("UNDECIDED", "TEST", "TEST_NOT_AT_SINK_AT_PIN")),
+                 (("REFUTED", V, test("TEST_OBSERVED", "PASSED", {"controls_hold": False})), ("FIXED_SINCE_REPORT", "ANALYSIS", ""))]
+        for (main, report, document), expected in cases:
+            with self.subTest(main=main, report=report, state=document["base_validation"]["state"], at_pin=document["at_pin"]):
+                self.assertEqual(decide(main, report, document), expected)
+        self.assertEqual(decide("REFUTED", V, test("TEST_OBSERVED", "PASSED"), True), ("UNDECIDED", "ANALYSIS", "SAME_REVISION"))
+
+    def test_outcome_same_revision_is_undecided(self):
+        # A report filed at the current pin cannot have been fixed since
+        record = json.loads(self.intake.read_text(encoding="utf-8"))
+        write(self.intake, dict(record, pinned_target=dict(record["pinned_target"], revision=self.ids["c2"])))
+        result = self.outcome(self.outcome_inputs({"I1": ("REFUTED", self.V, None)}))
+        self.assertEqual((result["I1"]["outcome"], result["I1"]["reason"]), ("UNDECIDED", "SAME_REVISION"))
+
+    def test_outcome_without_report_revision_analysis(self):
+        # O-10: no report-revision analysis yet
+        result = self.outcome(self.outcome_inputs({"I1": ("REFUTED", None, None)}, report_records=False))
+        self.assertEqual((result["I1"]["outcome"], result["I1"]["reason"]), ("UNDECIDED", "INCOMPLETE"))
+
+    def test_load_test_refusals(self):
+        # O-11 for test results, checked directly (the command refuses every test result until phase 2b)
+        currency = runpy.run_path(str(SCRIPTS / "currency-check.py"))
+        revision = {"report_revision": "1" * 40, "pin": "2" * 40}
+        plan = {"issues_sha256": "a" * 64}
+        good = self.make_test_result("I1", "TEST_OBSERVED", "PASSED", revision)
+        cases = {"test for an unplanned issue": (self.make_test_result("I9", "TEST_OBSERVED", "PASSED", revision), "not planned"),
+                 "test for another advisory": (dict(good, ghsa_id=IDS["variant"]), "another advisory"),
+                 "test at another revision": (dict(good, pin="e" * 40), "another revision"),
+                 "test for another issue list": (dict(good, issues_sha256="0" * 64), "another issue list"),
+                 "hand-written test": (dict(good, producer="operator"), "not written by"),
+                 "no registry digest": (dict(good, registry_sha256=""), "registry digest"),
+                 "unknown test state": (dict(good, base_validation=dict(good["base_validation"], state="MAYBE")), "state"),
+                 "text where a boolean belongs": (dict(good, base_validation=dict(good["base_validation"], sink_reached="\x1b[2Jyes")), "true or false"),
+                 "unknown at_pin": (dict(good, at_pin="MAYBE"), "at_pin")}
+        for name, (document, message) in cases.items():
+            with self.subTest(case=name):
+                path = write(self.tmp / "bad-test.json", document)
+                with self.assertRaises(currency["UsageError"]) as caught:
+                    currency["load_test"](str(path), IDS["base"], revision, plan, {"I1"})
+                self.assertIn(message, str(caught.exception))
+        self.assertEqual(currency["load_test"](str(write(self.tmp / "ok-test.json", good)), IDS["base"], revision, plan, {"I1"})["issue_id"], "I1")
+
+    def test_outcome_refusals(self):
+        rows = {"I1": ("REFUTED", None, None)}
+        self.assertIn("describe another revision", self.outcome(self.outcome_inputs(rows, report_revision="f" * 40), expect=2))
+        args = self.outcome_inputs(rows)
+        plan = json.loads((self.out / "plan.json").read_text(encoding="utf-8"))
+        write(self.out / "plan.json", dict(plan, primary_revision=""))
+        self.assertIn("another pin", self.outcome(args, expect=2))  # the pin check is unconditional
+        write(self.out / "plan.json", dict(plan, ghsa_id=IDS["variant"]))
+        self.assertIn("plan belongs to another advisory", self.outcome(args, expect=2))
+        records = json.loads((self.tmp / "report-revision-records.json").read_text(encoding="utf-8"))
+        write(self.out / "plan.json", plan)
+        write(self.tmp / "report-revision-records.json", dict(records, issues_sha256="0" * 64))
+        self.assertIn("another issue list", self.outcome(args, expect=2))
+
+    def test_outcome_never_reads_flags(self):
+        # O-12: flags are information only
+        code, out, err = run("currency-check.py", "outcome", "--help")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("--flags", out)
+
+    def frozen_result(self, path, test_id, revision, literal, registry="b" * 64, status="COMPLETE"):
+        return write(path, {"role_type": "computation", "check_kind": "FROZEN_TEST_REFERENCE", "frozen_test_id": test_id,
+                            "target_revision": revision, "status": status, "literal_check_result": literal, "registry_sha256": registry})
+
+    def coverage(self, path, count, line=3, filename="src/core.rs"):
+        return write(path, {"data": [{"files": [{"filename": f"/abs/checkout/{filename}", "segments": [[line, 1, count, True, True], [line, 9, 0, True, True]]}]}]})
+
+    def result_inputs(self, base, pin, base_count=2, pin_count=1, decision="ACCEPT", registry_pin="b" * 64):
+        revision = self.revision()
+        plan = write(self.out / "plan.json", {"record_type": "ghsa_currency_plan", "ghsa_id": IDS["base"], "issues_sha256": "a" * 64,
+                                              "primary_revision": revision["pin"],
+                                              "planned": [{"issue_id": "I1", "mechanism": "m", "reason": "REFUTED"}], "not_planned": []})
+        args = ["test-result", "--revision", self.out / "revision.json", "--plan", plan, "--issue-id", "I1",
+                "--adversarial", "T-ADV", "--benign", "T-OK"]
+        for test_id in ("T-ADV", "T-OK"):
+            args += ["--base-result", self.frozen_result(self.tmp / f"base-{test_id}.json", test_id, revision["report_revision"], base[test_id])]
+            args += ["--pin-result", self.frozen_result(self.tmp / f"pin-{test_id}.json", test_id, revision["pin"], pin[test_id], registry=registry_pin)]
+        args += ["--base-coverage", self.coverage(self.tmp / "cov-base.json", base_count, filename="src/lib.rs"), "--base-sink", "src/lib.rs:3",
+                 "--pin-coverage", self.coverage(self.tmp / "cov-pin.json", pin_count), "--pin-sink", "src/core.rs:3",
+                 "--poc-overlap", write(self.tmp / "poc.json", {"check": "poc-overlap", "ghsa_id": IDS["base"], "decision": decision,
+                                                                "test_file_sha256": "c" * 64}),
+                 "--out", self.out / "test-I1.json"]
+        return args
+
+    def test_test_result_built_from_adapter_outputs(self):
+        # Finding 5: the result comes from deterministic-check results, coverage, and poc-overlap, not from the operator
+        self.currency(*self.result_inputs({"T-ADV": "FAILED", "T-OK": "PASSED"}, {"T-ADV": "PASSED", "T-OK": "PASSED"}))
+        document = json.loads((self.out / "test-I1.json").read_text(encoding="utf-8"))
+        self.assertEqual(document["base_validation"]["state"], "TEST_OBSERVED")
+        self.assertEqual((document["at_pin"], document["pin_validation"]["sink_reached"], document["pin_validation"]["controls_hold"]),
+                         ("PASSED", True, True))
+        self.assertEqual((document["base_validation"]["sink"], document["registry_sha256"]), ({"location": "src/lib.rs:3", "count": 2}, "b" * 64))
+        currency = runpy.run_path(str(SCRIPTS / "currency-check.py"))
+        revision = json.loads((self.out / "revision.json").read_text(encoding="utf-8"))
+        loaded = currency["load_test"](str(self.out / "test-I1.json"), IDS["base"], revision,
+                                       json.loads((self.out / "plan.json").read_text(encoding="utf-8")), {"I1"})
+        self.assertEqual(currency["decide"]("REFUTED", None, loaded), ("FIXED_SINCE_REPORT", "TEST", ""))  # accepted by the phase 2b rule
+        # not reached at the base: unvalidated; a still-failing test at the pin: FAILED; an unrun one: UNRESOLVED
+        self.currency(*self.result_inputs({"T-ADV": "FAILED", "T-OK": "PASSED"}, {"T-ADV": "FAILED", "T-OK": "PASSED"}, base_count=0))
+        document = json.loads((self.out / "test-I1.json").read_text(encoding="utf-8"))
+        self.assertEqual((document["base_validation"]["state"], document["at_pin"]), ("TEST_UNVALIDATED", "FAILED"))
+        self.currency(*self.result_inputs({"T-ADV": "FAILED", "T-OK": "PASSED"}, {"T-ADV": "NOT_RUN", "T-OK": "PASSED"}))
+        self.assertEqual(json.loads((self.out / "test-I1.json").read_text(encoding="utf-8"))["at_pin"], "UNRESOLVED")
+
+    def test_test_result_refusals(self):
+        ok_base, ok_pin = {"T-ADV": "FAILED", "T-OK": "PASSED"}, {"T-ADV": "PASSED", "T-OK": "PASSED"}
+        self.assertIn("ACCEPT poc-overlap", self.currency(*self.result_inputs(ok_base, ok_pin, decision="REJECT"), expect=2))
+        self.assertIn("different frozen-test registries",
+                      self.currency(*self.result_inputs(ok_base, ok_pin, registry_pin="d" * 64), expect=2))
+        args = self.result_inputs(ok_base, ok_pin)
+        index = next(i for i, a in enumerate(args) if str(a).endswith("pin-T-OK.json"))
+        missing = args[:index - 1] + args[index + 1:]  # drop the flag and its value together
+        self.assertIn("not the declared tests", self.currency(*missing, expect=2))
+        swapped = [str(a).replace("pin-T-ADV.json", "base-T-ADV.json") for a in args]
+        self.assertIn("another revision", self.currency(*swapped, expect=2))
+
+    def test_checkout_endpoint(self):
+        self.revision()
+        sandbox = self.tmp / "sandbox"
+        sandbox.mkdir()
+        refs_before = fixture_git(self.repo, "for-each-ref")
+        result = self.currency("checkout", "--repo-dir", self.repo, "--revision", self.out / "revision.json", "--which", "report",
+                               "--sandbox-dir", sandbox)
+        self.assertEqual(result["revision"], self.ids["c2"])
+        self.assertEqual(fixture_git(sandbox / "report", "rev-parse", "HEAD"), self.ids["c2"])
+        self.assertEqual(fixture_git(self.repo, "for-each-ref"), refs_before)  # the clone is only read
+        self.assertIn("already exists", self.currency("checkout", "--repo-dir", self.repo, "--revision", self.out / "revision.json",
+                                                      "--which", "report", "--sandbox-dir", sandbox, expect=2))
+        self.assertIn("must not be the clone", self.currency("checkout", "--repo-dir", self.repo, "--revision", self.out / "revision.json",
+                                                             "--which", "pin", "--sandbox-dir", self.repo / "src", expect=2))
+
+    def test_brief(self):
+        V = self.V
+        hostile = currency_issue("I1", paths=["src/lib.rs", "../x"], symbols=["apply_profile", "build_command"])
+        flags = self.flags([hostile, currency_issue("I2"), currency_issue("I3", symbols=["build_command"])])
+        self.assertEqual(len(flags), 3)
+        issues_sha = hashlib.sha256((self.tmp / "flag-issues.json").read_bytes()).hexdigest()
+        result = self.outcome(self.outcome_inputs({"I1": ("REFUTED", V, None), "I2": ("REFUTED", "REFUTED", None),
+                                                   "I3": ("REFUTED", "REFUTED", None)}, issues_sha=issues_sha))
+        outcome_doc = json.loads((self.out / "outcome.json").read_text(encoding="utf-8"))  # a phase 2b test result, injected to check rendering
+        revision = json.loads((self.out / "revision.json").read_text(encoding="utf-8"))
+        injected = self.make_test_result("I1", "TEST_OBSERVED", "FAILED", revision)
+        outcome_doc["issues"][0].update(outcome="STILL_PRESENT", evidence="TEST", reason="", contradiction=True,
+                                        test={"base_validation": injected["base_validation"], "pin_validation": injected["pin_validation"],
+                                              "at_pin": "FAILED", "validated": True})
+        write(self.out / "outcome.json", outcome_doc)
+        self.assertEqual(len(result), 3)
+        outcome = json.loads((self.out / "outcome.json").read_text(encoding="utf-8"))
+        outcome["issues"][0]["mechanism"] = "first\x1b[2J\u202eforged\n## I9"
+        write(self.out / "outcome.json", outcome)
+        fix_terms = write(self.tmp / "render-result.json", {"check": "render", "ghsa_id": IDS["base"], "fields": ["summary", "description"],
+                                                             "fix_terms_found": ["fixed in"]})
+        brief = self.out / "brief.txt"
+        self.currency("brief", "--outcome", self.out / "outcome.json", "--flags", self.out / "flags.json", "--fix-terms", fix_terms,
+                      "--out", brief)
+        text = brief.read_text(encoding="utf-8")
+        for expected in ("# Currency check brief", "proposals", "## I1", "Outcome: STILL_PRESENT (evidence TEST)",
+                         "contradicts the analysis at the pin", "Analysis at the pin: REFUTED", "at the report revision: CROSS-MODEL VERIFIED",
+                         '"TEST_OBSERVED"', "at the pin \"FAILED\"", "unverified fixing-commit candidates", self.ids["pin"],
+                         "history looked up in", "rejected anchors (not checked)", "## I2", "Outcome: NOT_CONFIRMED_AT_REPORT", "no anchor",
+                         "defined in several files, none named by the issue",
+                         "Fix wording in the description the report-revision analysis saw: \"fixed in\"",
+                         "Options: accept the proposal, or analyze again"):
+            self.assertIn(expected, text)
+        self.assertEqual([line for line in text.splitlines() if line.startswith("## ")], ["## I1", "## I2", "## I3"])
+        self.assertNotIn("\x1b", text)
+        self.assertNotIn("\u202e", text)
+        self.assertEqual((mode(brief), mode(self.out)), (0o600, 0o700))
+        self.currency("brief", "--outcome", self.out / "outcome.json", "--out", brief)
+        self.assertIn("not checked (pass --fix-terms)", brief.read_text(encoding="utf-8"))
+        other = write(self.tmp / "other-flags.json", dict(json.loads((self.out / "flags.json").read_text(encoding="utf-8")), pin="e" * 40))
+        self.assertIn("another revision", self.currency("brief", "--outcome", self.out / "outcome.json", "--flags", other, "--out", brief, expect=2))
+        relisted = write(self.tmp / "flags-relisted.json", dict(json.loads((self.out / "flags.json").read_text(encoding="utf-8")), issues_sha256="0" * 64))
+        self.assertIn("another issue list", self.currency("brief", "--outcome", self.out / "outcome.json", "--flags", relisted, "--out", brief, expect=2))
+        foreign = write(self.tmp / "render-other.json", dict(json.loads(fix_terms.read_text(encoding="utf-8")), ghsa_id=IDS["variant"]))
+        self.assertIn("another advisory", self.currency("brief", "--outcome", self.out / "outcome.json", "--fix-terms", foreign, "--out", brief, expect=2))
+
+    def test_sandbox_profile(self):
+        # The test-only entry's Phase 2 boundary (verified live on macOS; this checks the generated rules)
+        home = self.tmp / "home"
+        (home / ".cargo" / "bin").mkdir(parents=True)
+        (home / ".rustup").mkdir()
+        dotfiles = self.tmp / "dotfiles-ssh"
+        dotfiles.mkdir()
+        (home / ".ssh").symlink_to(dotfiles)  # a credential directory reached through a link
+        sandbox, run_root, clone = self.tmp / "sandbox", self.tmp / "runs-root", self.tmp / "clone-dir"
+        for path in (sandbox, run_root, clone):
+            path.mkdir()
+        env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(home), "TMPDIR": str(self.tmp / "tmp")}
+        (self.tmp / "tmp").mkdir()
+        out = self.tmp / "profile" / "profile.sb"
+        code, stdout, err = run("currency-check.py", "sandbox-profile", "--sandbox-dir", sandbox, "--run-root", run_root, "--repo-dir", clone,
+                                "--out", out, env=env)
+        self.assertEqual(code, 0, err)
+        lines = out.read_text(encoding="utf-8").splitlines()
+        real = lambda path: str(Path(path).resolve())
+        for rule in ("(deny network*)", "(deny lsopen)", "(deny appleevent-send)", "(deny file-write*)", f'(deny file-read* (subpath "{real(home)}"))'):
+            self.assertIn(rule, lines)
+        allow_read = next(line for line in lines if line.startswith("(allow file-read*"))
+        self.assertEqual(allow_read, f'(allow file-read* (literal "{real(home)}") (subpath "{real(home / ".rustup")}") '
+                                     f'(subpath "{real(home / ".cargo" / "bin")}"))')
+        deny_read = [line for line in lines if line.startswith("(deny file-read*") and "subpath" in line][-1]
+        home_real = Path(real(home))
+        for path in (home_real / ".ssh", real(dotfiles), home_real / ".netrc", home_real / ".cargo" / "credentials.toml", real(run_root), real(clone)):
+            self.assertIn(f'(subpath "{path}")', deny_read)  # the link's target is denied too
+        allow_write = next(line for line in lines if line.startswith("(allow file-write*"))
+        self.assertIn(f'(subpath "{real(sandbox)}")', allow_write)
+        self.assertNotIn(real(home), allow_write)  # nothing in the home directory is writable, the Cargo home included
+        self.assertLess(lines.index("(deny file-write*)"), lines.index(allow_write))  # later rules win in Seatbelt
+        self.assertTrue((sandbox / "cargo-home").is_dir())
+        self.assertEqual(json.loads(stdout)["cargo_home"], real(sandbox / "cargo-home"))
+        # Phase 2 runs with a home inside the sandbox (Cargo's git library otherwise reads the real home's configuration)
+        self.assertEqual(json.loads(stdout)["environment"], {"HOME": real(sandbox / "home"), "RUSTUP_HOME": real(home / ".rustup"),
+                                                            "CARGO_HOME": real(sandbox / "cargo-home")})
+        self.assertEqual(mode(out), 0o600)
+        inside = home / "work"
+        inside.mkdir()
+        for bad in (inside, clone / "sub"):
+            bad.mkdir(exist_ok=True)
+            code, stdout, err = run("currency-check.py", "sandbox-profile", "--sandbox-dir", bad, "--run-root", run_root, "--repo-dir", clone,
+                                    "--out", out, env=env)
+            self.assertEqual(code, 2, stdout or err)
+            self.assertIn("must be outside", err)
+
+    def test_restricted_dir_matches_across_scripts(self):
+        import inspect
+        currency = runpy.run_path(str(SCRIPTS / "currency-check.py"))
+        self.assertEqual(inspect.getsource(currency["restricted_dir"]), inspect.getsource(DEDUP["restricted_dir"]))
+
+    def test_flags_only_technical_issues_and_never_an_outcome(self):
+        flags = self.flags([currency_issue("I1", paths=["src/lib.rs"]), currency_issue("I2", paths=["src/lib.rs"], technical=False)])
+        self.assertEqual(list(flags), ["I1"])
+        self.assertNotIn("outcome", json.dumps(flags))
+
+
 class PocOverlapTest(Workspace):
     def check(self, test_text):
         intake_dir, _ = self.capture("base")
@@ -2813,6 +3594,9 @@ class PocOverlapTest(Workspace):
     def test_short_shared_fragments_are_accepted(self):
         code, out = self.check("#[test]\nfn fixture() { let key = \"workspace.auto_trust\"; let p = \"../\"; let t = \"fixture_task_alpha\"; }\n")
         self.assertEqual((code, out["decision"]), (0, "ACCEPT"))
+        # the currency check's test-result binds the verdict to the advisory and the test file
+        self.assertEqual(out["ghsa_id"], IDS["base"])
+        self.assertEqual(out["test_file_sha256"], hashlib.sha256((self.tmp / "test_fixture.rs").read_bytes()).hexdigest())
 
 
 class SchemaTest(unittest.TestCase):

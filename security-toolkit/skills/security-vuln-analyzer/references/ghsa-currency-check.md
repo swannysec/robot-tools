@@ -68,12 +68,15 @@ information.
      none when a generic name is defined in several files (`definition_count` shows how many);
      then the commits touching that function (hash, subject, symbol, path). `git log -L` runs with
      git's built-in Rust function-header rule, so indented methods in `impl` blocks are found;
-   - `function_history`: per function and file, `OK`, or `UNAVAILABLE_AT_PIN` when git cannot
-     follow it (for example the function is gone at the pin); unavailable is not the same as
-     unchanged;
+   - `function_history`: per function and file, `OK`; `UNAVAILABLE_AT_PIN` when git cannot follow
+     it (for example the function is gone at the pin); or `AMBIGUOUS_IN_FILE` when the file defines
+     several functions with that name (for example methods of two types), since `git log -L` would
+     follow only the first. Neither is the same as unchanged;
    - `file_commit_count` and `file_history`: commits touching the named files (a count only; busy
      files change constantly, so it does not discriminate);
    - `no_anchor`: true when no path and no symbol could be checked.
+
+   The output also carries the issue list's digest (`issues_sha256`).
 
    A function's range follows git's `-L :<funcname>` rule: it runs from the definition line to
    the line before the next function header, so an edit just below a function also flags it.
@@ -83,9 +86,14 @@ information.
 4. **Analysis at the report revision.** For the planned issues only, run the existing analysis
    flow at `report_revision`: a fresh read-only snapshot and source registry at that commit, the
    Phase 1 issue listing from `intake-check.py issue-scope --issues <issues.json> --dispositions
-   <dispositions.json> --currency-plan <plan.json> --out <file>` (exactly the planned issues; it
-   refuses a plan for another advisory, issue list, or dispositions file, an empty plan, and a
-   plan naming an issue outside `analysis_issue_ids`), and the advisory rendered with
+   <dispositions.json> --currency-plan <plan.json> --intake <intake-record.json> --out <file>`
+   (exactly the planned issues; it refuses a plan for another advisory, issue list, or
+   dispositions file, an empty plan, a plan naming an issue outside `analysis_issue_ids`, and a
+   missing or foreign intake record). An issue whose quote is not in the summary or description
+   (it came from a comment or a reporter field) has its quote withheld from the listing, so a fix
+   named there cannot reach the analysis; the output lists those issues as `quotes_withheld` and
+   reports fix wording in the listing's own text (model-written mechanisms and triggers included)
+   as `fix_terms_found`, and the advisory rendered with
    `intake-check.py render --intake <intake-record.json> --fix-blind --out <file>`. The fix-blind
    rendering keeps only the summary and description: comments, which may name a fixing change, and
    every reporter vulnerability field (package, version range, patched versions, vulnerable
@@ -128,8 +136,8 @@ information.
    | 4 | A validated test passes at the pin | `FIXED_SINCE_REPORT` | `TEST` |
    | 5 | A validated test fails at the pin | `STILL_PRESENT` (contradicts the pin's analysis; flagged) | `TEST` |
    | 6 | The report revision has not been analyzed | `UNDECIDED` | `ANALYSIS`, `INCOMPLETE` |
-   | 7 | Either analysis is `DISPUTED` for the issue | `UNDECIDED` | `ANALYSIS`, `DISPUTED` |
-   | 8 | Either analysis is `INCOMPLETE` (including an empty or unknown final status) | `UNDECIDED` | `ANALYSIS`, `INCOMPLETE` |
+   | 7 | Either analysis is `DISPUTED` for the issue (at the report revision, any `DISPUTED` record counts, even beside a verified one) | `UNDECIDED` | `ANALYSIS`, `DISPUTED` |
+   | 8 | Either analysis is `INCOMPLETE` (including an empty or unknown final status; at the report revision, any such record counts) | `UNDECIDED` | `ANALYSIS`, `INCOMPLETE` |
    | 9 | The report revision's only confirmation is a verified record that is not bridged (`ghsa_eligible` false) | `UNDECIDED` | `ANALYSIS`, `UNBRIDGED_AT_REPORT` |
    | 10 | The report revision confirms the issue with a bridged verified record and the pin did not | `FIXED_SINCE_REPORT` | `ANALYSIS` |
    | 11 | The report revision does not confirm it (`REFUTED`, `NOT VERIFIED`, or no record) | `NOT_CONFIRMED_AT_REPORT` | `ANALYSIS`, that status |
@@ -154,7 +162,8 @@ information.
    anchors, function commits labeled as unverified fixing-commit candidates, unavailable history,
    file-commit count), the fix wording the report-revision analysis saw, and the options: accept
    the proposal, or analyze again. Mechanisms, anchors, and commit subjects appear as one-line JSON
-   strings. It refuses flags for another advisory or revision and a render output for another
+   strings. It refuses flags for another advisory, revision, or issue list (issue IDs are joined
+   only when both outputs carry the same issue-list digest) and a render output for another
    advisory. Never send the brief to a model.
 
 ## Operator sequence for one report

@@ -2483,8 +2483,10 @@ class IssueScopeTest(Workspace):
         issues, dispositions = self.documents(analysis=("I1", "I2"))
         plan = self.currency_plan(issues, ["I2"])
         out = self.tmp / "currency" / "issue-scope.txt"
+        intake_dir, _ = self.capture("base")
+        intake = intake_dir / "intake-record.json"
         code, stdout, err = run("intake-check.py", "issue-scope", "--issues", issues, "--dispositions", dispositions,
-                                "--currency-plan", plan, "--out", out)
+                                "--currency-plan", plan, "--intake", intake, "--out", out)
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(stdout)["issue_ids"], ["I2"])  # X-3
         text = out.read_text(encoding="utf-8")
@@ -2498,11 +2500,40 @@ class IssueScopeTest(Workspace):
         for name, (path, message) in cases.items():
             with self.subTest(case=name):
                 code, stdout, err = run("intake-check.py", "issue-scope", "--issues", issues, "--dispositions", dispositions,
-                                        "--currency-plan", path, "--out", out)
+                                        "--currency-plan", path, "--intake", intake, "--out", out)
                 self.assertEqual(code, 2, stdout or err)
                 self.assertIn(message, err)
         result, text = self.scope(issues, dispositions)  # X-5: without the plan, unchanged
         self.assertEqual(result["issue_ids"], ["I1", "I2"])
+
+    def test_currency_scope_withholds_quotes_outside_the_blind_text(self):
+        issues, dispositions = self.documents(analysis=("I1", "I2"))
+        document = json.loads(issues.read_text(encoding="utf-8"))
+        document["issues"][0].update(quote="apply_profile skips authorization; fixed in PR 99",
+                                     mechanism="loader skips the check (fixed in a later release)")
+        write(issues, document)
+        bound = json.loads(dispositions.read_text(encoding="utf-8"))
+        bound["depends_on"]["issues_sha256"] = hashlib.sha256(issues.read_bytes()).hexdigest()
+        write(dispositions, bound)
+        intake_dir, record = self.capture("base")
+        record["advisory"]["comments"] = [{"body": "Maintainer: apply_profile skips authorization; fixed in PR 99"}]
+        intake = write(intake_dir / "intake-record.json", record)
+        plan = self.currency_plan(issues, ["I1", "I2"])
+        out = self.tmp / "currency" / "issue-scope.txt"
+        code, stdout, err = run("intake-check.py", "issue-scope", "--issues", issues, "--dispositions", dispositions,
+                                "--currency-plan", plan, "--intake", intake, "--out", out)
+        self.assertEqual(code, 0, err)
+        result, text = json.loads(stdout), out.read_text(encoding="utf-8")
+        self.assertEqual(result["quotes_withheld"], ["I1"])  # I1's quote is only in a comment; I2's is in the description
+        self.assertNotIn("PR 99", text)
+        self.assertIn("withheld", text)
+        self.assertEqual(result["ghsa_id"], IDS["base"])
+        self.assertEqual(result["fix_terms_found"], ["fixed in"])  # the model-written mechanism still carries fix wording
+        self.assertIn("reads the key without checking", text)
+        code, stdout, err = run("intake-check.py", "issue-scope", "--issues", issues, "--dispositions", dispositions,
+                                "--currency-plan", plan, "--out", out)
+        self.assertEqual(code, 2, stdout or err)
+        self.assertIn("--intake", err)
 
     def test_scope_lists_exactly_the_analysis_issues(self):
         result, text = self.scope(*self.documents())
@@ -2903,6 +2934,9 @@ def build_currency_repo(root):
     put("src/other.rs", "pub fn build_command() -> u32 {\n    2\n}\n")
     imp = "pub struct S;\n\nimpl S {\n    pub fn handle(&self) -> u32 {\n        1\n    }\n}\n"
     put("src/imp.rs", imp)
+    twice = ("pub struct A;\npub struct B;\n\nimpl A {\n    pub fn run(&self) -> u32 {\n        1\n    }\n}\n\n"
+             "impl B {\n    pub fn run(&self) -> u32 {\n        2\n    }\n}\n")
+    put("src/twice.rs", twice)
     ids = {"c1": commit("first", "2026-01-01T00:00:00Z")}
     put("src/lib.rs", lib.replace("x + 1", "x + 2"))
     ids["c2"] = commit("change apply_profile", "2026-02-01T00:00:00Z")
@@ -2914,6 +2948,7 @@ def build_currency_repo(root):
     ids["merge"] = fixture_git(repo, "rev-parse", "HEAD")
     put("src/lib.rs", (repo / "src/lib.rs").read_text(encoding="utf-8").replace("    5\n", "    6\n"))
     put("src/imp.rs", imp.replace("        1\n", "        4\n"))
+    put("src/twice.rs", twice.replace("        2\n", "        5\n"))  # only B::run changes
     ids["c3"] = commit("change early_fn and handle", "2026-03-15T00:00:00Z")
     fixture_git(repo, "mv", "src/lib.rs", "src/core.rs")
     ids["rename"] = commit("rename lib to core", "2026-04-01T00:00:00Z")
@@ -3142,6 +3177,11 @@ class CurrencyTest(Workspace):
         self.assertEqual(flags["I1"]["presence"]["src/core.rs"],
                          {"report_revision": True, "pin": True, "report_path": "src/lib.rs", "pin_path": "src/core.rs"})
 
+    def test_flags_same_named_methods_in_one_file_are_ambiguous(self):
+        flags = self.flags([currency_issue("I1", paths=["src/twice.rs"], symbols=["B::run"])])
+        self.assertEqual(flags["I1"]["function_history"], [{"symbol": "run", "path": "src/twice.rs", "status": "AMBIGUOUS_IN_FILE"}])
+        self.assertEqual(flags["I1"]["function_commits"], [])
+
     def test_flags_record_unavailable_history(self):
         # M2: the function is gone at the pin, so git cannot follow it: recorded, not read as unchanged
         flags = self.flags([currency_issue("I1", paths=["src/lib.rs"], symbols=["removed_fn"])])
@@ -3191,21 +3231,22 @@ class CurrencyTest(Workspace):
 
     V = "CROSS-MODEL VERIFIED"
 
-    def outcome_inputs(self, rows, report_records=True, report_revision=None):
+    def outcome_inputs(self, rows, report_records=True, report_revision=None, issues_sha="a" * 64):
         """rows: issue_id -> (main reason, report-revision status or None, test spec or None). A report status of
         "UNBRIDGED" writes a verified record that is not ghsa_eligible. A test spec is (state, at_pin[, base, pin]) where
         base and pin override base_validation and pin_validation fields."""
         revision = self.revision()
-        plan = write(self.out / "plan.json", {"record_type": "ghsa_currency_plan", "ghsa_id": IDS["base"], "issues_sha256": "a" * 64,
+        plan = write(self.out / "plan.json", {"record_type": "ghsa_currency_plan", "ghsa_id": IDS["base"], "issues_sha256": issues_sha,
                                               "primary_revision": revision["pin"],
                                               "planned": [{"issue_id": i, "mechanism": f"m {i}", "reason": row[0]} for i, row in rows.items()],
                                               "not_planned": []})
-        records = [{"record_id": f"R-{i}", "answers": [{"ghsa_id": IDS["base"], "issue_id": i}],
-                    "final_status": self.V if row[1] == "UNBRIDGED" else row[1],
-                    "ghsa_eligible": row[1] == self.V} for i, row in rows.items() if row[1] is not None]
+        records = [{"record_id": f"R-{i}-{n}", "answers": [{"ghsa_id": IDS["base"], "issue_id": i}],
+                    "final_status": self.V if status == "UNBRIDGED" else status, "ghsa_eligible": status == self.V}
+                   for i, row in rows.items() if row[1] is not None
+                   for n, status in enumerate(row[1] if isinstance(row[1], tuple) else (row[1],))]
         args = ["outcome", "--revision", self.out / "revision.json", "--plan", plan]
         if report_records:
-            path = write(self.tmp / "report-revision-records.json", {"repository": REPO, "ghsa_id": IDS["base"], "issues_sha256": "a" * 64,
+            path = write(self.tmp / "report-revision-records.json", {"repository": REPO, "ghsa_id": IDS["base"], "issues_sha256": issues_sha,
                                                                       "primary_revision": report_revision or revision["report_revision"],
                                                                       "records": records})
             args += ["--report-records", path]
@@ -3249,14 +3290,18 @@ class CurrencyTest(Workspace):
                 "I12": ("INCOMPLETE", V, None),                               # the pin's analysis did not finish
                 "I13": ("DISPUTED", "REFUTED", None),                         # disputed at either revision (D4)
                 "I17": ("REFUTED", "UNBRIDGED", None),                        # verified but not bridged at the report revision
-                "I18": ("REFUTED", "MYSTERY", None)}                          # an unknown status is INCOMPLETE
+                "I18": ("REFUTED", "MYSTERY", None),                          # an unknown status is INCOMPLETE
+                "I20": ("REFUTED", (V, "DISPUTED"), None),                    # a dispute is not masked by another verified record
+                "I21": ("REFUTED", (V, "INCOMPLETE"), None),
+                "I22": ("REFUTED", (V, "REFUTED"), None)}                     # a verified record still outranks a refutation
         result = self.outcome(self.outcome_inputs(rows))
         expected = {"I4": ("FIXED_SINCE_REPORT", "ANALYSIS", ""), "I5": ("UNDECIDED", "ANALYSIS", "DISPUTED"),
                     "I6": ("UNDECIDED", "ANALYSIS", "DISPUTED"), "I7": ("NOT_CONFIRMED_AT_REPORT", "ANALYSIS", "REFUTED"),
                     "I8": ("NOT_CONFIRMED_AT_REPORT", "ANALYSIS", "NOT VERIFIED"), "I10": ("UNDECIDED", "ANALYSIS", "INCOMPLETE"),
                     "I11": ("NOT_CONFIRMED_AT_REPORT", "ANALYSIS", "NO_RECORD"), "I12": ("UNDECIDED", "ANALYSIS", "INCOMPLETE"),
                     "I13": ("UNDECIDED", "ANALYSIS", "DISPUTED"), "I17": ("UNDECIDED", "ANALYSIS", "UNBRIDGED_AT_REPORT"),
-                    "I18": ("UNDECIDED", "ANALYSIS", "INCOMPLETE")}
+                    "I18": ("UNDECIDED", "ANALYSIS", "INCOMPLETE"), "I20": ("UNDECIDED", "ANALYSIS", "DISPUTED"),
+                    "I21": ("UNDECIDED", "ANALYSIS", "INCOMPLETE"), "I22": ("FIXED_SINCE_REPORT", "ANALYSIS", "")}
         self.assertEqual({i: (e["outcome"], e["evidence"], e["reason"]) for i, e in result.items()}, expected)
         self.assertFalse(any(e["contradiction"] for e in result.values()))
         document = json.loads((self.out / "outcome.json").read_text(encoding="utf-8"))
@@ -3423,8 +3468,12 @@ class CurrencyTest(Workspace):
 
     def test_brief(self):
         V = self.V
+        hostile = currency_issue("I1", paths=["src/lib.rs", "../x"], symbols=["apply_profile", "build_command"])
+        flags = self.flags([hostile, currency_issue("I2"), currency_issue("I3", symbols=["build_command"])])
+        self.assertEqual(len(flags), 3)
+        issues_sha = hashlib.sha256((self.tmp / "flag-issues.json").read_bytes()).hexdigest()
         result = self.outcome(self.outcome_inputs({"I1": ("REFUTED", V, None), "I2": ("REFUTED", "REFUTED", None),
-                                                   "I3": ("REFUTED", "REFUTED", None)}))
+                                                   "I3": ("REFUTED", "REFUTED", None)}, issues_sha=issues_sha))
         outcome_doc = json.loads((self.out / "outcome.json").read_text(encoding="utf-8"))  # a phase 2b test result, injected to check rendering
         revision = json.loads((self.out / "revision.json").read_text(encoding="utf-8"))
         injected = self.make_test_result("I1", "TEST_OBSERVED", "FAILED", revision)
@@ -3433,9 +3482,6 @@ class CurrencyTest(Workspace):
                                               "at_pin": "FAILED", "validated": True})
         write(self.out / "outcome.json", outcome_doc)
         self.assertEqual(len(result), 3)
-        hostile = currency_issue("I1", paths=["src/lib.rs", "../x"], symbols=["apply_profile", "build_command"])
-        flags = self.flags([hostile, currency_issue("I2"), currency_issue("I3", symbols=["build_command"])])
-        self.assertEqual(len(flags), 3)
         outcome = json.loads((self.out / "outcome.json").read_text(encoding="utf-8"))
         outcome["issues"][0]["mechanism"] = "first\x1b[2J\u202eforged\n## I9"
         write(self.out / "outcome.json", outcome)
@@ -3461,6 +3507,8 @@ class CurrencyTest(Workspace):
         self.assertIn("not checked (pass --fix-terms)", brief.read_text(encoding="utf-8"))
         other = write(self.tmp / "other-flags.json", dict(json.loads((self.out / "flags.json").read_text(encoding="utf-8")), pin="e" * 40))
         self.assertIn("another revision", self.currency("brief", "--outcome", self.out / "outcome.json", "--flags", other, "--out", brief, expect=2))
+        relisted = write(self.tmp / "flags-relisted.json", dict(json.loads((self.out / "flags.json").read_text(encoding="utf-8")), issues_sha256="0" * 64))
+        self.assertIn("another issue list", self.currency("brief", "--outcome", self.out / "outcome.json", "--flags", relisted, "--out", brief, expect=2))
         foreign = write(self.tmp / "render-other.json", dict(json.loads(fix_terms.read_text(encoding="utf-8")), ghsa_id=IDS["variant"]))
         self.assertIn("another advisory", self.currency("brief", "--outcome", self.out / "outcome.json", "--fix-terms", foreign, "--out", brief, expect=2))
 

@@ -428,6 +428,7 @@ def command_issue_scope(args: argparse.Namespace) -> dict[str, Any]:
     unknown = [issue_id for issue_id in ids if issue_id not in by_id]
     if unknown:
         raise UsageError(f"analysis_issue_ids name issues not in the issue list: {unknown}")
+    blind_fields: list[str] = []
     if args.currency_plan:  # the currency check's analysis at the report revision: only the planned issues
         plan = load_json(args.currency_plan)
         if plan.get("record_type") != "ghsa_currency_plan" or plan.get("ghsa_id") != document.get("ghsa_id"):
@@ -442,20 +443,37 @@ def command_issue_scope(args: argparse.Namespace) -> dict[str, Any]:
             raise UsageError(f"the currency plan names issues not in analysis_issue_ids: {outside}")
         if not planned:
             raise UsageError("the currency plan has no planned issues")
+        if not args.intake:
+            raise UsageError("--currency-plan needs --intake, so quotes from text the fix-blind rendering leaves out are withheld")
+        intake = load_json(args.intake)
+        if intake.get("advisory", {}).get("ghsa_id") != document.get("ghsa_id"):
+            raise UsageError("the intake record belongs to another advisory")
+        blind_fields = [value for label, value in labeled_fields(intake) if label in ("summary", "description")]
         ids = planned
-    lines = [SCOPE_HEADER]
+    lines, withheld = [SCOPE_HEADER], []
     for issue_id in ids:
         item = by_id[issue_id]
         literals = {key: value for key, value in item.get("literals", {}).items() if value}
+        quote = one_line_json(item["quote"])
+        if args.currency_plan and not is_exact_quote(item["quote"], blind_fields):
+            # The currency check's analysis must not see a fix named in a comment or reporter field: withhold that quote.
+            withheld.append(issue_id)
+            quote = "(withheld: it comes from text the fix-blind rendering leaves out)"
         lines.append(f"- Issue ID `{issue_id}`\n"
                      f"  - mechanism: {one_line_json(item['mechanism'])}\n"
                      f"  - trigger: {one_line_json(item['trigger'])}\n"
-                     f"  - quote: {one_line_json(item['quote'])}\n"
+                     f"  - quote: {quote}\n"
                      f"  - checked literals: {one_line_json(literals)}\n")
     out = Path(args.out)
     restricted_dir(out.parent)
-    write_private(out, "".join(lines))
-    return {"check": "issue-scope", "effective_status": "COMPLETE", "errors": [], "issue_ids": ids, "out": str(out)}
+    text = "".join(lines)
+    write_private(out, text)
+    result = {"check": "issue-scope", "effective_status": "COMPLETE", "errors": [], "issue_ids": ids, "out": str(out),
+              "ghsa_id": document.get("ghsa_id", "")}
+    if args.currency_plan:
+        lowered = " ".join(text.lower().split())
+        result.update(quotes_withheld=withheld, fix_terms_found=sorted(term for term in FIX_TERMS if term in lowered))
+    return result
 
 
 def command_h4(args: argparse.Namespace) -> dict[str, Any]:
@@ -1001,6 +1019,7 @@ def main() -> int:
     scope.add_argument("--dispositions", required=True, help="the current step1a/dispositions.json")
     scope.add_argument("--out", required=True, help="text file for the Phase 1 packet, for example in the run's analysis/")
     scope.add_argument("--currency-plan", help="currency-check.py plan output: list only its planned issues")
+    scope.add_argument("--intake", help="the advisory's intake record (required with --currency-plan)")
     overlap = sub.add_parser("poc-overlap")
     overlap.add_argument("--intake", required=True, help="intake record of the advisory the test was written for")
     overlap.add_argument("--test-file", required=True)

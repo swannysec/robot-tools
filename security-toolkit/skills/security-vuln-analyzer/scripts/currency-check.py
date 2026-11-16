@@ -291,6 +291,13 @@ def grep_files(repo: Path, revision: str, pattern: str) -> list[str]:
     return sorted({line.removeprefix(prefix) for line in out.splitlines() if line})
 
 
+def definitions_in_file(repo: Path, revision: str, name: str, path: str) -> int:
+    code, out = git(repo, "grep", "-c", "-E", "-e", f"fn {name}([^A-Za-z0-9_]|$)", revision, "--", path, allow_failure=True)
+    if code not in (0, 1):
+        raise UsageError("git grep failed")
+    return sum(int(line.rpartition(":")[2] or 0) for line in out.splitlines() if line.rpartition(":")[2].isdigit())
+
+
 def function_commits(repo: Path, start: str, end: str, name: str, path: str, attributes: Path) -> list[dict[str, str]] | None:
     """Commits in start..end that touch `fn name` in `path` (the path as it is at `end`); None when git cannot follow
     it (for example the function is gone at `end`), which is not the same as unchanged."""
@@ -340,7 +347,7 @@ def command_flags(args: argparse.Namespace) -> dict[str, Any]:
         attributes.write_text(RUST_ATTRIBUTES, encoding="utf-8")
         results = [issue_flags(repo, start, end, issue, sites_by_issue.get(issue["issue_id"], []), renames, attributes)
                    for issue in issues_doc.get("issues", []) if issue.get("technical")]
-    document = {"record_type": "ghsa_currency_flags", "ghsa_id": ghsa_id, "report_revision": start, "pin": end,
+    document = {"record_type": "ghsa_currency_flags", "ghsa_id": ghsa_id, "report_revision": start, "pin": end, "issues_sha256": issues_sha,
                 "note": "Flags are information only: they never change an outcome or dismiss an issue.", "issues": results}
     dump_private(out, document)
     return {"status": "COMPLETE", "issues": len(results), "out": str(out)}
@@ -378,6 +385,9 @@ def issue_flags(repo: Path, start: str, end: str, issue: dict[str, Any], sites: 
         scoped = [path for path in defined if path in named] or (defined if len(defined) == 1 else [])
         definitions[name] = {"files": scoped, "definition_count": len(defined)}
         for path in scoped:
+            if definitions_in_file(repo, start, name, path) > 1:  # git log -L would follow the first one only
+                history.append({"symbol": name, "path": path, "status": "AMBIGUOUS_IN_FILE"})
+                continue
             found = function_commits(repo, start, end, name, renames.get(path, path), attributes)
             history.append({"symbol": name, "path": path, "status": "OK" if found is not None else "UNAVAILABLE_AT_PIN"})
             for entry in found or []:
@@ -393,7 +403,8 @@ def issue_flags(repo: Path, start: str, end: str, issue: dict[str, Any], sites: 
 TEST_STATES = ("TEST_OBSERVED", "TEST_UNVALIDATED")
 AT_PIN = ("PASSED", "FAILED", "UNRESOLVED")
 NOT_CONFIRMED = ("REFUTED", "NOT VERIFIED", "NO_RECORD")
-REPORT_ORDER = ("DISPUTED", "INCOMPLETE", "UNBRIDGED", "NOT VERIFIED", "REFUTED")
+# At the report revision a dispute or an incomplete analysis outranks a confirmation (evidence for "fixed" must be clean).
+REPORT_ORDER = ("DISPUTED", "INCOMPLETE", VERIFIED, "UNBRIDGED", "NOT VERIFIED", "REFUTED")
 TEST_PRODUCER = "currency-check.py test-result"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -495,8 +506,7 @@ def command_outcome(args: argparse.Namespace) -> dict[str, Any]:
         if records.get("primary_revision") != revision["report_revision"]:
             raise UsageError("the report-revision records describe another revision than the report revision")
         statuses = issue_statuses(records.get("records", []), ghsa_id, eligible_only=True)
-        report_status = {issue_id: VERIFIED if VERIFIED in found else next((s for s in REPORT_ORDER if s in found), "NO_RECORD")
-                         for issue_id, found in statuses.items()}
+        report_status = {issue_id: next((s for s in REPORT_ORDER if s in found), "NO_RECORD") for issue_id, found in statuses.items()}
     if args.test:
         raise UsageError("test results are not accepted in this version: the --develop-fix test-only entry is not yet usable "
                          "(deterministic-check.py binds each frozen test to one revision, and a build failure reads as a test "
@@ -518,7 +528,8 @@ def command_outcome(args: argparse.Namespace) -> dict[str, Any]:
                        "test": None if test is None else {"base_validation": test["base_validation"], "pin_validation": test["pin_validation"],
                                                           "at_pin": test["at_pin"], "validated": validated(test)},
                        "contradiction": outcome == "STILL_PRESENT"})  # a failing test at the pin contradicts the pin's analysis
-    document = {"record_type": "ghsa_currency_outcome", "ghsa_id": ghsa_id, "report_revision": revision["report_revision"],
+    document = {"record_type": "ghsa_currency_outcome", "ghsa_id": ghsa_id, "issues_sha256": plan.get("issues_sha256", ""),
+                "report_revision": revision["report_revision"],
                 "pin": revision["pin"], "note": "Every outcome is a proposal for the human; nothing is dismissed, closed, or written back.",
                 "issues": issues}
     dump_private(out, document)
@@ -566,8 +577,8 @@ def flag_lines(entry: dict[str, Any]) -> list[str]:
               f"{one_line_json(c.get('path', ''))})" for c in commits]
     unavailable = [h for h in entry.get("function_history", []) if h.get("status") != "OK"]
     if unavailable:
-        lines.append("    history unavailable at the pin (not the same as unchanged): "
-                     + one_line_json([f"{h['symbol']} in {h['path']}" for h in unavailable]))
+        lines.append("    history not followed (not the same as unchanged): "
+                     + one_line_json([f"{h['symbol']} in {h['path']}: {h['status']}" for h in unavailable]))
     lines.append(f"    file commits: {entry.get('file_commit_count', 0)}")
     return lines
 
@@ -585,6 +596,8 @@ def command_brief(args: argparse.Namespace) -> dict[str, Any]:
             raise UsageError("the flags belong to another advisory")
         if (flags.get("report_revision"), flags.get("pin")) != (outcome.get("report_revision"), outcome.get("pin")):
             raise UsageError("the flags were computed for another revision than the outcome")
+        if not HEX64.match(str(flags.get("issues_sha256", ""))) or flags.get("issues_sha256") != outcome.get("issues_sha256"):
+            raise UsageError("the flags were computed from another issue list than the outcome; issue IDs would not match")
         flags_by_issue = {entry["issue_id"]: entry for entry in flags.get("issues", [])}
     fix_terms = None
     if args.fix_terms:

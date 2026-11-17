@@ -1355,7 +1355,8 @@ def unittest_acceptance_case(module: str) -> Callable[[], dict[str, Any]]:
     invoking the fixture aggregation currently in progress.
     """
     def action() -> dict[str, Any]:
-        process = run([sys.executable, "-m", "unittest", module], timeout=180)
+        # The GHSA module builds real git fixtures per test and outgrew 180 s at 289 tests (about 230 s alone).
+        process = run([sys.executable, "-m", "unittest", module], timeout=600)
         if process.returncode != 0:
             raise AssertionError(
                 "deterministic acceptance module failed: " + abbreviated(process.stderr or process.stdout)

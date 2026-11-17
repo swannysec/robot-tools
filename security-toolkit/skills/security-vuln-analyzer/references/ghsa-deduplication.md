@@ -21,6 +21,10 @@ providers, with no tools, under [orchestrator-contract.md](orchestrator-contract
 authorization statement, refusal handling, and fallback disclosure apply. Launch forms are in the
 runtime guides under "Step 1a legs". The currency check against the default-branch commit at the
 advisory's creation time runs after analysis ([ghsa-currency-check.md](ghsa-currency-check.md)).
+For a published advisory, only step 1a's issue listing runs (the issue list, the cold review, any native
+classification, and `issues`, which accept a published capture); comparison planning and dispositions do not, so
+a published advisory has no dispositions. It reaches analysis and the currency check only through the
+research-only path in [ghsa-triage-mode.md](ghsa-triage-mode.md), whose results are never triage decisions.
 Not yet implemented: post-fix coverage checks inside `--develop-fix` (a test that already passes
 on a base containing the canonical's merged fix).
 

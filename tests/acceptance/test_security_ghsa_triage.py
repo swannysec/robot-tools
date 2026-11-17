@@ -1978,6 +1978,21 @@ class WriteBackTest(Workspace):
             code, _ = self.execute([self.item("W1", operation, new, old="triage")], ["W1"])
             self.assertEqual(code, 6)
 
+    def test_research_records_are_refused_before_any_call(self):
+        # RW-1: research-only records (a published advisory analyzed outside triage) never back a write, even if one claims eligibility
+        items = [self.item("W1", "set_cwe_ids", ["CWE-863"])]
+        plan_path, records_path = self.plan(items)
+        write(records_path, {"research_only": True, "records": [self.record]})
+        digest = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+        approvals = write(self.write_dir / "approvals.json", {"plan_sha256": digest, "approved_items": ["W1"]})
+        out_path = self.write_dir / "results.json"
+        code, _, err = run("ghsa-writeback.py", "--api-fixtures", self.api, "--plan", plan_path, "--approvals", approvals,
+                           "--records", records_path, "--out", out_path)
+        self.assertEqual(code, 6, err)
+        outcome = json.loads(out_path.read_text(encoding="utf-8"))
+        self.assertIn("research-only", outcome["refusal"])
+        self.assertNotIn("fixture_calls", outcome)
+
     def test_forged_approval_is_refused(self):
         code, outcome = self.execute([self.item("W1", "set_cwe_ids", ["CWE-863"])], ["W1"], forge=True)
         self.assertEqual(code, 6)
@@ -2119,6 +2134,44 @@ class H4DraftTest(Workspace):
         self.assertEqual(code, 0, err)
         for path in files + [fresh / path.name for path in files]:
             self.assertEqual(mode(path), 0o600, path)
+
+    def test_packet_refuses_advisories_that_are_not_open(self):
+        # Q14 (Copilot round 1): no H4 draft for a published or closed advisory, on every path that builds a packet
+        records = self.tmp / "records.json"
+        for state in ("published", "closed", "withdrawn"):
+            intake_dir, record = self.capture("base")
+            record["advisory"]["state"] = state
+            intake = write(intake_dir / "intake-record.json", record)
+            paths = {"with records": ["--dispositions", self.dispositions, "--records", records],
+                     "without records": ["--dispositions", self.dispositions],
+                     "no dispositions": []}
+            h2_check, _ = self.h2_check(intake_dir, name=f"h2-{state}")
+            paths["evidence request"] = ["--h2-check", h2_check]
+            for name, extra in paths.items():
+                with self.subTest(state=state, path=name):
+                    out = self.tmp / f"h4-{state}-{name.replace(' ', '-')}"
+                    code, stdout, err = run("intake-check.py", "h4-packet", "--intake", intake, "--issues", self.issues, *extra, "--out-dir", out)
+                    self.assertEqual(code, 2, stdout or err)
+                    self.assertIn("open advisories only", err)
+                    self.assertFalse(out.exists())
+        for state in ("triage", "draft"):  # the open states still build packets
+            with self.subTest(state=state):
+                intake_dir, record = self.capture("base")
+                record["advisory"]["state"] = state
+                intake = write(intake_dir / "intake-record.json", record)
+                code, _, err = run("intake-check.py", "h4-packet", "--intake", intake, "--issues", self.issues, "--dispositions", self.dispositions,
+                                   "--records", records, "--out-dir", self.tmp / f"h4-open-{state}")
+                self.assertEqual(code, 0, err)
+
+    def test_packet_refuses_research_records(self):
+        # RW-2: no H4 draft (reporter comment or field update) from research-only records
+        document = json.loads((self.tmp / "records.json").read_text(encoding="utf-8"))
+        research = write(self.tmp / "research-records.json", dict(document, research_only=True))
+        code, out, err = run("intake-check.py", "h4-packet", "--intake", self.intake_dir / "intake-record.json", "--issues", self.issues,
+                             "--dispositions", self.dispositions, "--records", research, "--out-dir", self.tmp / "h4-research")
+        self.assertEqual(code, 2, out or err)
+        self.assertIn("research-only", err)
+        self.assertFalse((self.tmp / "h4-research").exists())
 
     def draft(self, statements, updates=()):
         return {"role_type": "intake_h4", "status": "COMPLETE", "provider": "fixture", "model": "fixture", "effort": "high",
@@ -2590,6 +2643,96 @@ class IssueScopeTest(Workspace):
         self.assertEqual(mode(self.tmp / "fresh" / "analysis" / "issue-scope.txt"), 0o600)
         self.assertEqual(mode(self.tmp / "fresh" / "analysis"), 0o700)
 
+    # ---- research-only path (published advisories, no dispositions): RS-1 to RS-9
+
+    def research_inputs(self, state="published", key="base", technical=(True, False, True)):
+        """A captured advisory in the given state and an issue list I1-I3 (I2 not technical by default)."""
+        intake_dir, record = self.capture(key)
+        record["advisory"]["state"] = state
+        intake = write(intake_dir / "intake-record.json", record)
+        issues, _ = self.documents(analysis=("I1", "I2"), name=f"research-{state or 'none'}-{key}")
+        document = json.loads(issues.read_text(encoding="utf-8"))
+        third = dict(document["issues"][1], issue_id="I3", quote="reads the key without checking")
+        document["issues"].append(third)
+        for item, flag in zip(document["issues"], technical):
+            kind = "TECHNICAL" if flag else "DOCUMENTATION_UI"
+            item.update(technical=flag, kinds={"native": kind, "cross": kind})
+        write(issues, document)
+        return issues, intake
+
+    def research_scope(self, issues, intake, *extra, expect=0, out=None):
+        out = out or self.tmp / "analysis" / "research-scope.txt"
+        code, stdout, err = run("intake-check.py", "issue-scope", "--issues", issues, "--research", "--intake", intake, "--out", out, *extra)
+        self.assertEqual(code, expect, stdout or err)
+        return (json.loads(stdout), out.read_text(encoding="utf-8")) if code == 0 else err
+
+    def research_plan(self, issues, ids, name="research-plan", mode="RESEARCH_ONLY"):
+        return write(self.tmp / f"{name}.json", {
+            "record_type": "ghsa_currency_plan", "ghsa_id": IDS["base"], "mode": mode,
+            "issues_sha256": hashlib.sha256(issues.read_bytes()).hexdigest(), "dispositions_sha256": "",
+            "planned": [{"issue_id": issue_id, "mechanism": "m", "reason": "NO_RECORD"} for issue_id in ids], "not_planned": []})
+
+    def test_research_scope_lists_every_technical_issue(self):
+        # RS-1: every technical issue, in issue-list order, without dispositions; marked research-only
+        result, text = self.research_scope(*self.research_inputs())
+        self.assertEqual((result["issue_ids"], result["research_only"], result["ghsa_id"]), (["I1", "I3"], True, IDS["base"]))
+        self.assertIn("- Issue ID `I1`", text)
+        self.assertIn("- Issue ID `I3`", text)
+        self.assertNotIn("`I2`", text)  # not technical
+        result, _ = self.scope(*self.documents(name="triage-path"))
+        self.assertFalse(result.get("research_only", False))  # the dispositions path is not research-only
+
+    def test_research_scope_refusals(self):
+        issues, published = self.research_inputs()
+        cases = {}
+        for state in ("triage", "draft"):  # RS-2
+            cases[f"RS-2 {state}"] = (self.research_inputs(state=state)[1], (), "open advisories")
+        for state in ("closed", "withdrawn", ""):  # RS-3
+            cases[f"RS-3 {state or 'no state'}"] = (self.research_inputs(state=state)[1], (), "only published advisories")
+        _, dispositions = self.documents(name="with-dispositions")
+        cases["RS-4 with dispositions"] = (published, ("--dispositions", dispositions), "no --dispositions")
+        cases["RS-5 another advisory"] = (self.research_inputs(key="variant")[1], (), "another advisory")
+        for name, (intake, extra, message) in cases.items():
+            with self.subTest(case=name):
+                self.assertIn(message, self.research_scope(issues, intake, *extra, expect=2))
+        none_technical, intake = self.research_inputs(technical=(False, False, False))
+        self.assertIn("no technical issue", self.research_scope(none_technical, intake, expect=2))  # RS-6
+        code, stdout, err = run("intake-check.py", "issue-scope", "--issues", issues, "--research", "--out", self.tmp / "analysis" / "x.txt")
+        self.assertEqual(code, 2, stdout or err)
+        self.assertIn("--research needs --intake", err)
+        code, stdout, err = run("intake-check.py", "issue-scope", "--issues", issues, "--out", self.tmp / "analysis" / "x.txt")
+        self.assertEqual(code, 2, stdout or err)
+        self.assertIn("--research", err)  # RS-7: a published advisory has no dispositions; the message names the research path
+
+    def test_research_scope_with_currency_plan(self):
+        # RS-8: only the planned issues; quotes outside the summary and description withheld, as on the dispositions path
+        issues, intake = self.research_inputs()
+        out = self.tmp / "currency" / "issue-scope.txt"
+        result, text = self.research_scope(issues, intake, "--currency-plan", self.research_plan(issues, ["I3"]), out=out)
+        self.assertEqual((result["issue_ids"], result["research_only"], result["quotes_withheld"]), (["I3"], True, []))
+        self.assertNotIn("`I1`", text)
+        # a quote found only in a comment is withheld, so a fix named there cannot reach the report revision's analysis
+        record = json.loads(intake.read_text(encoding="utf-8"))
+        record["advisory"]["comments"] = [{"body": "Maintainer: the loader skips the check; fixed in PR 9"}]
+        write(intake, record)
+        document = json.loads(issues.read_text(encoding="utf-8"))
+        document["issues"][0]["quote"] = "the loader skips the check; fixed in PR 9"
+        write(issues, document)
+        result, text = self.research_scope(issues, intake, "--currency-plan", self.research_plan(issues, ["I1", "I3"], name="p-wh"), out=out)
+        self.assertEqual((result["quotes_withheld"], result["fix_terms_found"]), (["I1"], []))
+        self.assertNotIn("PR 9", text)
+        self.assertIn("not technical", self.research_scope(issues, intake, "--currency-plan", self.research_plan(issues, ["I2"], name="p-nt"),
+                                                           expect=2, out=out))
+        # RS-9: the two paths' plans are not interchangeable
+        self.assertIn("research-only", self.research_scope(issues, intake, "--currency-plan",
+                                                           self.research_plan(issues, ["I3"], name="p-triage", mode="TRIAGE"), expect=2, out=out))
+        triage_issues, dispositions = self.documents(analysis=("I1", "I2"), name="rs9")
+        code, stdout, err = run("intake-check.py", "issue-scope", "--issues", triage_issues, "--dispositions", dispositions,
+                                "--currency-plan", self.research_plan(triage_issues, ["I2"], name="p-research"), "--intake", intake,
+                                "--out", out)
+        self.assertEqual(code, 2, stdout or err)
+        self.assertIn("research-only", err)
+
 
 class RecordsTest(Workspace):
     def setUp(self):
@@ -2897,6 +3040,80 @@ class RecordsTest(Workspace):
         self.assertEqual({r["candidate_id"] for r in records}, {cid})
         self.assertEqual(self.run_records([first, first], {cid: self.verified(cid)})[0], 2)  # the same artifact twice
 
+    # ---- records --research (RC-1 to RC-5): a published advisory's records without dispositions, never write-back eligible
+
+    def published_intake(self):
+        intake_dir, record = self.capture("bundled")
+        record["advisory"]["state"] = "published"
+        return write(intake_dir / "intake-record.json", record)
+
+    def run_research(self, discoveries, manifest, *extra, intake=None, out="research-out"):
+        intake = intake or self.published_intake()
+        manifest_path = write(self.tmp / "manifest.json", {"candidates": manifest})
+        args = ["records", "--repository", REPO, "--ghsa-id", IDS["bundled"], "--primary-revision", REV, "--issues", self.issues,
+                "--research", "--intake", intake, "--verification", manifest_path, "--out-dir", self.tmp / out, *extra]
+        for path in discoveries:
+            args += ["--discovery", path]
+        code, stdout, stderr = run("ghsa-dedup.py", *args)
+        return code, (json.loads(stdout) if code == 0 else stderr)
+
+    def test_research_records_are_bridged_but_never_eligible(self):
+        # RC-1
+        _, paths, ids = self.three_role_fixture()
+        manifest = {cid: self.verified(cid) for cid in ids}
+        manifest[ids[1]] = self.verified(ids[1], results=("CONFIRMED", "REFUTED"))  # a split resolved some other way: not bridged
+        code, out = self.run_research(paths, manifest)
+        self.assertEqual(code, 0, out)
+        document = json.loads((self.tmp / "research-out" / "report-records.json").read_text(encoding="utf-8"))
+        self.assertIs(document["research_only"], True)
+        by_cid = {r["candidate_id"]: r for r in document["records"]}
+        self.assertEqual([by_cid[cid]["bridged"] for cid in ids], [True, False, True])
+        self.assertTrue(all(r["ghsa_eligible"] is False for r in document["records"]))
+        self.assertTrue(all(r["values"] == {} or r["bridged"] for r in document["records"]))
+
+    def test_triage_records_carry_bridged(self):
+        # RC-4: unchanged except that every record says whether it is bridged
+        _, paths, ids = self.three_role_fixture()
+        manifest = dict({cid: self.verified(cid) for cid in ids}, **{ids[1]: self.verified(ids[1], results=("CONFIRMED", "REFUTED"))})
+        code, out = self.run_records(paths, manifest)
+        self.assertEqual(code, 0, out)
+        document = json.loads((self.tmp / "records-out" / "report-records.json").read_text(encoding="utf-8"))
+        self.assertIs(document["research_only"], False)
+        self.assertEqual(sorted((r["bridged"], r["ghsa_eligible"]) for r in document["records"]), [(False, False), (True, True), (True, True)])
+
+    def test_research_records_refusals(self):
+        _, paths, ids = self.three_role_fixture()
+        manifest = {cid: self.verified(cid) for cid in ids}
+        intake_dir, record = self.capture("bundled")
+        record["advisory"]["state"] = "triage"
+        triage = write(intake_dir / "intake-record.json", record)
+        cases = {"RC-2 open advisory": ((), triage, "open advisories"),
+                 "RC-3 with dispositions": (("--dispositions", self.dispositions), None, "no --dispositions")}
+        for name, (extra, intake, message) in cases.items():
+            with self.subTest(case=name):
+                code, err = self.run_research(paths, manifest, *extra, intake=intake)
+                self.assertEqual(code, 2, err)
+                self.assertIn(message, err)
+        manifest_path = write(self.tmp / "manifest.json", {"candidates": manifest})
+        code, _, err = run("ghsa-dedup.py", "records", "--repository", REPO, "--ghsa-id", IDS["bundled"], "--primary-revision", REV,
+                           "--issues", self.issues, "--verification", manifest_path, "--out-dir", self.tmp / "none",
+                           *[arg for path in paths for arg in ("--discovery", path)])
+        self.assertEqual(code, 2, err)
+        self.assertIn("--research", err)  # neither dispositions nor the research path
+        code, _, err = run("ghsa-dedup.py", "records", "--repository", REPO, "--ghsa-id", IDS["bundled"], "--primary-revision", REV,
+                           "--issues", self.issues, "--research", "--verification", manifest_path, "--out-dir", self.tmp / "none",
+                           *[arg for path in paths for arg in ("--discovery", path)])
+        self.assertEqual(code, 2, err)
+        self.assertIn("--research needs --intake", err)
+        # RC-5: analysis on the research path receives only technical issues
+        document = json.loads(self.issues.read_text(encoding="utf-8"))
+        document["issues"][1].update(technical=False, kinds={"native": "DOCUMENTATION_UI", "cross": "DOCUMENTATION_UI"})
+        write(self.issues, document)
+        code, err = self.run_research(paths, manifest)  # R3-A answers I1 and I2
+        self.assertEqual(code, 2, err)
+        self.assertIn("did not receive", err)
+
+
 GIT_ENV = {"PATH": os.environ.get("PATH", os.defpath), "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
            "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid", "GIT_COMMITTER_NAME": "Fixture",
            "GIT_COMMITTER_EMAIL": "fixture@example.invalid", "LC_ALL": "C"}
@@ -2937,6 +3154,14 @@ def build_currency_repo(root):
     twice = ("pub struct A;\npub struct B;\n\nimpl A {\n    pub fn run(&self) -> u32 {\n        1\n    }\n}\n\n"
              "impl B {\n    pub fn run(&self) -> u32 {\n        2\n    }\n}\n")
     put("src/twice.rs", twice)
+    # Platform-gated twins (RF-1) and two same-named methods, one of which is gone at the pin (RF-3).
+    cfg = ("#[cfg(windows)]\npub fn extract(x: u32) -> u32 {\n    x\n}\n\n"
+           "#[cfg(not(windows))]\npub fn extract(x: u32) -> u32 {\n    x + 10\n}\n")
+    put("src/cfg.rs", cfg)
+    gone = ("pub struct C;\npub struct D;\n\nimpl C {\n    pub fn twin(&self) -> u32 {\n        1\n    }\n}\n\n"
+            "impl D {\n    pub fn twin(&self) -> u32 {\n        2\n    }\n}\n")
+    put("src/gone.rs", gone)
+    put("tests/existing.rs", "// an existing integration test (checkout --test-file never overwrites one)\n")
     ids = {"c1": commit("first", "2026-01-01T00:00:00Z")}
     put("src/lib.rs", lib.replace("x + 1", "x + 2"))
     ids["c2"] = commit("change apply_profile", "2026-02-01T00:00:00Z")
@@ -2949,12 +3174,14 @@ def build_currency_repo(root):
     put("src/lib.rs", (repo / "src/lib.rs").read_text(encoding="utf-8").replace("    5\n", "    6\n"))
     put("src/imp.rs", imp.replace("        1\n", "        4\n"))
     put("src/twice.rs", twice.replace("        2\n", "        5\n"))  # only B::run changes
+    put("src/cfg.rs", cfg.replace("x + 10", "x + 11"))  # only the second (not windows) definition changes
     ids["c3"] = commit("change early_fn and handle", "2026-03-15T00:00:00Z")
     fixture_git(repo, "mv", "src/lib.rs", "src/core.rs")
     ids["rename"] = commit("rename lib to core", "2026-04-01T00:00:00Z")
     core = (repo / "src/core.rs").read_text(encoding="utf-8")
     core = core.replace("x + 2", "x.saturating_add(2)").replace("pub fn removed_fn() -> u32 {\n    0\n}\n\n", "")
     put("src/core.rs", core)
+    put("src/gone.rs", gone.split("\nimpl D {")[0])  # D::twin is removed
     ids["pin"] = commit("fix apply_profile and drop removed_fn", "2026-05-01T00:00:00Z")
     fixture_git(repo, "remote", "add", "origin", f"https://github.com/{REPO}.git")
     fixture_git(repo, "update-ref", "refs/remotes/origin/main", ids["pin"])
@@ -3099,6 +3326,104 @@ class CurrencyTest(Workspace):
                 self.assertIn("READY", self.plan([], status=status, expect=2))
         self.assertIn("another issue list", self.plan([], records_issues_sha="0" * 64, expect=2))
 
+    # ---- research-only path: plan (RP-1 to RP-3)
+
+    def research_plan_args(self, statuses, state="published", records_research=True):
+        issues, _, records = self.plan_inputs(statuses)
+        document = json.loads(records.read_text(encoding="utf-8"))
+        document["research_only"] = records_research
+        write(records, document)
+        record = json.loads(self.intake.read_text(encoding="utf-8"))
+        record["advisory"]["state"] = state
+        write(self.intake, record)
+        return ["plan", "--issues", issues, "--research", "--intake", self.intake, "--records", records, "--out", self.out / "plan.json"]
+
+    def test_research_plan_covers_every_technical_issue(self):
+        # RP-1: no dispositions; every technical issue (I1-I4; I5 is not technical) is in scope
+        self.currency(*self.research_plan_args([("I1", "CROSS-MODEL VERIFIED", False), ("I2", "REFUTED", False)]))
+        document = json.loads((self.out / "plan.json").read_text(encoding="utf-8"))
+        self.assertEqual((document["mode"], document["dispositions_sha256"]), ("RESEARCH_ONLY", ""))
+        self.assertEqual({e["issue_id"]: e["reason"] for e in document["planned"]}, {"I2": "REFUTED", "I3": "NO_RECORD", "I4": "NO_RECORD"})
+        self.assertEqual(document["not_planned"], [{"issue_id": "I1", "reason": "CONFIRMED"}])
+        self.assertEqual(document["intake_sha256"], hashlib.sha256(self.intake.read_bytes()).hexdigest())
+        self.assertEqual(self.plan([])["mode"], "TRIAGE")  # the dispositions path says which path it is
+
+    def test_research_plan_refusals(self):
+        # RP-2 and RP-3, and the flags that do not belong together
+        self.assertIn("research-only", self.currency(*self.research_plan_args([], records_research=False), expect=2))
+        for state in ("triage", "draft"):
+            with self.subTest(state=state):
+                self.assertIn("open advisories", self.currency(*self.research_plan_args([], state=state), expect=2))
+        args = self.research_plan_args([])
+        issues, dispositions, records = self.plan_inputs([])
+        self.assertIn("no --dispositions", self.currency(*args, "--dispositions", dispositions, expect=2))
+        document = json.loads(records.read_text(encoding="utf-8"))
+        write(records, dict(document, research_only=True))
+        self.assertIn("research-only", self.currency("plan", "--issues", issues, "--dispositions", dispositions, "--records", records,
+                                                     "--out", self.out / "plan.json", expect=2))
+        self.assertIn("--research", self.currency("plan", "--issues", issues, "--records", records, "--out", self.out / "plan.json", expect=2))
+        self.assertIn("--research needs --intake", self.currency("plan", "--issues", issues, "--research", "--records", records,
+                                                                 "--out", self.out / "plan.json", expect=2))
+
+    def test_research_plan_uses_the_runs_own_intake(self):
+        # review finding 7: another intake file saying "published" cannot stand in for the run's own record
+        args = self.research_plan_args([])
+        record = json.loads(self.intake.read_text(encoding="utf-8"))
+        record["advisory"]["state"] = "triage"
+        write(self.intake, record)  # the run's own record
+        elsewhere = write(self.tmp / "other-intake.json", dict(record, advisory=dict(record["advisory"], state="published")))
+        args[args.index("--intake") + 1] = elsewhere
+        self.assertIn("the run's own intake record", self.currency(*args, expect=2))
+
+    # ---- research-only path: outcome and brief (RO-1 to RO-3, RB-1)
+
+    def test_research_outcome_marks_the_document_and_keeps_the_rule(self):
+        # RO-1: the same rule order; bridged (not ghsa_eligible, false on this path) decides analysis evidence
+        V = self.V
+        rows = {"I4": ("REFUTED", V, None), "I5": ("REFUTED", "DISPUTED", None), "I17": ("REFUTED", "UNBRIDGED", None),
+                "I7": ("REFUTED", "REFUTED", None)}
+        result = self.outcome(self.outcome_inputs(rows, research=True))
+        self.assertEqual({i: (e["outcome"], e["reason"]) for i, e in result.items()},
+                         {"I4": ("FIXED_SINCE_REPORT", ""), "I5": ("UNDECIDED", "DISPUTED"), "I17": ("UNDECIDED", "UNBRIDGED_AT_REPORT"),
+                          "I7": ("NOT_CONFIRMED_AT_REPORT", "REFUTED")})
+        self.assertIs(json.loads((self.out / "outcome.json").read_text(encoding="utf-8"))["research_only"], True)
+        self.outcome(self.outcome_inputs(rows))
+        self.assertIs(json.loads((self.out / "outcome.json").read_text(encoding="utf-8"))["research_only"], False)
+
+    def test_research_outcome_refusals(self):
+        rows = {"I4": ("REFUTED", self.V, None)}
+        # RO-2: the two paths' inputs are not mixed
+        self.assertIn("research-only", self.outcome(self.outcome_inputs(rows, research=True, records_research=False), expect=2))
+        self.assertIn("research-only", self.outcome(self.outcome_inputs(rows, records_research=True), expect=2))
+        # RO-3: records written before `bridged` existed cannot be read as bridged or not
+        args = self.outcome_inputs(rows)
+        path = Path(args[args.index("--report-records") + 1])
+        document = json.loads(path.read_text(encoding="utf-8"))
+        for record in document["records"]:
+            del record["bridged"]
+        write(path, document)
+        self.assertIn("bridged", self.outcome(args, expect=2))
+
+    def test_research_brief_says_research_only(self):
+        # RB-1
+        self.outcome(self.outcome_inputs({"I4": ("REFUTED", self.V, None)}, research=True))
+        self.currency("brief", "--outcome", self.out / "outcome.json", "--out", self.out / "brief.md")
+        text = (self.out / "brief.md").read_text(encoding="utf-8")
+        self.assertIn("Research only", text.splitlines()[1])
+        self.assertIn("not a triage decision", text)
+        self.assertIn("nothing here may be written back", text)
+        self.outcome(self.outcome_inputs({"I4": ("REFUTED", self.V, None)}))
+        self.currency("brief", "--outcome", self.out / "outcome.json", "--out", self.out / "brief.md")
+        self.assertNotIn("Research only", (self.out / "brief.md").read_text(encoding="utf-8"))
+
+    def test_research_state_check_matches_across_scripts(self):
+        import inspect
+        currency = runpy.run_path(str(SCRIPTS / "currency-check.py"))
+        intake_check = runpy.run_path(str(SCRIPTS / "intake-check.py"))
+        source = inspect.getsource(currency["research_advisory"])
+        self.assertEqual(source, inspect.getsource(DEDUP["research_advisory"]))
+        self.assertEqual(source, inspect.getsource(intake_check["research_advisory"]))
+
     # ---- flags (F-1 to F-9)
 
     def flags(self, issues, records=(), expect=0, issues_digest=None):
@@ -3177,10 +3502,36 @@ class CurrencyTest(Workspace):
         self.assertEqual(flags["I1"]["presence"]["src/core.rs"],
                          {"report_revision": True, "pin": True, "report_path": "src/lib.rs", "pin_path": "src/core.rs"})
 
-    def test_flags_same_named_methods_in_one_file_are_ambiguous(self):
-        flags = self.flags([currency_issue("I1", paths=["src/twice.rs"], symbols=["B::run"])])
-        self.assertEqual(flags["I1"]["function_history"], [{"symbol": "run", "path": "src/twice.rs", "status": "AMBIGUOUS_IN_FILE"}])
-        self.assertEqual(flags["I1"]["function_commits"], [])
+    def test_flags_follow_each_same_named_definition(self):
+        # Q11 (maintainer): each definition is followed by its own line range at the pin, so one changing is not lost.
+        flags = self.flags([currency_issue("I1", paths=["src/cfg.rs"], symbols=["extract"]),      # RF-1 platform-gated twins
+                            currency_issue("I2", paths=["src/twice.rs"], symbols=["B::run"])])    # RF-2 methods of two types
+        for issue_id, path, lines, changed in (("I1", "src/cfg.rs", [2, 7], 7), ("I2", "src/twice.rs", [5, 11], 11)):
+            with self.subTest(issue=issue_id):
+                symbol = "extract" if issue_id == "I1" else "run"
+                self.assertEqual(flags[issue_id]["function_history"],
+                                 [{"symbol": symbol, "path": path, "status": "OK", "line": line} for line in lines])
+                self.assertEqual([(c["commit"], c["line"]) for c in flags[issue_id]["function_commits"]], [(self.ids["c3"], changed)])
+
+    def test_brief_flag_lines_name_each_definition(self):
+        # The brief says which same-named definition a commit touched, and that a definition is gone (not unchanged)
+        currency = runpy.run_path(str(SCRIPTS / "currency-check.py"))
+        flags = self.flags([currency_issue("I1", paths=["src/cfg.rs"], symbols=["extract"]),
+                            currency_issue("I2", paths=["src/gone.rs"], symbols=["twin"])])
+        text = "\n".join(currency["flag_lines"](flags["I1"]))
+        self.assertIn(f'{self.ids["c3"]} "change early_fn and handle" ("extract" in "src/cfg.rs" at line 7)', text)
+        self.assertIn("2 same-named definition(s) followed separately", text)
+        text = "\n".join(currency["flag_lines"](flags["I2"]))
+        self.assertIn('"twin in src/gone.rs: 1 definition gone at the pin"', text)
+
+    def test_flags_same_named_definition_gone_at_the_pin(self):
+        # RF-3: the remaining definition is followed; the missing one is recorded, never read as unchanged
+        flags = self.flags([currency_issue("I1", paths=["src/gone.rs"], symbols=["twin"])])
+        history = flags["I1"]["function_history"]
+        self.assertEqual(history[0], {"symbol": "twin", "path": "src/gone.rs", "status": "OK", "line": 5})
+        self.assertEqual(history[1], {"symbol": "twin", "path": "src/gone.rs", "status": "UNAVAILABLE_AT_PIN", "missing_definitions": 1})
+        self.assertEqual(len(history), 2)
+        self.assertTrue({c["commit"] for c in flags["I1"]["function_commits"]} <= {self.ids["pin"]})
 
     def test_flags_record_unavailable_history(self):
         # M2: the function is gone at the pin, so git cannot follow it: recorded, not read as unchanged
@@ -3231,23 +3582,26 @@ class CurrencyTest(Workspace):
 
     V = "CROSS-MODEL VERIFIED"
 
-    def outcome_inputs(self, rows, report_records=True, report_revision=None, issues_sha="a" * 64):
+    def outcome_inputs(self, rows, report_records=True, report_revision=None, issues_sha="a" * 64, research=False, records_research=None):
         """rows: issue_id -> (main reason, report-revision status or None, test spec or None). A report status of
-        "UNBRIDGED" writes a verified record that is not ghsa_eligible. A test spec is (state, at_pin[, base, pin]) where
-        base and pin override base_validation and pin_validation fields."""
+        "UNBRIDGED" writes a verified record that is not bridged. A test spec is (state, at_pin[, base, pin]) where
+        base and pin override base_validation and pin_validation fields. With research, the plan and records are the
+        research-only path's (records_research overrides the records' marker)."""
         revision = self.revision()
         plan = write(self.out / "plan.json", {"record_type": "ghsa_currency_plan", "ghsa_id": IDS["base"], "issues_sha256": issues_sha,
-                                              "primary_revision": revision["pin"],
+                                              "primary_revision": revision["pin"], "mode": "RESEARCH_ONLY" if research else "TRIAGE",
                                               "planned": [{"issue_id": i, "mechanism": f"m {i}", "reason": row[0]} for i, row in rows.items()],
                                               "not_planned": []})
         records = [{"record_id": f"R-{i}-{n}", "answers": [{"ghsa_id": IDS["base"], "issue_id": i}],
-                    "final_status": self.V if status == "UNBRIDGED" else status, "ghsa_eligible": status == self.V}
+                    "final_status": self.V if status == "UNBRIDGED" else status, "bridged": status == self.V,
+                    "ghsa_eligible": status == self.V and not research}
                    for i, row in rows.items() if row[1] is not None
                    for n, status in enumerate(row[1] if isinstance(row[1], tuple) else (row[1],))]
         args = ["outcome", "--revision", self.out / "revision.json", "--plan", plan]
         if report_records:
             path = write(self.tmp / "report-revision-records.json", {"repository": REPO, "ghsa_id": IDS["base"], "issues_sha256": issues_sha,
                                                                       "primary_revision": report_revision or revision["report_revision"],
+                                                                      "research_only": research if records_research is None else records_research,
                                                                       "records": records})
             args += ["--report-records", path]
         for i, row in rows.items():
@@ -3265,7 +3619,7 @@ class CurrencyTest(Workspace):
         observed = state == "TEST_OBSERVED"
         document = {"record_type": "ghsa_currency_test", "producer": "currency-check.py test-result", "ghsa_id": IDS["base"],
                     "issue_id": issue_id, "issues_sha256": "a" * 64, "report_revision": revision["report_revision"], "pin": revision["pin"],
-                    "registry_sha256": "b" * 64,
+                    "registry_sha256": "b" * 64, "profile_sha256": "d" * 64, "candidate_id": "SVA-cand1",
                     "base_validation": {"state": state, "fails_at_base": observed, "controls_hold": observed, "sink_reached": observed},
                     "pin_validation": {"controls_hold": True, "sink_reached": True}, "at_pin": at_pin}
         document.update(overrides)
@@ -3307,13 +3661,6 @@ class CurrencyTest(Workspace):
         document = json.loads((self.out / "outcome.json").read_text(encoding="utf-8"))
         self.assertIn("proposal for the human", document["note"])
 
-    def test_outcome_refuses_test_results(self):
-        # The --develop-fix test-only entry is not yet usable (phase 2b), so outcome accepts no test result
-        revision = self.revision()
-        args = self.outcome_inputs({"I1": ("REFUTED", None, None)})
-        path = write(self.tmp / "a-test.json", self.make_test_result("I1", "TEST_OBSERVED", "PASSED", revision))
-        self.assertIn("not yet usable", self.outcome(args + ["--test", path], expect=2))
-
     def test_decide_test_rules(self):
         # The test rules kept for phase 2b, checked directly (O-1 to O-3, O-9, pin evidence, base controls, same revision)
         currency = runpy.run_path(str(SCRIPTS / "currency-check.py"))
@@ -3353,7 +3700,7 @@ class CurrencyTest(Workspace):
         self.assertEqual((result["I1"]["outcome"], result["I1"]["reason"]), ("UNDECIDED", "INCOMPLETE"))
 
     def test_load_test_refusals(self):
-        # O-11 for test results, checked directly (the command refuses every test result until phase 2b)
+        # O-11 for test results, checked directly
         currency = runpy.run_path(str(SCRIPTS / "currency-check.py"))
         revision = {"report_revision": "1" * 40, "pin": "2" * 40}
         plan = {"issues_sha256": "a" * 64}
@@ -3366,7 +3713,9 @@ class CurrencyTest(Workspace):
                  "no registry digest": (dict(good, registry_sha256=""), "registry digest"),
                  "unknown test state": (dict(good, base_validation=dict(good["base_validation"], state="MAYBE")), "state"),
                  "text where a boolean belongs": (dict(good, base_validation=dict(good["base_validation"], sink_reached="\x1b[2Jyes")), "true or false"),
-                 "unknown at_pin": (dict(good, at_pin="MAYBE"), "at_pin")}
+                 "unknown at_pin": (dict(good, at_pin="MAYBE"), "at_pin"),
+                 "no profile digest": (dict(good, profile_sha256=""), "profile digest"),
+                 "no candidate": (dict(good, candidate_id=""), "no candidate")}
         for name, (document, message) in cases.items():
             with self.subTest(case=name):
                 path = write(self.tmp / "bad-test.json", document)
@@ -3395,61 +3744,533 @@ class CurrencyTest(Workspace):
         self.assertEqual(code, 0, err)
         self.assertNotIn("--flags", out)
 
-    def frozen_result(self, path, test_id, revision, literal, registry="b" * 64, status="COMPLETE"):
-        return write(path, {"role_type": "computation", "check_kind": "FROZEN_TEST_REFERENCE", "frozen_test_id": test_id,
-                            "target_revision": revision, "status": status, "literal_check_result": literal, "registry_sha256": registry})
+    # ---- test-result (phase 2b): TR-1 to TR-10 and review findings. Real checkouts from `checkout`; synthetic results.
 
-    def coverage(self, path, count, line=3, filename="src/core.rs"):
-        return write(path, {"data": [{"files": [{"filename": f"/abs/checkout/{filename}", "segments": [[line, 1, count, True, True], [line, 9, 0, True, True]]}]}]})
+    ADV, BEN = "adversarial_case", "benign_case"
+    SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+    PAIR_FIELDS = ("argv", "working_directory", "environment", "routing_table", "proposition_sha256", "required_files")
 
-    def result_inputs(self, base, pin, base_count=2, pin_count=1, decision="ACCEPT", registry_pin="b" * 64):
+    def tr_context(self):
         revision = self.revision()
+        sandbox = Path(tempfile.mkdtemp(prefix="sandbox-", dir=self.tmp))  # one per context: a test may build several
+        for which in ("report", "pin"):
+            self.currency("checkout", "--repo-dir", self.repo, "--revision", self.out / "revision.json", "--which", which, "--sandbox-dir", sandbox)
+        checkouts = {"report": (sandbox / "report").resolve(), "pin": (sandbox / "pin").resolve()}
+        test_text = "#[test]\nfn adversarial_case() {}\n#[test]\nfn benign_case() {}\n"
+        digest = hashlib.sha256(test_text.encode()).hexdigest()
+        for root in checkouts.values():
+            (root / "tests").mkdir(exist_ok=True)
+            (root / "tests" / "case.rs").write_text(test_text, encoding="utf-8")
+        profile = Path(tempfile.mkdtemp(prefix="profile-", dir=self.tmp)).resolve() / "profile.sb"
+        profile.write_text("(version 1)\n(allow default)\n", encoding="utf-8")
+        revs = {"report": revision["report_revision"], "pin": revision["pin"]}
+        prefix = [self.SANDBOX_EXEC, "-f", str(profile)]
+        registry = {"schema_version": 1, "tests": {}}
+
+        def entry(side, argv, required=None):
+            value = {"repository": REPO, "revision": revs[side], "proposition_sha256": "e" * 64, "routing_table": [], "argv": prefix + argv,
+                     "working_directory": ".", "timeout_seconds": 600, "expected_exit_status": 0, "environment": {"HOME": "/h"},
+                     "tool_version": "fixture"}
+            if required is not None:
+                value["required_files"] = required
+            return value
+
+        for side in ("report", "pin"):
+            tests = registry["tests"]
+            tests[f"adv@{side}"] = entry(side, ["cargo", "test", "--test", "case", "--", "--exact", self.ADV], {"tests/case.rs": digest})
+            tests[f"ben@{side}"] = entry(side, ["cargo", "test", "--test", "case", "--", "--exact", self.BEN], {"tests/case.rs": digest})
+            tests[f"build@{side}"] = entry(side, ["cargo", "test", "--no-run"])
+        coverage = ["cargo", "llvm-cov", "test", "--test", "case", "--ignore-run-fail", "--json", "--output-path", "target/cov.json"]
+        registry["tests"]["cov@report"] = entry("report", coverage + ["--", "--exact", self.ADV])
+        registry["tests"]["cov@pin"] = entry("pin", list(coverage))
         plan = write(self.out / "plan.json", {"record_type": "ghsa_currency_plan", "ghsa_id": IDS["base"], "issues_sha256": "a" * 64,
-                                              "primary_revision": revision["pin"],
-                                              "planned": [{"issue_id": "I1", "mechanism": "m", "reason": "REFUTED"}], "not_planned": []})
-        args = ["test-result", "--revision", self.out / "revision.json", "--plan", plan, "--issue-id", "I1",
-                "--adversarial", "T-ADV", "--benign", "T-OK"]
-        for test_id in ("T-ADV", "T-OK"):
-            args += ["--base-result", self.frozen_result(self.tmp / f"base-{test_id}.json", test_id, revision["report_revision"], base[test_id])]
-            args += ["--pin-result", self.frozen_result(self.tmp / f"pin-{test_id}.json", test_id, revision["pin"], pin[test_id], registry=registry_pin)]
-        args += ["--base-coverage", self.coverage(self.tmp / "cov-base.json", base_count, filename="src/lib.rs"), "--base-sink", "src/lib.rs:3",
-                 "--pin-coverage", self.coverage(self.tmp / "cov-pin.json", pin_count), "--pin-sink", "src/core.rs:3",
-                 "--poc-overlap", write(self.tmp / "poc.json", {"check": "poc-overlap", "ghsa_id": IDS["base"], "decision": decision,
-                                                                "test_file_sha256": "c" * 64}),
-                 "--out", self.out / "test-I1.json"]
-        return args
+                                              "mode": "TRIAGE", "primary_revision": revision["pin"],
+                                              "planned": [{"issue_id": "I1", "mechanism": "m", "reason": "REFUTED"},
+                                                          {"issue_id": "I2", "mechanism": "m2", "reason": "REFUTED"}], "not_planned": []})
+        records = {"repository": REPO, "ghsa_id": IDS["base"], "issues_sha256": "a" * 64, "primary_revision": revision["report_revision"],
+                   "research_only": False,
+                   "records": [{"record_id": "R1", "candidate_id": "SVA-cand1", "answers": [{"ghsa_id": IDS["base"], "issue_id": "I1"}],
+                                "final_status": self.V, "bridged": True, "ghsa_eligible": True,
+                                "control_site": {"symbol": "apply_profile", "relative_path": "src/lib.rs", "line": 5}}]}
+        return {"revision": revision, "checkouts": checkouts, "revs": revs, "registry": registry, "digest": digest, "plan": plan,
+                "records": records, "profile": profile, "prefix": prefix, "candidate": "SVA-cand1", "issue": "I1",
+                "literals": {"report": {"adv": "FAILED", "ben": "PASSED", "build": "PASSED", "cov": "PASSED"},
+                             "pin": {"adv": "PASSED", "ben": "PASSED", "build": "PASSED", "cov": "PASSED"}},
+                "outputs": {}, "counts": {"report": 2, "pin": 1}, "poc": [digest], "drop": set(),
+                "sinks": {"report": "src/lib.rs:5", "pin": "src/core.rs:5"}, "cov_names": {}, "result_candidates": {}}
 
-    def test_test_result_built_from_adapter_outputs(self):
-        # Finding 5: the result comes from deterministic-check results, coverage, and poc-overlap, not from the operator
-        self.currency(*self.result_inputs({"T-ADV": "FAILED", "T-OK": "PASSED"}, {"T-ADV": "PASSED", "T-OK": "PASSED"}))
-        document = json.loads((self.out / "test-I1.json").read_text(encoding="utf-8"))
-        self.assertEqual(document["base_validation"]["state"], "TEST_OBSERVED")
-        self.assertEqual((document["at_pin"], document["pin_validation"]["sink_reached"], document["pin_validation"]["controls_hold"]),
-                         ("PASSED", True, True))
-        self.assertEqual((document["base_validation"]["sink"], document["registry_sha256"]), ({"location": "src/lib.rs:3", "count": 2}, "b" * 64))
+    def tr_args(self, ctx):
+        """Write the registry, adapter results, coverage files (only for a coverage entry that passed), records, and
+        poc-overlap checks for ctx; return the argv."""
+        registry_path = write(self.tmp / "registry.json", ctx["registry"])
+        registry_sha = hashlib.sha256(registry_path.read_bytes()).hexdigest()
+        args = ["test-result", "--revision", self.out / "revision.json", "--plan", ctx["plan"], "--issue-id", ctx["issue"],
+                "--candidate-id", ctx["candidate"], "--profile", ctx["profile"], "--registry", registry_path,
+                "--adversarial", "adv", "--benign", "ben", "--build", "build", "--coverage", "cov"]
+        for side, flag in (("report", "--base-result"), ("pin", "--pin-result")):
+            for name, literal in ctx["literals"][side].items():
+                test_id = f"{name}@{side}"
+                if test_id in ctx["drop"]:
+                    continue
+                complete = literal in ("PASSED", "FAILED")
+                default = "running 1 test\ntest result: ok." if name in ("adv", "ben") else ""
+                result = {"role_type": "computation", "check_kind": "FROZEN_TEST_REFERENCE", "frozen_test_id": test_id,
+                          "candidate_id": ctx["result_candidates"].get(test_id, "SVA-cand1"),
+                          "proposition": ctx.get("propositions", {}).get(test_id, "The resolver rejects it."),
+                          "target_revision": ctx["revs"][side], "status": "COMPLETE" if complete else "FAILED", "literal_check_result": literal,
+                          "registry_sha256": registry_sha, "bounded_output": ctx["outputs"].get(test_id, default)}
+                args += [flag, write(self.tmp / f"result-{test_id}.json", result)]
+            root = ctx["checkouts"][side]
+            relative, _, line = ctx["sinks"][side].rpartition(":")
+            filename = ctx["cov_names"].get(side, str(root / relative))
+            cov = root / "target" / "cov.json"
+            if ctx["literals"][side]["cov"] == "PASSED":
+                (root / "target").mkdir(exist_ok=True)
+                write(cov, {"data": [{"files": [{"filename": filename, "segments": [[int(line), 1, ctx["counts"][side], True, True],
+                                                                                    [int(line), 9, 0, True, True]]}]}], "side": side})
+            elif cov.exists():
+                cov.unlink()
+        records = write(self.tmp / "report-records-tr.json", ctx["records"])
+        args += ["--base-checkout", ctx["checkouts"]["report"], "--pin-checkout", ctx["checkouts"]["pin"],
+                 "--base-sink", ctx["sinks"]["report"], "--pin-sink", ctx["sinks"]["pin"], "--report-records", records]
+        for index, digest in enumerate(ctx["poc"]):
+            args += ["--poc-overlap", write(self.tmp / f"poc-{index}.json", {"check": "poc-overlap", "ghsa_id": IDS["base"], "decision": "ACCEPT",
+                                                                              "test_file_sha256": digest})]
+        return args + ["--out", self.out / "test-I1.json"]
+
+    def tr_result(self, ctx, expect=0):
+        result = self.currency(*self.tr_args(ctx), expect=expect)
+        return json.loads((self.out / "test-I1.json").read_text(encoding="utf-8")) if expect == 0 else result
+
+    def set_argv(self, ctx, test_id, argv):
+        ctx["registry"]["tests"][test_id]["argv"] = ctx["prefix"] + argv
+
+    def test_test_result_from_registry_pairs(self):
+        # TR-1: one frozen test at two revisions as a pair of registry entries; the result feeds the phase 2b rule
+        ctx = self.tr_context()
+        document = self.tr_result(ctx)
+        self.assertEqual((document["base_validation"]["state"], document["at_pin"]), ("TEST_OBSERVED", "PASSED"))
+        self.assertEqual((document["pin_validation"]["sink_reached"], document["pin_validation"]["controls_hold"]), (True, True))
+        self.assertEqual(document["base_validation"]["sink"], {"location": "src/lib.rs:5", "count": 2})
+        self.assertEqual(document["build"], {"report": "PASSED", "pin": "PASSED"})
+        self.assertEqual(document["tests"], {"adversarial": ["adv"], "benign": ["ben"]})
+        self.assertIs(document["sink_matches_control_site"], True)
+        # Q12, Q13: the profile and the candidate the test was written for are recorded
+        self.assertEqual(document["profile_sha256"], hashlib.sha256(ctx["profile"].read_bytes()).hexdigest())
+        self.assertEqual((document["candidate_id"], document["proposition"]), ("SVA-cand1", "The resolver rejects it."))
         currency = runpy.run_path(str(SCRIPTS / "currency-check.py"))
-        revision = json.loads((self.out / "revision.json").read_text(encoding="utf-8"))
-        loaded = currency["load_test"](str(self.out / "test-I1.json"), IDS["base"], revision,
-                                       json.loads((self.out / "plan.json").read_text(encoding="utf-8")), {"I1"})
-        self.assertEqual(currency["decide"]("REFUTED", None, loaded), ("FIXED_SINCE_REPORT", "TEST", ""))  # accepted by the phase 2b rule
-        # not reached at the base: unvalidated; a still-failing test at the pin: FAILED; an unrun one: UNRESOLVED
-        self.currency(*self.result_inputs({"T-ADV": "FAILED", "T-OK": "PASSED"}, {"T-ADV": "FAILED", "T-OK": "PASSED"}, base_count=0))
-        document = json.loads((self.out / "test-I1.json").read_text(encoding="utf-8"))
-        self.assertEqual((document["base_validation"]["state"], document["at_pin"]), ("TEST_UNVALIDATED", "FAILED"))
-        self.currency(*self.result_inputs({"T-ADV": "FAILED", "T-OK": "PASSED"}, {"T-ADV": "NOT_RUN", "T-OK": "PASSED"}))
-        self.assertEqual(json.loads((self.out / "test-I1.json").read_text(encoding="utf-8"))["at_pin"], "UNRESOLVED")
+        loaded = currency["load_test"](str(self.out / "test-I1.json"), IDS["base"], ctx["revision"],
+                                       json.loads(ctx["plan"].read_text(encoding="utf-8")), {"I1"})
+        self.assertEqual(currency["decide"]("REFUTED", None, loaded), ("FIXED_SINCE_REPORT", "TEST", ""))
 
-    def test_test_result_refusals(self):
-        ok_base, ok_pin = {"T-ADV": "FAILED", "T-OK": "PASSED"}, {"T-ADV": "PASSED", "T-OK": "PASSED"}
-        self.assertIn("ACCEPT poc-overlap", self.currency(*self.result_inputs(ok_base, ok_pin, decision="REJECT"), expect=2))
-        self.assertIn("different frozen-test registries",
-                      self.currency(*self.result_inputs(ok_base, ok_pin, registry_pin="d" * 64), expect=2))
-        args = self.result_inputs(ok_base, ok_pin)
-        index = next(i for i, a in enumerate(args) if str(a).endswith("pin-T-OK.json"))
-        missing = args[:index - 1] + args[index + 1:]  # drop the flag and its value together
-        self.assertIn("not the declared tests", self.currency(*missing, expect=2))
-        swapped = [str(a).replace("pin-T-ADV.json", "base-T-ADV.json") for a in args]
-        self.assertIn("another revision", self.currency(*swapped, expect=2))
+    def test_test_result_pairs_must_match(self):
+        # TR-2: a pair may differ only in its revision
+        changes = {"argv": None, "working_directory": "tests", "environment": {"HOME": "/other"},
+                   "routing_table": [{"literal_result": "PASSED", "final_status": "DISPUTED"}],
+                   "proposition_sha256": "f" * 64, "required_files": {"tests/case.rs": "0" * 64}}
+        for field in self.PAIR_FIELDS:
+            with self.subTest(field=field):
+                ctx = self.tr_context()
+                value = changes[field] if field != "argv" else ctx["prefix"] + ["cargo", "test", "--test", "case", "--", "--exact", "benign_case"]
+                ctx["registry"]["tests"]["adv@pin"][field] = value
+                self.assertIn("differ in", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()
+        ctx["registry"]["tests"]["adv@pin"]["revision"] = ctx["revs"]["report"]
+        self.assertIn("is bound to revision", self.tr_result(ctx, expect=2))
+        for name, argv in (("no --exact", ["cargo", "test", "--test", "case", "--", "adversarial_case"]),
+                           ("two names", ["cargo", "test", "--test", "case", "--", "--exact", "a", "b"])):
+            with self.subTest(case=name):  # each declared test runs exactly one named test, so its output can show one test ran
+                ctx = self.tr_context()
+                for side in ("report", "pin"):
+                    self.set_argv(ctx, f"adv@{side}", argv)
+                self.assertIn("exactly one test", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()
+        for side in ("report", "pin"):
+            del ctx["registry"]["tests"][f"adv@{side}"]["required_files"]
+        self.assertIn("names no required_files", self.tr_result(ctx, expect=2))
+
+    def test_test_result_entries_run_under_the_profile(self):
+        # Q12 (review finding 2): every entry starts with sandbox-exec -f <the profile> and expects exit 0
+        cases = {"plain cargo": ("build@report", "argv", ["cargo", "test", "--no-run"]),
+                 "another profile": ("adv@report", "argv", [self.SANDBOX_EXEC, "-f", "/elsewhere.sb", "cargo", "test", "--test", "case",
+                                                            "--", "--exact", "adversarial_case"]),
+                 "coverage outside": ("cov@pin", "argv", ["cargo", "llvm-cov", "test", "--test", "case", "--json", "--output-path", "target/cov.json"])}
+        for name, (test_id, field, value) in cases.items():
+            with self.subTest(case=name):
+                ctx = self.tr_context()
+                ctx["registry"]["tests"][test_id][field] = value
+                if test_id.startswith(("adv", "build")):  # keep the pair identical so the profile check is what refuses
+                    ctx["registry"]["tests"][test_id.replace("@report", "@pin")][field] = value
+                self.assertIn("must start with", self.tr_result(ctx, expect=2))
+        for name, path in (("relative path", os.path.relpath(self.tmp / "x" / "profile.sb")), ("not normalized", None)):
+            with self.subTest(case=name):  # the adapter resolves -f in the checkout, which code under test can write
+                ctx = self.tr_context()
+                value = path or str(ctx["profile"].parent) + "/./" + ctx["profile"].name
+                for test_id in ctx["registry"]["tests"]:
+                    ctx["registry"]["tests"][test_id]["argv"][2] = value
+                self.assertIn("must start with", self.tr_result(ctx, expect=2))
+        for test_id in ("build@report", "cov@report"):
+            with self.subTest(case=f"exit status {test_id}"):
+                ctx = self.tr_context()
+                ctx["registry"]["tests"][test_id]["expected_exit_status"] = 101
+                if test_id.startswith("build"):
+                    ctx["registry"]["tests"]["build@pin"]["expected_exit_status"] = 101
+                self.assertIn("expect exit 0", self.tr_result(ctx, expect=2))
+
+    def test_test_result_is_bound_to_the_candidate(self):
+        # Q13 (review finding 6): the candidate must be a verified, bridged record answering the issue; every result names it
+        ctx = self.tr_context()
+        ctx["issue"] = "I2"  # planned, but R1 answers I1 only
+        self.assertIn("no CROSS-MODEL VERIFIED, bridged record", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()
+        ctx["records"]["records"][0]["bridged"] = False
+        self.assertIn("no CROSS-MODEL VERIFIED, bridged record", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()
+        ctx["result_candidates"]["ben@pin"] = "SVA-other"
+        self.assertIn("written for another candidate", self.tr_result(ctx, expect=2))
+        # each condition of the record check has its own case (pre-commit review finding 3)
+        ctx = self.tr_context()
+        ctx["candidate"] = "SVA-missing"  # no record of that candidate
+        ctx["result_candidates"] = {f"{n}@{s}": "SVA-missing" for n in ("adv", "ben", "build", "cov") for s in ("report", "pin")}
+        self.assertIn("no CROSS-MODEL VERIFIED, bridged record", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()
+        ctx["records"]["records"][0]["final_status"] = "DISPUTED"  # bridged flag alone is not enough
+        self.assertIn("no CROSS-MODEL VERIFIED, bridged record", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()
+        ctx["propositions"] = {"ben@pin": "Another proposition."}
+        self.assertIn("do not share one proposition", self.tr_result(ctx, expect=2))
+
+    def test_test_result_tests_share_one_target_and_coverage_writes_its_file(self):
+        ctx = self.tr_context()
+        for side in ("report", "pin"):
+            self.set_argv(ctx, f"ben@{side}", ["cargo", "test", "--test", "other", "--", "--exact", self.BEN])
+        self.assertIn("same build options", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()
+        args = self.tr_args(ctx)
+        (ctx["checkouts"]["pin"] / "target" / "cov.json").unlink()
+        self.assertIn("wrote no file", self.currency(*args, expect=2))
+
+    def test_test_result_build_failure_is_unresolved(self):
+        # TR-3, TR-4 (a test that does not compile exits like a failing one), with the coverage file absent as in a real failed build (review finding 1); TR-5
+        for literal in ("FAILED", "UNRESOLVED"):
+            with self.subTest(side="report", build=literal):
+                ctx = self.tr_context()
+                ctx["literals"]["report"].update(build=literal, cov="FAILED")
+                document = self.tr_result(ctx)
+                self.assertEqual((document["base_validation"]["state"], document["base_validation"]["results"]["adv"]),
+                                 ("TEST_UNVALIDATED", "UNRESOLVED"))
+                self.assertIsNone(document["inputs"]["coverage_sha256"]["report"])
+            with self.subTest(side="pin", build=literal):
+                ctx = self.tr_context()
+                ctx["literals"]["pin"].update(build=literal, adv="FAILED", cov="FAILED")  # a compile failure looks like this
+                document = self.tr_result(ctx)
+                self.assertEqual((document["at_pin"], document["build"]["pin"], document["pin_validation"]["sink_reached"]),
+                                 ("UNRESOLVED", literal, False))
+        for side in ("report", "pin"):
+            with self.subTest(missing=f"build@{side}"):
+                ctx = self.tr_context()
+                ctx["drop"] = {f"build@{side}"}
+                self.assertIn(f"missing ['build@{side}']", self.tr_result(ctx, expect=2))
+
+    def test_test_result_needs_exactly_one_test_run(self):
+        # TR-6 (a filter that matches no test passes; review finding 5)
+        for name, side, output in (("no test", "pin", "running 0 tests\ntest result: ok. 0 passed"),
+                                   ("two tests", "report", "running 2 tests\ntest result: FAILED."),
+                                   ("two binaries", "pin", "running 1 test\ntest result: ok.\nrunning 1 test\ntest result: ok.")):
+            with self.subTest(case=name):
+                ctx = self.tr_context()
+                ctx["outputs"][f"adv@{side}"] = output
+                document = self.tr_result(ctx)
+                self.assertEqual(document["pin_validation" if side == "pin" else "base_validation"]["results"]["adv"], "UNRESOLVED")
+
+    def test_test_result_coverage_is_bound_to_its_checkout(self):
+        # TR-7 (M1) and review finding 3
+        ctx = self.tr_context()
+        ctx["cov_names"]["pin"] = str(ctx["checkouts"]["report"] / "src" / "core.rs")
+        self.assertIn("under another directory", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()
+        self.tr_args(ctx)
+        path = ctx["checkouts"]["report"] / "target" / "cov.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["data"][0]["files"].append(dict(document["data"][0]["files"][0]))
+        args = self.tr_args(ctx)
+        write(path, document)
+        self.assertIn("several times", self.currency(*args, expect=2))
+        ctx = self.tr_context()
+        args = self.tr_args(ctx)
+        shutil.copyfile(ctx["checkouts"]["report"] / "target" / "cov.json", ctx["checkouts"]["pin"] / "target" / "cov.json")
+        self.assertIn("same coverage", self.currency(*args, expect=2))
+        ctx = self.tr_context()
+        args = [str(a) for a in self.tr_args(ctx)]
+        index = args.index("--base-checkout")
+        args[index + 1] = str(ctx["checkouts"]["pin"])
+        self.assertIn("HEAD", self.currency(*args, expect=2))
+        # a coverage file that is a link, or a file under a linked directory, is not read
+        ctx = self.tr_context()
+        args = self.tr_args(ctx)
+        pin_cov = ctx["checkouts"]["pin"] / "target" / "cov.json"
+        outside = self.tmp / "outside-cov.json"
+        shutil.copyfile(pin_cov, outside)
+        pin_cov.unlink()
+        pin_cov.symlink_to(outside)
+        self.assertIn("link or outside the checkout", self.currency(*args, expect=2))
+        ctx = self.tr_context()
+        args = self.tr_args(ctx)
+        target = ctx["checkouts"]["pin"] / "target"
+        moved = self.tmp / "outside-target"
+        shutil.move(str(target), str(moved))
+        target.symlink_to(moved)
+        self.assertIn("link or outside the checkout", self.currency(*args, expect=2))
+
+    def test_coverage_size_is_capped(self):
+        # review finding 3: a coverage file larger than the cap is refused before it is parsed
+        currency = runpy.run_path(str(SCRIPTS / "currency-check.py"))
+        root = Path(tempfile.mkdtemp(dir=self.tmp)).resolve()
+        (root / "target").mkdir()
+        (root / "target" / "cov.json").write_text(json.dumps({"data": []}) + " " * 100, encoding="utf-8")
+        currency["coverage_file"].__globals__["COVERAGE_MAX_BYTES"] = 50
+        with self.assertRaises(currency["UsageError"]) as raised:
+            currency["coverage_file"](root, "target/cov.json")
+        self.assertIn("larger than", str(raised.exception))
+
+    def test_test_result_coverage_entries_run_the_right_tests(self):
+        # TR-8 (Q8) and review finding 4: adversarial tests only at the report revision; every declared test at the pin;
+        # the same test target and package as the tests; no skip options
+        base = ["cargo", "llvm-cov", "test", "--test", "case", "--ignore-run-fail", "--json", "--output-path", "target/cov.json"]
+        cases = {"benign in base coverage": ("cov@report", base + ["--", "--exact", self.ADV, self.BEN], "exactly the adversarial-input tests"),
+                 "base coverage without --exact": ("cov@report", base, "exactly the adversarial-input tests"),
+                 "pin coverage missing a test": ("cov@pin", base + ["--", "--exact", self.ADV], "every declared test"),
+                 "pin coverage skipping tests": ("cov@pin", base + ["--", f"--skip={self.ADV}", f"--skip={self.BEN}"], "libtest option"),
+                 "another test target": ("cov@pin", ["cargo", "llvm-cov", "test", "--test", "other", "--json", "--output-path", "target/cov.json"],
+                                         "same build options"),
+                 "another package": ("cov@report", base[:3] + ["-p", "other"] + base[3:] + ["--", "--exact", self.ADV], "same build options"),
+                 "no output path": ("cov@pin", ["cargo", "llvm-cov", "test", "--test", "case", "--json"], "--output-path"),
+                 "skips behind a second --": ("cov@pin", base + ["--", "--skip", self.ADV, "--", "--exact", self.ADV, self.BEN], "one `--`"),
+                 "a positional test name before --": ("cov@report", base + [self.BEN, "--", "--exact", self.ADV], "positional argument")}
+        for name, (test_id, argv, message) in cases.items():
+            with self.subTest(case=name):
+                ctx = self.tr_context()
+                self.set_argv(ctx, test_id, argv)
+                self.assertIn(message, self.tr_result(ctx, expect=2))
+        build_cases = {"another manifest": ("cov@pin", base + ["--manifest-path", "crates/b/Cargo.toml"]),
+                       "other features": ("cov@report", base + ["--features", "x", "--", "--exact", self.ADV]),
+                       "another cargo profile": ("cov@pin", base + ["--release"])}
+        for name, (test_id, argv) in build_cases.items():
+            with self.subTest(case=name):  # coverage must come from the same build as the tests
+                ctx = self.tr_context()
+                self.set_argv(ctx, test_id, argv)
+                self.assertIn("same build options", self.tr_result(ctx, expect=2))
+        for name, argv in (("no report", base + ["--no-report"]), ("no run", base + ["--no-run"]),
+                           ("no JSON", ["cargo", "llvm-cov", "test", "--test", "case", "--ignore-run-fail", "--output-path", "target/cov.json"])):
+            with self.subTest(case=name):  # a coverage entry must write a fresh JSON report
+                ctx = self.tr_context()
+                self.set_argv(ctx, "cov@pin", argv)
+                self.assertIn("fresh JSON report", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()
+        ctx["registry"]["tests"]["cov@pin"]["environment"] = {"HOME": "/elsewhere"}
+        self.assertIn("same environment", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()
+        for side in ("report", "pin"):
+            self.set_argv(ctx, f"build@{side}", ["cargo", "test", "--no-run", "-p", "other"])
+        self.assertIn("same build options", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()
+        for side in ("report", "pin"):
+            self.set_argv(ctx, f"adv@{side}", ["cargo", "test", "--test", "case", "--features", "x", "--", "--exact", self.ADV])
+        self.assertIn("same build options", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()  # `--` right after the profile would hide the cargo selectors from the check
+        for test_id in ctx["registry"]["tests"]:
+            ctx["registry"]["tests"][test_id]["argv"] = ctx["prefix"] + ["--"] + ctx["registry"]["tests"][test_id]["argv"][3:]
+        self.assertIn("command must follow the profile", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()  # a test entry with a second, positional test name
+        for side in ("report", "pin"):
+            self.set_argv(ctx, f"adv@{side}", ["cargo", "test", "--test", "case", "other_test", "--", "--exact", self.ADV])
+        self.assertIn("positional argument", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()  # the coverage file is read at <checkout>/<--output-path>, so the entry must run in the checkout root
+        ctx["registry"]["tests"]["cov@report"]["working_directory"] = "tests"
+        self.assertIn("working_directory", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()
+        self.set_argv(ctx, "cov@pin", base + ["--", "--exact", self.ADV, self.BEN, "--test-threads=1"])
+        self.assertEqual(self.tr_result(ctx)["at_pin"], "PASSED")  # naming every declared test is the same as naming none
+
+    def test_test_result_poc_overlap_digests_match_the_tests(self):
+        # TR-9 (M3)
+        for name, digests, message in (("other file", ["0" * 64], "cover exactly the frozen tests' required files"),
+                                       ("not hex", ["c" * 3], "64-hex")):
+            with self.subTest(case=name):
+                ctx = self.tr_context()
+                ctx["poc"] = digests
+                self.assertIn(message, self.tr_result(ctx, expect=2))
+
+    def test_test_result_records_control_sites(self):
+        # TR-10 (Q10, L6): recorded and shown, never refused
+        ctx = self.tr_context()
+        ctx["records"]["records"][0]["control_site"]["relative_path"] = "src/other.rs"
+        document = self.tr_result(ctx)
+        self.assertIs(document["sink_matches_control_site"], False)
+        self.assertEqual(document["control_sites"], [{"symbol": "apply_profile", "relative_path": "src/other.rs", "line": 5}])
+        ctx["records"]["research_only"] = True
+        self.assertIn("different paths", self.tr_result(ctx, expect=2))
+
+    def test_brief_shows_sink_outside_the_control_sites(self):
+        # Q10 a: the human sees both sinks, and that the test's sink is in another file than every verified control site
+        ctx = self.tr_context()
+        ctx["records"]["records"][0]["control_site"]["relative_path"] = "src/other.rs"
+        self.tr_result(ctx)
+        self.outcome(["outcome", "--revision", self.out / "revision.json", "--plan", ctx["plan"],
+                      "--report-records", write(self.tmp / "report-records-tr.json", ctx["records"]), "--test", self.out / "test-I1.json"])
+        self.currency("brief", "--outcome", self.out / "outcome.json", "--out", self.out / "brief.md")
+        text = (self.out / "brief.md").read_text(encoding="utf-8")
+        self.assertIn("the test's sink (src/lib.rs:5) is not in a file named by a verified control site", text)
+        self.assertIn("verified control sites: src/other.rs:5", text)
+        self.assertIn("build at the report revision PASSED, at the pin PASSED", text)
+        self.assertIn("Test sinks: report revision src/lib.rs:5 (count 2), pin src/core.rs:5 (count 1)", text)
+        self.assertIn('Test candidate: SVA-cand1; proposition: "The resolver rejects it."', text)
+
+    def test_sink_match_uses_the_bound_candidate_and_paths_stay_on_one_line(self):
+        # pre-commit review findings 5 and 4
+        ctx = self.tr_context()
+        ctx["records"]["records"][0]["control_site"]["relative_path"] = "src/other.rs\n"
+        ctx["records"]["records"].append({"record_id": "R2", "candidate_id": "SVA-other", "answers": [{"ghsa_id": IDS["base"], "issue_id": "I1"}],
+                                          "final_status": self.V, "bridged": False, "ghsa_eligible": False,
+                                          "control_site": {"symbol": "x", "relative_path": "src/lib.rs", "line": 3}})
+        document = self.tr_result(ctx)
+        self.assertIs(document["sink_matches_control_site"], False)  # another candidate's control site does not count
+        self.outcome(["outcome", "--revision", self.out / "revision.json", "--plan", ctx["plan"],
+                      "--report-records", write(self.tmp / "report-records-tr.json", ctx["records"]), "--test", self.out / "test-I1.json"])
+        self.currency("brief", "--outcome", self.out / "outcome.json", "--out", self.out / "brief.md")
+        lines = (self.out / "brief.md").read_text(encoding="utf-8").splitlines()
+        self.assertFalse([line for line in lines if line.startswith(":")])  # the newline did not split a line
+        self.assertTrue(any("src/other.rs\\n" in line for line in lines))  # shown as one-line JSON instead
+        ctx = self.tr_context()
+        ctx["sinks"]["pin"] = "src/core.rs\n:5"
+        self.assertIn("--*-sink", self.tr_result(ctx, expect=2))
+
+    def test_outcome_binds_a_test_to_the_current_records(self):
+        # Copilot round 1: a saved test result counts only with the report-revision records it was built from
+        ctx = self.tr_context()
+        self.tr_result(ctx)
+        base = ["outcome", "--revision", self.out / "revision.json", "--plan", ctx["plan"], "--test", self.out / "test-I1.json"]
+        self.assertIn("--report-records", self.outcome(base, expect=2))
+        ctx["records"]["records"][0]["final_status"] = "DISPUTED"  # the candidate's analysis changed after the test was built
+        changed = write(self.tmp / "report-records-changed.json", ctx["records"])
+        self.assertIn("other report-revision records", self.outcome(base + ["--report-records", changed], expect=2))
+
+    def test_outcome_accepts_test_results(self):
+        # OC-1: the refusal is gone; O-1 to O-3 and O-9 from real test-result output
+        cases = {"O-1": ({}, ("FIXED_SINCE_REPORT", "TEST", "")),
+                 "O-2": ({"pin": {"adv": "FAILED"}}, ("STILL_PRESENT", "TEST", "")),
+                 "O-3": ({"pin": {"build": "FAILED", "cov": "FAILED"}}, ("UNDECIDED", "TEST", "TEST_UNRESOLVED_AT_PIN")),
+                 "O-9": ({"report": {"adv": "PASSED"}}, ("FIXED_SINCE_REPORT", "ANALYSIS", ""))}
+        for name, (changes, expected) in cases.items():
+            with self.subTest(row=name):
+                ctx = self.tr_context()
+                for side, values in changes.items():
+                    ctx["literals"][side].update(values)
+                self.tr_result(ctx)
+                args = ["outcome", "--revision", self.out / "revision.json", "--plan", ctx["plan"],
+                        "--report-records", write(self.tmp / "report-records-tr.json", ctx["records"]), "--test", self.out / "test-I1.json"]
+                result = self.outcome(args)
+                self.assertEqual((result["I1"]["outcome"], result["I1"]["evidence"], result["I1"]["reason"]), expected)
+                self.assertEqual((result["I1"]["test"]["sink_matches_control_site"], result["I1"]["test"]["candidate_id"]), (True, "SVA-cand1"))
+
+    @unittest.skipUnless(Path("/usr/bin/sandbox-exec").exists(), "the test-only entry's Phase 2 runs under macOS sandbox-exec")
+    def test_test_only_entry_end_to_end_with_real_adapter_runs(self):
+        # OC-2 (H1's requested real run): deterministic-check.py really runs frozen commands (under sandbox-exec with a
+        # permissive fixture profile) at two commits of a fixture repository, and test-result and outcome consume the results.
+        # The command is a small Python script standing in for cargo: it reads the code under test, prints libtest's
+        # "running 1 test" line, and writes coverage JSON.
+        repo = self.tmp / "e2e"
+        repo.mkdir()
+        fixture_git(repo, "init", "-q", "-b", "main")
+        (repo / "src").mkdir()
+        (repo / "src" / "core.rs").write_text("fn sink() {}\nfn check() { VULNERABLE }\n", encoding="utf-8")
+        fixture_git(repo, "add", "-A")
+        fixture_git(repo, "commit", "-q", "-m", "report")
+        report = fixture_git(repo, "rev-parse", "HEAD")
+        (repo / "src" / "core.rs").write_text("fn sink() {}\nfn check() { FIXED }\n", encoding="utf-8")
+        fixture_git(repo, "commit", "-q", "-am", "pin")
+        pin = fixture_git(repo, "rev-parse", "HEAD")
+        self.out.mkdir(parents=True, exist_ok=True)
+        write(self.out / "revision.json", {"record_type": "ghsa_currency_revision", "ghsa_id": IDS["base"], "report_revision": report, "pin": pin})
+        sandbox = self.tmp / "e2e-sandbox"
+        sandbox.mkdir()
+        runner = (f"#!{sys.executable} -I\n"
+                  "import json, os, sys\n"
+                  "args = sys.argv[1:]\n"
+                  "code = open('src/core.rs').read()\n"
+                  "if '--no-run' in args:\n    sys.exit(0)\n"
+                  "if '--output-path' in args:\n"
+                  "    out = args[args.index('--output-path') + 1]\n"
+                  "    os.makedirs(os.path.dirname(out), exist_ok=True)\n"
+                  "    json.dump({'data': [{'files': [{'filename': os.path.realpath('src/core.rs'), 'segments': [[1, 1, 1, True, True]]}]}],\n"
+                  "               'code': code}, open(out, 'w'))\n"
+                  "    sys.exit(0)\n"
+                  "name = args[args.index('--exact') + 1]\n"
+                  "print('running 1 test')\n"
+                  "sys.exit(101 if name == 'adversarial_case' and 'VULNERABLE' in code else 0)\n")
+        cargo = self.tmp / "fake-bin" / "cargo"  # a stand-in for cargo, outside the checkouts, taking cargo's argument shape
+        cargo.parent.mkdir()
+        cargo.write_text(runner, encoding="utf-8")
+        cargo.chmod(0o755)
+        test_text = "#[test]\nfn adversarial_case() {}\n#[test]\nfn benign_case() {}\n"
+        source = self.tmp / "case.rs"
+        source.write_text(test_text, encoding="utf-8")
+        digest = hashlib.sha256(test_text.encode()).hexdigest()
+        for which in ("report", "pin"):
+            placed = self.currency("checkout", "--repo-dir", repo, "--revision", self.out / "revision.json", "--which", which,
+                                   "--sandbox-dir", sandbox, "--test-file", f"tests/case.rs={source}")
+            self.assertEqual(placed["test_files"], {"tests/case.rs": digest})
+        profile = (self.tmp / "e2e-profile.sb").resolve()
+        profile.write_text("(version 1)\n(allow default)\n", encoding="utf-8")
+        revs = {"report": report, "pin": pin}
+        routing = [{"literal_result": "PASSED", "final_status": "NOT VERIFIED"}, {"literal_result": "FAILED", "final_status": "NOT VERIFIED"}]
+        proposition = "The check rejects the adversarial input."
+        checks = runpy.run_path(str(SCRIPTS / "deterministic-check.py"))
+        base = [self.SANDBOX_EXEC, "-f", str(profile), str(cargo)]
+        argvs = {"adv": base + ["test", "--test", "case", "--", "--exact", self.ADV], "ben": base + ["test", "--test", "case", "--", "--exact", self.BEN],
+                 "build": base + ["test", "--no-run"]}
+        tests = {}
+        for side, rev in revs.items():
+            for name, argv in argvs.items():
+                tests[f"{name}@{side}"] = {"repository": REPO, "revision": rev, "argv": argv, "working_directory": ".", "timeout_seconds": 60,
+                                           "expected_exit_status": 0, "environment": {}, "tool_version": "fixture", "routing_table": routing,
+                                           "proposition_sha256": checks["normalized_proposition_digest"](proposition),
+                                           **({"required_files": {"tests/case.rs": digest}} if name != "build" else {})}
+        coverage = base + ["llvm-cov", "test", "--test", "case", "--ignore-run-fail", "--json", "--output-path", "target/cov.json"]
+        tests["cov@report"] = dict(tests["build@report"], argv=coverage + ["--", "--exact", self.ADV])
+        tests["cov@pin"] = dict(tests["build@pin"], argv=list(coverage))
+        registry_path = write(self.tmp / "e2e-registry.json", {"schema_version": 1, "tests": tests})
+        registry_sha = hashlib.sha256(registry_path.read_bytes()).hexdigest()
+        args = ["test-result", "--revision", self.out / "revision.json", "--issue-id", "I1", "--candidate-id", "SVA-e2e", "--profile", profile,
+                "--registry", registry_path, "--adversarial", "adv", "--benign", "ben", "--build", "build", "--coverage", "cov"]
+        for side, flag in (("report", "--base-result"), ("pin", "--pin-result")):
+            for test_id in [t for t in tests if t.endswith("@" + side)]:
+                request = write(self.tmp / f"e2e-request-{test_id}.json", {
+                    "packet_revision": "fixture", "candidate_id": "SVA-e2e", "proposition": proposition, "check_id": test_id,
+                    "check_kind": "FROZEN_TEST_REFERENCE", "repository": REPO, "target_revision": revs[side], "routing_table": routing,
+                    "registry_sha256": registry_sha, "frozen_test_id": test_id})
+                code, out, err = run("deterministic-check.py", "--request", request, "--checkout", sandbox / side, "--registry", registry_path)
+                self.assertIn(code, (0, 3), err)
+                args += [flag, write(self.tmp / f"e2e-result-{test_id}.json", json.loads(out))]
+        plan = write(self.out / "plan.json", {"record_type": "ghsa_currency_plan", "ghsa_id": IDS["base"], "issues_sha256": "a" * 64, "mode": "TRIAGE",
+                                              "primary_revision": pin, "planned": [{"issue_id": "I1", "mechanism": "m", "reason": "REFUTED"}],
+                                              "not_planned": []})
+        records = write(self.tmp / "e2e-records.json", {"repository": REPO, "ghsa_id": IDS["base"], "issues_sha256": "a" * 64,
+                                                        "primary_revision": report, "research_only": False,
+                                                        "records": [{"record_id": "R-e2e", "candidate_id": "SVA-e2e", "final_status": self.V,
+                                                                     "bridged": True, "ghsa_eligible": True,
+                                                                     "answers": [{"ghsa_id": IDS["base"], "issue_id": "I1"}],
+                                                                     "control_site": {"symbol": "check", "relative_path": "src/core.rs", "line": 2}}]})
+        poc = write(self.tmp / "e2e-poc.json", {"check": "poc-overlap", "ghsa_id": IDS["base"], "decision": "ACCEPT", "test_file_sha256": digest})
+        args += ["--plan", plan, "--base-checkout", sandbox / "report", "--pin-checkout", sandbox / "pin", "--base-sink", "src/core.rs:1",
+                 "--pin-sink", "src/core.rs:1", "--report-records", records, "--poc-overlap", poc, "--out", self.out / "test-I1.json"]
+        self.currency(*args)
+        document = json.loads((self.out / "test-I1.json").read_text(encoding="utf-8"))
+        self.assertEqual((document["base_validation"]["state"], document["at_pin"], document["sink_matches_control_site"]),
+                         ("TEST_OBSERVED", "PASSED", True))
+        result = self.outcome(["outcome", "--revision", self.out / "revision.json", "--plan", plan, "--report-records", records,
+                               "--test", self.out / "test-I1.json"])
+        self.assertEqual((result["I1"]["outcome"], result["I1"]["evidence"]), ("FIXED_SINCE_REPORT", "TEST"))
 
     def test_checkout_endpoint(self):
         self.revision()
@@ -3543,12 +4364,14 @@ class CurrencyTest(Workspace):
         allow_write = next(line for line in lines if line.startswith("(allow file-write*"))
         self.assertIn(f'(subpath "{real(sandbox)}")', allow_write)
         self.assertNotIn(real(home), allow_write)  # nothing in the home directory is writable, the Cargo home included
+        self.assertNotIn(real(self.tmp / "tmp"), allow_write)  # SP-3 (M5): the user's temporary directory is not writable
         self.assertLess(lines.index("(deny file-write*)"), lines.index(allow_write))  # later rules win in Seatbelt
         self.assertTrue((sandbox / "cargo-home").is_dir())
         self.assertEqual(json.loads(stdout)["cargo_home"], real(sandbox / "cargo-home"))
         # Phase 2 runs with a home inside the sandbox (Cargo's git library otherwise reads the real home's configuration)
         self.assertEqual(json.loads(stdout)["environment"], {"HOME": real(sandbox / "home"), "RUSTUP_HOME": real(home / ".rustup"),
-                                                            "CARGO_HOME": real(sandbox / "cargo-home")})
+                                                            "CARGO_HOME": real(sandbox / "cargo-home"), "TMPDIR": real(sandbox / "tmp")})
+        self.assertEqual(mode(sandbox / "tmp"), 0o700)
         self.assertEqual(mode(out), 0o600)
         inside = home / "work"
         inside.mkdir()
@@ -3558,6 +4381,139 @@ class CurrencyTest(Workspace):
                                     "--out", out, env=env)
             self.assertEqual(code, 2, stdout or err)
             self.assertIn("must be outside", err)
+
+    def profile_inputs(self):
+        home = self.tmp / "home2"
+        (home / ".cargo" / "bin").mkdir(parents=True)
+        (home / ".rustup").mkdir()
+        temporary = self.tmp / "tmp2"
+        temporary.mkdir()
+        sandbox, run_root, clone = self.tmp / "sandbox2", self.tmp / "runs-root2", self.tmp / "clone-dir2"
+        for path in (sandbox, run_root, clone):
+            path.mkdir()
+        env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(home), "TMPDIR": str(temporary)}
+        return home, temporary, sandbox, run_root, clone, env
+
+    def profile(self, sandbox, run_root, clone, out, env, expect=0):
+        code, stdout, err = run("currency-check.py", "sandbox-profile", "--sandbox-dir", sandbox, "--run-root", run_root, "--repo-dir", clone,
+                                "--out", out, env=env)
+        self.assertEqual(code, expect, stdout or err)
+        return err
+
+    def test_sandbox_profile_refusals(self):
+        home, temporary, sandbox, run_root, clone, env = self.profile_inputs()
+        out = self.tmp / "profile2" / "profile.sb"
+        # SP-1 (M4): code in Phase 2 can write the sandbox and could rewrite a profile kept there before the next sandbox-exec
+        for name, bad_out in (("in the sandbox", sandbox / "profile.sb"), ("in the temporary directory", temporary / "profile.sb")):
+            with self.subTest(case=name):
+                self.assertIn("--out", self.profile(sandbox, run_root, clone, bad_out, env, expect=2))
+        # SP-3 (M5): the sandbox is neither inside nor around the temporary directory
+        inner = temporary / "sandbox"
+        inner.mkdir()
+        self.assertIn("must be outside", self.profile(inner, run_root, clone, out, env, expect=2))
+        # SP-4 (L2): a rustup home that is or contains the home directory would make the whole home readable
+        for name, rustup in (("the home", home), ("above the home", self.tmp)):
+            with self.subTest(case=name):
+                self.assertIn("RUSTUP_HOME", self.profile(sandbox, run_root, clone, out, dict(env, RUSTUP_HOME=str(rustup)), expect=2))
+        self.profile(sandbox, run_root, clone, out, dict(env, RUSTUP_HOME=str(home / ".rustup")))
+
+    def test_sandbox_profile_refuses_linked_sandbox_directories(self):
+        # review finding 8: on a used sandbox, Phase 2 code may have replaced tmp, home, or cargo-home with a link
+        _, _, sandbox, run_root, clone, env = self.profile_inputs()
+        victim = self.tmp / "victim"
+        victim.mkdir()
+        os.chmod(victim, 0o755)
+        for name in ("tmp", "home", "cargo-home"):
+            with self.subTest(directory=name):
+                link = sandbox / name
+                link.symlink_to(victim)
+                self.assertIn("is a link", self.profile(sandbox, run_root, clone, self.tmp / "p8" / "profile.sb", env, expect=2))
+                self.assertEqual(mode(victim), 0o755)
+                link.unlink()
+
+    def test_sandbox_profile_keeps_an_existing_parent_mode(self):
+        # SP-2 (M4): an existing directory chosen for the profile keeps its mode; a new one is created 700
+        _, _, sandbox, run_root, clone, env = self.profile_inputs()
+        existing = self.tmp / "shared-dir"
+        existing.mkdir()
+        os.chmod(existing, 0o755)
+        self.profile(sandbox, run_root, clone, existing / "profile.sb", env)
+        self.assertEqual((mode(existing), mode(existing / "profile.sb")), (0o755, 0o600))
+        self.profile(sandbox, run_root, clone, self.tmp / "fresh-dir" / "profile.sb", env)
+        self.assertEqual(mode(self.tmp / "fresh-dir"), 0o700)
+
+    def test_checkout_dissociates_from_alternates(self):
+        # CK-1 (L1): a clone that borrows objects through alternates gives a checkout that borrows nothing
+        borrowed = self.tmp / "borrowed"
+        subprocess.run(["git", "clone", "-q", "--shared", str(self.repo), str(borrowed)], check=True, env=GIT_ENV, capture_output=True)
+        fixture_git(borrowed, "remote", "set-url", "origin", f"https://github.com/{REPO}.git")
+        fixture_git(borrowed, "update-ref", "refs/remotes/origin/main", self.ids["pin"])
+        self.assertTrue((borrowed / ".git" / "objects" / "info" / "alternates").is_file())
+        self.revision()
+        sandbox = self.tmp / "sandbox-alt"
+        sandbox.mkdir()
+        self.currency("checkout", "--repo-dir", borrowed, "--revision", self.out / "revision.json", "--which", "pin", "--sandbox-dir", sandbox)
+        self.assertFalse((sandbox / "pin" / ".git" / "objects" / "info" / "alternates").exists())
+        self.assertEqual(fixture_git(sandbox / "pin", "rev-parse", "HEAD"), self.ids["pin"])
+
+    def test_checkout_places_test_files(self):
+        # CK-2 (Q7 a): new integration-test files only, byte-identical, never an edit to an existing file
+        self.revision()
+        source = write(self.tmp / "frozen-case.rs", {"not": "json, but any bytes"})
+        sandbox = self.tmp / "sandbox-files"
+        sandbox.mkdir()
+        result = self.currency("checkout", "--repo-dir", self.repo, "--revision", self.out / "revision.json", "--which", "report",
+                               "--sandbox-dir", sandbox, "--test-file", f"crates/util/tests/frozen_case.rs={source}")
+        placed = sandbox / "report" / "crates" / "util" / "tests" / "frozen_case.rs"
+        self.assertEqual(placed.read_bytes(), source.read_bytes())
+        self.assertEqual(result["test_files"], {"crates/util/tests/frozen_case.rs": hashlib.sha256(source.read_bytes()).hexdigest()})
+        shape = "a .rs file directly in a crate's tests/ directory"
+        cases = {"not under tests/": ("crates/util/src/case.rs", shape), "parent segment": ("tests/../src/lib.rs", shape),
+                 "absolute": ("/tmp/case.rs", shape), "existing file": ("tests/existing.rs", "exists at that revision"),
+                 "not a Rust file": ("tests/case.txt", shape)}
+        for name, (relative, message) in cases.items():
+            with self.subTest(case=name):
+                fresh = self.tmp / f"sandbox-{len(name)}-{name[:3]}"
+                fresh.mkdir()
+                err = self.currency("checkout", "--repo-dir", self.repo, "--revision", self.out / "revision.json", "--which", "report",
+                                    "--sandbox-dir", fresh, "--test-file", f"{relative}={source}", expect=2)
+                self.assertIn(message, err)
+                self.assertFalse((fresh / "report").exists())  # refused before anything is cloned
+
+    def test_checkout_test_file_never_follows_a_link_out(self):
+        # CK-2: a repository whose tests/ directory is a symbolic link cannot make the copy land outside the checkout
+        outside = self.tmp / "outside-target"
+        outside.mkdir()
+        repo = self.tmp / "linked"
+        repo.mkdir()
+        fixture_git(repo, "init", "-q", "-b", "main")
+        (repo / "crates" / "x").mkdir(parents=True)
+        (repo / "crates" / "x" / "tests").symlink_to(outside)
+        fixture_git(repo, "add", "-A")
+        fixture_git(repo, "commit", "-q", "-m", "linked tests directory")
+        head = fixture_git(repo, "rev-parse", "HEAD")
+        self.out.mkdir(parents=True, exist_ok=True)
+        write(self.out / "revision-linked.json", {"record_type": "ghsa_currency_revision", "ghsa_id": IDS["base"], "report_revision": head, "pin": head})
+        sandbox = self.tmp / "sandbox-linked"
+        sandbox.mkdir()
+        source = write(self.tmp / "case-linked.rs", {"x": 1})
+        err = self.currency("checkout", "--repo-dir", repo, "--revision", self.out / "revision-linked.json", "--which", "report",
+                            "--sandbox-dir", sandbox, "--test-file", f"crates/x/tests/case.rs={source}", expect=2)
+        self.assertIn("leads out of the checkout", err)
+        self.assertEqual(list(outside.iterdir()), [])
+        # a link higher up: no directory may be created outside the checkout either
+        (repo / "crates" / "x" / "tests").unlink()
+        (repo / "crates" / "y").symlink_to(outside)
+        fixture_git(repo, "add", "-A")
+        fixture_git(repo, "commit", "-q", "-m", "linked crate directory")
+        head = fixture_git(repo, "rev-parse", "HEAD")
+        write(self.out / "revision-linked.json", {"record_type": "ghsa_currency_revision", "ghsa_id": IDS["base"], "report_revision": head, "pin": head})
+        sandbox = self.tmp / "sandbox-linked-2"
+        sandbox.mkdir()
+        err = self.currency("checkout", "--repo-dir", repo, "--revision", self.out / "revision-linked.json", "--which", "report",
+                            "--sandbox-dir", sandbox, "--test-file", f"crates/y/deep/tests/case.rs={source}", expect=2)
+        self.assertIn("leads out of the checkout", err)
+        self.assertEqual(list(outside.iterdir()), [])
 
     def test_restricted_dir_matches_across_scripts(self):
         import inspect

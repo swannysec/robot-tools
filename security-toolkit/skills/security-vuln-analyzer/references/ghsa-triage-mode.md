@@ -165,6 +165,15 @@ still does not complete, a human writes the evidence request.
   includes them after a rejected obvious-duplicate confirmation, under `LIST_UNREVIEWED`, and
   under `NO_TECHNICAL_ISSUES`, so list exactly those IDs. No other advisory is named. Run analysis only when
   `analysis_status` is `READY`. The pinned target from intake is the primary target revision.
+- **Research-only path (published advisories):** a published advisory never gets step 1a
+  dispositions, so `issue-scope`, `ghsa-dedup.py records`, and `currency-check.py plan` take
+  `--research --intake <intake-record.json>` instead of `--dispositions`: every technical issue in
+  the issue list is in scope. Each refuses a triage or draft advisory (open advisories use
+  dispositions), any other state than `published`, and `--research` together with
+  `--dispositions`. Its outputs are marked `research_only: true`; its records are never
+  `ghsa_eligible`, so they reach no H4 draft, reporter comment, or write-back, and the currency
+  brief says the result is research only. It exists for acceptance runs on known-fixed reports,
+  not for triage decisions.
 - **Records:** after Mechanical Reconciliation, run `ghsa-dedup.py records` before H4. Inputs:
   the verified derived discovery artifacts (each extractor envelope's `artifact` member, not the
   raw role output and not the envelope) of the complete discovery roles, `step1a/issues.json` and
@@ -180,7 +189,8 @@ still does not complete, a human writes the evidence request.
   says `CROSS-MODEL VERIFIED` and both Stage 2 artifacts are complete, unrefused, `CONFIRMED`, and
   from different providers. Each record keeps its reconciled `final_status`, answers the issue IDs
   its candidate named (`answers`: advisory and issue ID), and carries `ghsa_eligible`, true only
-  for those bridged records. A bridged record's `values` carry its CWE IDs and, when its CVSS
+  for those bridged records, and `bridged` (both Stage 2 legs `CONFIRMED`; on the research-only
+  path `bridged` can be true while `ghsa_eligible` is always false). A bridged record's `values` carry its CWE IDs and, when its CVSS
   v4.0 record is `SCORED` or `NOT SCORED` with a complete vector, that vector as
   `cvss_vector_string`, with optional metrics whose value is `X` (Not Defined) dropped, so an
   explicit `E:X` and an omitted `E` are the same vector. GitHub computes the score and severity
@@ -189,19 +199,20 @@ still does not complete, a human writes the evidence request.
   reaches H4 only when every verified record with a vector agrees, and any write is
   human-approved. It writes `report-records.json` (for `h4-packet` and the writer) in a mode-700
   directory, with the analysis pin (`primary_revision`), the digest of the issue list
-  (`issues_sha256`), and each record's `control_site` for the currency check
+  (`issues_sha256`), `research_only` (true only with `--research`), and each record's
+  `control_site` for the currency check
   ([ghsa-currency-check.md](ghsa-currency-check.md)); H4's record projection omits the control
   site. It refuses a manifest that does not match the recomputed IDs (a candidate that no
   role marked `affects_security_claim` may be absent), an inconsistent verified status, and issue
   IDs that analysis did not receive. Its result lists `unassigned` verified records (no issue ID;
   they stay in the report), `issues_without_records` (analyzed issues with no bridged record),
-  and `not_bridged` records with reasons: every record with `ghsa_eligible: false` appears exactly
+  and `not_bridged` records with reasons: every record with `bridged: false` appears exactly
   once, with its reason (not routed to verification, a verified status not backed by two
   CONFIRMED Stage 2 results, or `final status <status>` for any other final status).
 - **Currency check:** after `records`, technical issues that analysis at the pin did not confirm
   get the currency check in [ghsa-currency-check.md](ghsa-currency-check.md): the report's
   creation-time revision, analysis there, change flags, and an outcome proposal for each issue in a
-  human brief (a `--develop-fix` test-only run at both revisions is designed but not yet usable). It never
+  human brief (on macOS, a `--develop-fix` test-only run at both revisions can add test evidence). It never
   dismisses an issue or writes back by itself.
 - **`--develop-fix`:** receives the GHSA ID so landing can reuse the advisory's temporary
   private fork (ADR-014 path) instead of creating a new advisory.
@@ -246,7 +257,8 @@ user whether to proceed to write-back, using a decision brief. If the user agree
    against the allowlist and its verified report record (which must name the plan's
    repository, answer only the plan's advisory, and carry `ghsa_eligible: true` from
    `ghsa-dedup.py records`, so a record that was not bridged backs no write, including
-   accept-to-draft and private-fork creation), reads the write token through
+   accept-to-draft and private-fork creation; a records file marked `research_only` is refused
+   before any call), reads the write token through
    `op read`, re-fetches the advisory before each write and stops on any change since
    capture, and records each result.
 
@@ -289,6 +301,9 @@ explicitly permits that use for that result ([orchestrator-contract.md](orchestr
 
 ### H4 drafts
 
+- **Open advisories only:** `h4-packet` refuses an intake whose captured state is not `triage`
+  or `draft` (a published or closed advisory, the research-only path included), with or without
+  records, including evidence requests.
 - **Pending decisions:** `h4-packet` refuses dispositions whose `analysis_status` is
   `AWAITING_CONFIRMATION` (an obvious-duplicate proposal not yet decided, or a decision gone
   stale): decide it in the decision brief, record it with `ghsa-dedup.py confirm`, and rerun
@@ -330,7 +345,8 @@ explicitly permits that use for that result ([orchestrator-contract.md](orchestr
   proposed CWE, CVSS, severity, or version value does not equal a value in a cited
   `CROSS-MODEL VERIFIED` record with `ghsa_eligible: true` (a fallback-model record needs
   the user's permission for this use). An accept-to-draft proposal must cite at least one
-  such record. Comment statements may cite any record in the allowed set.
+  such record. Comment statements may cite any record in the allowed set. `h4-packet` refuses a
+  records file marked `research_only`.
 - **Advisory-ID block:** the same check rejects any draft that names another unpublished
   advisory.
 - **Posting brief:** the decision brief for each draft lists every record the draft

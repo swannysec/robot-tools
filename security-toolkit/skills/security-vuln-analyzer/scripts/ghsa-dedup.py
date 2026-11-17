@@ -2,7 +2,8 @@
 """Deterministic GHSA deduplication steps for security-vuln-analyzer.
 
 Subcommands:
-  records      report records from verified analysis artifacts, keyed to the analyzed issue IDs (ghsa_eligible marks records that may back write-back)
+  records      report records from verified analysis artifacts, keyed to the analyzed issue IDs (bridged marks a verified status backed by
+               two CONFIRMED Stage 2 legs; ghsa_eligible marks records that may back write-back, never on the --research path)
   compare-plan step 1a: earlier advisories to compare a report with, by state, from a queue listing and captures
   dispositions step 1a: per-issue COVERED / NEW / UNRESOLVED / IGNORED, the report verdict, and what analysis receives
   confirm      record the human decision on an obvious-duplicate proposal, bound to its decision digest
@@ -138,19 +139,44 @@ def canonical_cvss_v4(vector: str) -> str:
     return "/".join([parts[0]] + [part for part in parts[1:] if not (part.split(":", 1)[0] in optional and part.endswith(":X"))])
 
 
+def research_advisory(intake: dict[str, Any], ghsa_id: str) -> None:
+    """The research-only path (no dispositions) is for published advisories; open ones keep using step 1a dispositions."""
+    advisory = intake.get("advisory", {}) if isinstance(intake, dict) else {}
+    if advisory.get("ghsa_id") != ghsa_id:
+        raise UsageError("the intake record belongs to another advisory")
+    state = advisory.get("state")
+    if state in OPEN_STATES:
+        raise UsageError(f"{ghsa_id} is {state!r}: open advisories use step 1a dispositions; the research-only path "
+                         "(--research) is for published advisories")
+    if state != "published":
+        raise UsageError(f"the research-only path accepts only published advisories, not {state!r}")
+
+
 def command_records(args: argparse.Namespace) -> dict[str, Any]:
-    issues_doc, dispositions = load(args.issues), load(args.dispositions)
+    issues_doc = load(args.issues)
     if issues_doc.get("record_type") != "ghsa_issue_list" or issues_doc.get("ghsa_id") != args.ghsa_id:
         raise UsageError("the issue list belongs to a different advisory")
-    if dispositions.get("record_type") != "ghsa_dispositions" or dispositions.get("ghsa_id") != args.ghsa_id:
-        raise UsageError("the dispositions belong to a different advisory")
-    if dispositions.get("depends_on", {}).get("issues_sha256") != file_sha256(args.issues):
-        raise UsageError("the dispositions were computed from a different issue list")
-    if dispositions.get("analysis_status") == "NO_ANALYSIS":
-        raise UsageError("confirmed duplicate: nothing was analyzed, so there are no records to bridge")
-    if dispositions.get("analysis_status") != "READY":
-        raise UsageError("the report is awaiting confirmation of an obvious-duplicate proposal; nothing was analyzed")
-    analysis_issues = list(dispositions.get("analysis_issue_ids", []))
+    if args.research:  # a published advisory: analysis received every technical issue, and nothing is write-back eligible
+        if args.dispositions:
+            raise UsageError("--research takes no --dispositions: on the research-only path analysis receives every technical issue")
+        if not args.intake:
+            raise UsageError("--research needs --intake, so the advisory's captured state can be checked")
+        research_advisory(load(args.intake), args.ghsa_id)
+        analysis_issues = [item["issue_id"] for item in issues_doc.get("issues", []) if item.get("technical") is True]
+    else:
+        if not args.dispositions:
+            raise UsageError("records needs --dispositions; a published advisory has none, so use the research-only path "
+                             "(--research --intake)")
+        dispositions = load(args.dispositions)
+        if dispositions.get("record_type") != "ghsa_dispositions" or dispositions.get("ghsa_id") != args.ghsa_id:
+            raise UsageError("the dispositions belong to a different advisory")
+        if dispositions.get("depends_on", {}).get("issues_sha256") != file_sha256(args.issues):
+            raise UsageError("the dispositions were computed from a different issue list")
+        if dispositions.get("analysis_status") == "NO_ANALYSIS":
+            raise UsageError("confirmed duplicate: nothing was analyzed, so there are no records to bridge")
+        if dispositions.get("analysis_status") != "READY":
+            raise UsageError("the report is awaiting confirmation of an obvious-duplicate proposal; nothing was analyzed")
+        analysis_issues = list(dispositions.get("analysis_issue_ids", []))
     manifest = load(args.verification).get("candidates", {})
     role_records: list[tuple[str, str, dict[str, Any]]] = []
     for path in args.discovery:
@@ -202,7 +228,9 @@ def command_records(args: argparse.Namespace) -> dict[str, Any]:
             "record_id": record_id, "kind": "finding", "repository": args.repository, "candidate_id": cid,
             "role_local_id": item.get("role_local_id", ""),
             "answers": [{"ghsa_id": args.ghsa_id, "issue_id": issue_id} for issue_id in issue_ids],
-            "final_status": status, "ghsa_eligible": bridged,
+            # bridged: two CONFIRMED Stage 2 legs back the verified status. ghsa_eligible: it may also back write-back,
+            # which research-only records never do.
+            "final_status": status, "bridged": bridged, "ghsa_eligible": bridged and not args.research,
             "fallback_model": bool(entry and entry.get("fallback_model")),
             "fallback_use_permitted": bool(entry and entry.get("fallback_use_permitted")),
             "normalized_proposition": item["normalized_proposition"], "proposed_disposition": item["proposed_disposition"],
@@ -214,7 +242,8 @@ def command_records(args: argparse.Namespace) -> dict[str, Any]:
                 unassigned.append(record_id)
     out = restricted_dir(Path(args.out_dir))
     dump(out / "report-records.json", {"repository": args.repository, "ghsa_id": args.ghsa_id, "primary_revision": args.primary_revision,
-                                       "issues_sha256": file_sha256(args.issues), "records": records})
+                                       "issues_sha256": file_sha256(args.issues), "research_only": bool(args.research),
+                                       "records": records})
     return {"status": "COMPLETE", "records": len(records), "bridged": len(records) - len(not_bridged),
             "issues_without_records": [issue_id for issue_id in analysis_issues if issue_id not in answered],
             "unassigned": unassigned, "not_bridged": not_bridged}
@@ -669,7 +698,10 @@ def main() -> int:
     p = sub.add_parser("records"); p.add_argument("--repository", required=True); p.add_argument("--ghsa-id", required=True)
     p.add_argument("--primary-revision", required=True)
     p.add_argument("--issues", required=True, help="the advisory's step 1a issues.json")
-    p.add_argument("--dispositions", required=True, help="the advisory's current dispositions.json (analysis_status READY)")
+    p.add_argument("--dispositions", help="the advisory's current dispositions.json (analysis_status READY)")
+    p.add_argument("--research", action="store_true",
+                   help="research-only path for a published advisory: every technical issue, no dispositions, nothing write-back eligible")
+    p.add_argument("--intake", help="the advisory's intake record (required with --research)")
     p.add_argument("--discovery", action="append", required=True, help="schema-valid, post-schema-checked discovery artifact")
     p.add_argument("--verification", required=True, help="orchestrator manifest of final statuses and Stage 2 artifacts")
     p.add_argument("--out-dir", required=True)

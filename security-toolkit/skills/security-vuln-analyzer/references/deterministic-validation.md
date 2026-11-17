@@ -36,7 +36,14 @@ copy, the execution prohibition in `orchestrator-contract.md` is the only safegu
 test author must write tests from the frozen contract, never from a reporter's proof of
 concept. The adapter verifies the
 registry digest, proposition binding, checkout `HEAD`, path containment, and routing-table identity, records adapter
-name and version, and emits `schemas/computation-result.schema.json`. It rejects every other kind
+name and version, and emits `schemas/computation-result.schema.json`. An entry may list `required_files` (canonical
+relative path to SHA-256): before launch, each file must exist in the checkout, stay inside it, and match its digest, or
+the result is `FAILED` / `NOT_RUN` (a malformed map is a request error); the `--develop-fix` test-only entry uses it to
+bind a frozen test's own files. That entry registers each test as a pair of entries, one per revision and identical apart from `revision`,
+plus a build pair and coverage entries, and `scripts/currency-check.py test-result` combines their results
+([develop-fixes-mode.md](develop-fixes-mode.md) "Test-only entry"). `HEAD` is read with hardened git (no global or system configuration, no file-system
+monitor or signature program, no prompt, lazy fetch, or transport), because code under test may have written to the
+checkout. It rejects every other kind
 and every inconsistent sentinel combination. It
 never invokes a shell or evaluates metacharacters. It runs a frozen test as the exact
 argument vector in an immutable checkout or temporary copy of the pinned revision, with

@@ -15,7 +15,8 @@ Subcommands:
   h4-packet    build H4's scoped data (issue list, dispositions without other advisories' IDs, records, and the H2 result for
                an evidence request), the allowed-record set, and the complete H4 prompt (h4.packet.txt) with its metadata
   h4           check an H4 draft against its packet, its allowed records, and the unpublished-ID block
-  issue-scope  the Phase 1 listing of exactly the analysis issue IDs from step 1a
+  issue-scope  the Phase 1 listing of exactly the analysis issue IDs from step 1a (with --research, every technical issue of a
+               published advisory)
   poc-overlap  reject a test file that copies a long verbatim span from the captured advisory
   render       write the captured advisory fields as raw text for an intake or Phase 1 packet
 
@@ -360,8 +361,12 @@ def command_h4_packet(args: argparse.Namespace) -> dict[str, Any]:
         evidence = {"h2_status": h2.get("effective_status", ""),
                     "reproduction_steps_present": present.get("reproduction_steps") is True,
                     "proof_of_concept_present": present.get("proof_of_concept") is True}
+    records_doc = load_json(args.records) if args.records else {}
+    if records_doc.get("research_only") is True:
+        raise UsageError("these are research-only records (a published advisory analyzed outside triage); they never reach H4, "
+                         "a reporter comment, or write-back")
     allowed = []
-    for record in (load_json(args.records).get("records", []) if args.records else []):
+    for record in records_doc.get("records", []):
         answers = record.get("answers", [])
         if answers and all(a.get("ghsa_id") == advisory and a.get("issue_id") in issue_ids for a in answers):
             allowed.append(h4_projection(record))
@@ -412,18 +417,57 @@ def one_line_json(value: Any) -> str:
     return "".join(json_escape(char) if unicodedata.category(char) in ("Cc", "Cf", "Zl", "Zp") else char for char in text)
 
 
+OPEN_STATES = ("triage", "draft")
+
+
+def research_advisory(intake: dict[str, Any], ghsa_id: str) -> None:
+    """The research-only path (no dispositions) is for published advisories; open ones keep using step 1a dispositions."""
+    advisory = intake.get("advisory", {}) if isinstance(intake, dict) else {}
+    if advisory.get("ghsa_id") != ghsa_id:
+        raise UsageError("the intake record belongs to another advisory")
+    state = advisory.get("state")
+    if state in OPEN_STATES:
+        raise UsageError(f"{ghsa_id} is {state!r}: open advisories use step 1a dispositions; the research-only path "
+                         "(--research) is for published advisories")
+    if state != "published":
+        raise UsageError(f"the research-only path accepts only published advisories, not {state!r}")
+
+
 def command_issue_scope(args: argparse.Namespace) -> dict[str, Any]:
-    """The Phase 1 issue listing: exactly `analysis_issue_ids`, each field as a one-line JSON string, no other advisory named."""
-    issues_doc, document = load_json(args.issues), load_json(args.dispositions)
-    if issues_doc.get("record_type") != "ghsa_issue_list" or document.get("record_type") != "ghsa_dispositions" \
-            or issues_doc.get("ghsa_id") != document.get("ghsa_id"):
-        raise UsageError("the issue list and dispositions belong to a different advisory or are not step 1a documents")
-    if document.get("depends_on", {}).get("issues_sha256") != file_digest(args.issues):
-        raise UsageError("the dispositions were computed from a different issue list; rerun dispositions")
-    ids = list(document.get("analysis_issue_ids", []))
-    if document.get("analysis_status") != "READY" or not ids:
-        raise UsageError(f"Phase 1 needs analysis_status READY with issues to analyze; this report is "
-                         f"{document.get('analysis_status')!r} with {len(ids)} issues")
+    """The Phase 1 issue listing: exactly `analysis_issue_ids` (on the research-only path, every technical issue), each
+    field as a one-line JSON string, no other advisory named."""
+    issues_doc = load_json(args.issues)
+    intake: Any = None  # read once when --research or --currency-plan needs it
+    if args.research:  # a published advisory: no dispositions exist, so every technical issue is in scope
+        if args.dispositions:
+            raise UsageError("--research takes no --dispositions: the research-only path lists every technical issue")
+        if issues_doc.get("record_type") != "ghsa_issue_list":
+            raise UsageError("the issue list is not a step 1a issue list")
+        if not args.intake:
+            raise UsageError("--research needs --intake, so the advisory's captured state can be checked")
+        ghsa_id = str(issues_doc.get("ghsa_id", ""))
+        intake = load_json(args.intake)
+        research_advisory(intake, ghsa_id)
+        ids = [item["issue_id"] for item in issues_doc.get("issues", []) if item.get("technical") is True]
+        if not ids:
+            raise UsageError("the issue list has no technical issue to analyze")
+        scope_name = "the issue list's technical issues (not technical, or unknown)"
+    else:
+        if not args.dispositions:
+            raise UsageError("issue-scope needs --dispositions; a published advisory has none, so use the research-only path "
+                             "(--research --intake)")
+        document = load_json(args.dispositions)
+        if issues_doc.get("record_type") != "ghsa_issue_list" or document.get("record_type") != "ghsa_dispositions" \
+                or issues_doc.get("ghsa_id") != document.get("ghsa_id"):
+            raise UsageError("the issue list and dispositions belong to a different advisory or are not step 1a documents")
+        if document.get("depends_on", {}).get("issues_sha256") != file_digest(args.issues):
+            raise UsageError("the dispositions were computed from a different issue list; rerun dispositions")
+        ghsa_id = str(document.get("ghsa_id", ""))
+        ids = list(document.get("analysis_issue_ids", []))
+        if document.get("analysis_status") != "READY" or not ids:
+            raise UsageError(f"Phase 1 needs analysis_status READY with issues to analyze; this report is "
+                             f"{document.get('analysis_status')!r} with {len(ids)} issues")
+        scope_name = "analysis_issue_ids"
     by_id = {item["issue_id"]: item for item in issues_doc.get("issues", [])}
     unknown = [issue_id for issue_id in ids if issue_id not in by_id]
     if unknown:
@@ -431,22 +475,25 @@ def command_issue_scope(args: argparse.Namespace) -> dict[str, Any]:
     blind_fields: list[str] = []
     if args.currency_plan:  # the currency check's analysis at the report revision: only the planned issues
         plan = load_json(args.currency_plan)
-        if plan.get("record_type") != "ghsa_currency_plan" or plan.get("ghsa_id") != document.get("ghsa_id"):
+        if plan.get("record_type") != "ghsa_currency_plan" or plan.get("ghsa_id") != ghsa_id:
             raise UsageError("the currency plan belongs to another advisory")
+        if (plan.get("mode") == "RESEARCH_ONLY") != bool(args.research):
+            raise UsageError("a research-only currency plan needs --research, and --research needs a research-only plan "
+                             "(currency-check.py plan --research)")
         if plan.get("issues_sha256") != file_digest(args.issues):
             raise UsageError("the currency plan was computed from another issue list")
-        if plan.get("dispositions_sha256") != file_digest(args.dispositions):
+        if not args.research and plan.get("dispositions_sha256") != file_digest(args.dispositions):
             raise UsageError("the currency plan was computed from other dispositions; rerun currency-check.py plan")
         planned = [entry.get("issue_id") for entry in plan.get("planned", [])]
         outside = [issue_id for issue_id in planned if issue_id not in ids]
         if outside:
-            raise UsageError(f"the currency plan names issues not in analysis_issue_ids: {outside}")
+            raise UsageError(f"the currency plan names issues not in {scope_name}: {outside}")
         if not planned:
             raise UsageError("the currency plan has no planned issues")
         if not args.intake:
             raise UsageError("--currency-plan needs --intake, so quotes from text the fix-blind rendering leaves out are withheld")
-        intake = load_json(args.intake)
-        if intake.get("advisory", {}).get("ghsa_id") != document.get("ghsa_id"):
+        intake = intake or load_json(args.intake)
+        if intake.get("advisory", {}).get("ghsa_id") != ghsa_id:
             raise UsageError("the intake record belongs to another advisory")
         blind_fields = [value for label, value in labeled_fields(intake) if label in ("summary", "description")]
         ids = planned
@@ -469,7 +516,7 @@ def command_issue_scope(args: argparse.Namespace) -> dict[str, Any]:
     text = "".join(lines)
     write_private(out, text)
     result = {"check": "issue-scope", "effective_status": "COMPLETE", "errors": [], "issue_ids": ids, "out": str(out),
-              "ghsa_id": document.get("ghsa_id", "")}
+              "ghsa_id": ghsa_id, "research_only": bool(args.research)}
     if args.currency_plan:
         lowered = " ".join(text.lower().split())
         result.update(quotes_withheld=withheld, fix_terms_found=sorted(term for term in FIX_TERMS if term in lowered))
@@ -1016,10 +1063,12 @@ def main() -> int:
     h4.add_argument("--unpublished-ids", required=True, help='JSON {"ghsa_ids": [...]} of unpublished advisories')
     scope = sub.add_parser("issue-scope")
     scope.add_argument("--issues", required=True, help="step1a/issues.json")
-    scope.add_argument("--dispositions", required=True, help="the current step1a/dispositions.json")
+    scope.add_argument("--dispositions", help="the current step1a/dispositions.json (triage and draft advisories)")
+    scope.add_argument("--research", action="store_true",
+                       help="research-only path for a published advisory: every technical issue, no dispositions; needs --intake")
     scope.add_argument("--out", required=True, help="text file for the Phase 1 packet, for example in the run's analysis/")
     scope.add_argument("--currency-plan", help="currency-check.py plan output: list only its planned issues")
-    scope.add_argument("--intake", help="the advisory's intake record (required with --currency-plan)")
+    scope.add_argument("--intake", help="the advisory's intake record (required with --research and --currency-plan)")
     overlap = sub.add_parser("poc-overlap")
     overlap.add_argument("--intake", required=True, help="intake record of the advisory the test was written for")
     overlap.add_argument("--test-file", required=True)

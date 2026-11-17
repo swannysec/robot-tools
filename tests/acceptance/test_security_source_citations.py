@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import runpy
 import subprocess
@@ -294,6 +295,122 @@ class DeterministicCheckTest(unittest.TestCase):
             self.assertEqual(result['literal_check_result'], 'NOT_RUN')
             self.assertEqual(result['executed_argv'], [])
             self.assertIn('POSIX', result['bounded_output'])
+
+
+class FrozenTestFilesAndHeadTest(unittest.TestCase):
+    """Phase 2b: a frozen test's own files are bound by digest before launch (DC-1 to DC-4), and HEAD is read with
+    hardened git (DC-5)."""
+
+    def run_with_files(self, files, required, marker_name='ran', prepare=None):
+        routing = [{'literal_result': state, 'final_status': 'DISPUTED'} for state in ('PASSED', 'FAILED', 'UNRESOLVED', 'NOT_RUN')]
+        proposition = 'The synthetic test observes its registered result.'
+        request = {'packet_revision': 'fixture', 'candidate_id': 'fixture', 'proposition': proposition, 'check_id': 'fixture',
+                   'check_kind': 'FROZEN_TEST_REFERENCE', 'repository': 'example', 'target_revision': PIN, 'routing_table': routing,
+                   'frozen_test_id': 'fixture'}
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve() / 'checkout'
+        root.mkdir()
+        for relative, text in files.items():
+            (root / relative).parent.mkdir(parents=True, exist_ok=True)
+            (root / relative).write_text(text, encoding='utf-8')
+        if prepare:
+            prepare(root)
+        marker = root.parent / marker_name
+        entry = {'repository': 'example', 'revision': PIN, 'proposition_sha256': CHECKS['normalized_proposition_digest'](proposition),
+                 'routing_table': routing, 'argv': [sys.executable, '-c', f'open({str(marker)!r}, "w").close()'],
+                 'working_directory': '.', 'timeout_seconds': 5, 'expected_exit_status': 0, 'environment': {}, 'tool_version': 'fixture'}
+        if required is not None:
+            entry['required_files'] = required
+        registry = {'tests': {'fixture': entry}}
+        digest = hashlib.sha256(encode(registry)).hexdigest()
+        request['registry_sha256'] = digest
+        result = CHECKS['base_result'](request, routing)
+        CHECKS['run_frozen_test'](request, root, registry, digest, result)
+        return result, marker.exists()
+
+    def test_required_files_matching_run(self):
+        # DC-1
+        text = 'fn test() {}\n'
+        result, ran = self.run_with_files({'tests/case.rs': text}, {'tests/case.rs': hashlib.sha256(text.encode()).hexdigest()})
+        self.assertEqual((result['status'], result['literal_check_result'], ran), ('COMPLETE', 'PASSED', True))
+
+    def test_missing_or_changed_required_file_is_not_run(self):
+        # DC-2: nothing is launched
+        digest = hashlib.sha256(b'fn test() {}\n').hexdigest()
+        for name, files in (('missing', {}), ('changed', {'tests/case.rs': 'fn test() { changed }\n'})):
+            with self.subTest(case=name):
+                result, ran = self.run_with_files(files, {'tests/case.rs': digest}, marker_name=f'ran-{name}')
+                self.assertEqual((result['status'], result['literal_check_result'], ran), ('FAILED', 'NOT_RUN', False))
+                self.assertEqual(result['executed_argv'], [])
+                self.assertIn('tests/case.rs', result['bounded_output'])
+
+    def test_required_file_paths_and_digests_are_validated(self):
+        # DC-3: a path escaping the checkout, a non-canonical path, or a malformed digest is a request error
+        digest = hashlib.sha256(b'x').hexdigest()
+        for name, required in (('parent', {'../outside.rs': digest}), ('absolute', {'/etc/hosts': digest}), ('dot', {'./case.rs': digest}),
+                               ('digest', {'case.rs': 'abc'}), ('not a map', ['case.rs'])):
+            with self.subTest(case=name), self.assertRaises(CHECKS['RequestError']):
+                self.run_with_files({'case.rs': 'x'}, required, marker_name=f'ran-{name}')
+
+    def test_required_file_symlink_out_of_the_checkout_is_refused(self):
+        def link_outside(root):
+            outside = root.parent / 'outside.rs'
+            outside.write_text('x', encoding='utf-8')
+            (root / 'case.rs').symlink_to(outside)
+        with self.assertRaises(CHECKS['RequestError']):
+            self.run_with_files({}, {'case.rs': hashlib.sha256(b'x').hexdigest()}, prepare=link_outside)
+
+    def test_entries_without_required_files_are_unchanged(self):
+        # DC-4: the analysis path's frozen tests carry no required_files and run as before
+        result, ran = self.run_with_files({}, None)
+        self.assertEqual((result['status'], result['literal_check_result'], ran), ('COMPLETE', 'PASSED', True))
+
+    def test_head_is_read_with_hardened_git(self):
+        # DC-5: no global or system config, no file-system monitor or signature program, no prompt, lazy fetch, or transport
+        calls = []
+
+        class Done:
+            returncode, stdout, stderr = 0, PIN + '\n', ''
+
+        class FakeSubprocess:
+            PIPE = subprocess.PIPE
+
+            @staticmethod
+            def run(argv, **kwargs):
+                calls.append((argv, kwargs))
+                return Done()
+
+        namespace = runpy.run_path(str(SCRIPT.with_name('deterministic-check.py')))
+        namespace['checkout_revision'].__globals__['subprocess'] = FakeSubprocess
+        self.assertEqual(namespace['checkout_revision'](Path('/nonexistent')), PIN)
+        argv, kwargs = calls[0]
+        self.assertIn('core.fsmonitor=false', argv)
+        self.assertIn('log.showSignature=false', argv)
+        environment = kwargs['env']
+        self.assertEqual((environment['GIT_CONFIG_GLOBAL'], environment['GIT_CONFIG_NOSYSTEM'], environment['HOME']), (os.devnull, '1', os.devnull))
+        self.assertEqual((environment['GIT_TERMINAL_PROMPT'], environment['GIT_NO_LAZY_FETCH'], environment['GIT_ALLOW_PROTOCOL']), ('0', '1', ''))
+
+    def test_checkout_config_program_never_runs(self):
+        # DC-5 regression: a program named in the checkout's own config is not started while HEAD is read
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1', GIT_AUTHOR_NAME='f', GIT_AUTHOR_EMAIL='f@example.invalid',
+                   GIT_COMMITTER_NAME='f', GIT_COMMITTER_EMAIL='f@example.invalid')
+        repo = root / 'checkout'
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True, env=env)
+        (repo / 'a.txt').write_text('a', encoding='utf-8')
+        subprocess.run(['git', '-C', str(repo), 'add', 'a.txt'], check=True, env=env)
+        subprocess.run(['git', '-C', str(repo), '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'a'], check=True, env=env)
+        marker = root / 'marker'
+        program = root / 'program.sh'
+        program.write_text(f'#!/bin/sh\n/usr/bin/touch {marker}\nexit 1\n', encoding='utf-8')
+        program.chmod(0o700)
+        subprocess.run(['git', '-C', str(repo), 'config', 'core.fsmonitor', str(program)], check=True, env=env)
+        head = subprocess.run(['git', '-C', str(repo), 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True, env=env).stdout.strip()
+        self.assertEqual(CHECKS['checkout_revision'](repo), head)
+        self.assertFalse(marker.exists())
 
 
 class FixClosureTest(unittest.TestCase):

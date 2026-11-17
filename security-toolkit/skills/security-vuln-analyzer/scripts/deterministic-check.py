@@ -18,7 +18,7 @@ import unicodedata
 
 
 ADAPTER_NAME = "security-vuln-analyzer-deterministic-check"
-ADAPTER_VERSION = "1.0.2"
+ADAPTER_VERSION = "1.1.0"
 MAX_OUTPUT_BYTES = 65_536
 FINAL_STATUSES = {
     "CROSS-MODEL VERIFIED",
@@ -73,14 +73,24 @@ def contained_path(root: Path, relative: Path) -> Path:
     return resolved_path
 
 
+# The checkout may have been written by the code under test (a build in the same sandbox), so its own git
+# configuration is not trusted: no global or system configuration, no file-system monitor or signature program,
+# no prompt, no lazy fetch, and no transport.
+GIT_HARDENING = ("-c", "core.fsmonitor=false", "-c", "log.showSignature=false")
+GIT_ENVIRONMENT = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_LAZY_FETCH": "1",
+                   "GIT_ALLOW_PROTOCOL": "", "LC_ALL": "C"}
+
+
 def checkout_revision(checkout: Path) -> str:
+    environment = dict(GIT_ENVIRONMENT, PATH=os.environ.get("PATH", os.defpath), GIT_CONFIG_GLOBAL=os.devnull, HOME=os.devnull)
     process = subprocess.run(
-        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        ["git", "-C", str(checkout), *GIT_HARDENING, "rev-parse", "HEAD"],
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         timeout=10,
+        env=environment,
     )
     if process.returncode != 0:
         raise RequestError("checkout revision could not be read")
@@ -200,6 +210,11 @@ def run_frozen_test(
     registered_routing_table = validate_routing_table(frozen.get("routing_table"))
     if registered_routing_table != result["routing_table"]:
         result.update({"status": "FAILED", "frozen_test_id": frozen_test_id, "literal_check_result": "NOT_RUN"})
+        return
+    missing = required_files_mismatch(checkout, frozen.get("required_files", {}))
+    if missing:
+        result.update({"status": "FAILED", "frozen_test_id": frozen_test_id, "literal_check_result": "NOT_RUN",
+                       "bounded_output": f"required file missing or changed: {missing}"})
         return
     argv = frozen.get("argv")
     if not isinstance(argv, list) or not argv or not all(isinstance(item, str) and item for item in argv):
@@ -355,6 +370,23 @@ def run_frozen_test(
             bounded = diagnostic + (b"\n" + bounded if bounded else b"")
         rendered = bounded.decode("utf-8", errors="replace").encode("utf-8")
         result["bounded_output"] = rendered[:MAX_OUTPUT_BYTES].decode("utf-8", errors="ignore")
+
+
+def required_files_mismatch(checkout: Path, required: Any) -> str:
+    """The first required file (canonical relative path -> SHA-256) that is missing or differs, or ''. A frozen test's own
+    files are placed in the checkout beside the target's code, so the test that runs is the one that was frozen."""
+    if not isinstance(required, dict):
+        raise RequestError("frozen test required_files must map relative paths to SHA-256 digests")
+    for raw, digest in sorted(required.items()):
+        if not isinstance(raw, str) or not isinstance(digest, str) or len(digest) != 64 \
+                or any(character not in "0123456789abcdef" for character in digest):
+            raise RequestError("frozen test required_files must map relative paths to SHA-256 digests")
+        relative = canonical_relative_path(raw)
+        if not (checkout / relative).is_file():
+            return raw
+        if hashlib.sha256(contained_path(checkout, relative).read_bytes()).hexdigest() != digest:
+            return raw
+    return ""
 
 
 def terminate_process_group(process: subprocess.Popen[bytes]) -> None:

@@ -144,7 +144,7 @@ model, as described under "Computed CVSS v4.0 scores" in `orchestrator-contract.
 
 For Stage 2 fix verification, including verification invoked by `--develop-fix`, bind `schemas/fix-verifier-stage2-result.schema.json` for both providers; use `schemas/verifier-stage2-result.schema.json` for ordinary analysis. Apply the fix-mode semantic checks and routing in [fix-verification-mode.md](fix-verification-mode.md).
 
-**Currency test-only entry (not yet usable; phase 2b).** On macOS, Phase 2 of `--develop-fix --test-only` is designed to run under the
+**Currency test-only entry.** On macOS, Phase 2 of `--develop-fix --test-only` runs under the
 Seatbelt profile in [develop-fixes-mode.md](develop-fixes-mode.md) "Test-only entry"; this guide's
 role sandboxes do not apply to the build.
 

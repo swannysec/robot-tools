@@ -103,8 +103,11 @@ proof of concept.
      the controls show that the sink still exists and runs. With `--ignore-run-fail` the command
      exits 0 even when a test fails, so a coverage entry's `PASSED` means only that coverage was
      collected. Coverage entries run in the checkout root (`working_directory` `.`), where their
-     `--output-path` file is read, and name the same test targets (`--test`) and packages (`-p`)
-     as the tests. Each entry has at most one `--`, and only options before it (a test name goes after
+     `--output-path` file is read, write a fresh report (`--json`, never `--no-report` or
+     `--no-run`), and use the same build options as the tests (test targets, packages, manifest,
+     features, profile); only `--ignore-run-fail`, `--json`, and `--output-path` differ. The build
+     entry uses the tests' options apart from `--no-run` and the test target, and every entry runs
+     with the same environment. Each entry has at most one `--`, and only options before it (a test name goes after
      it). After `--`, use only `--exact`, test names, `--nocapture`, `--show-output`,
      `--include-ignored`, and `--test-threads=<n>`; anything else, such as `--skip`, is refused.
 4. **Phase 1 (network on), per checkout.** Let `rustup` provide the revision's toolchain, with
@@ -115,8 +118,9 @@ proof of concept.
    first. If the endpoint still cannot be prepared, its tests are `UNRESOLVED`.
 5. **Phase 2 (network off), per checkout.** Under `sandbox-exec -f <profile>` with the reported
    environment, building only the crate under test (`cargo ... -p <crate> --offline --locked`):
-   first pre-build with no time limit (`cargo test --no-run`, and one run of the coverage command,
-   which has no compile-only mode), started with no controlling terminal and standard input from
+   first pre-build with no time limit (`cargo test --no-run`, and one run of the coverage command
+   with `--no-report` in place of its report options, since `cargo llvm-cov` has no compile-only
+   mode; the pre-build then leaves no report file the coverage entry could be mistaken for), started with no controlling terminal and standard input from
    the null device (the profile allows writes to the terminal device, so build scripts must not
    get an interactive terminal); then run every registry entry for that revision (tests,
    build, coverage) through `scripts/deterministic-check.py`. The two revisions may pin different

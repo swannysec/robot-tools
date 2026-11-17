@@ -151,8 +151,11 @@ triage decision, and its records never back H4 or write-back.
    - each entry has at most one `--`, with only options (and their values) before it, so a test
      name can appear only after `--`; after it, only `--exact`, test names, `--nocapture`,
      `--show-output`, `--include-ignored`, and `--test-threads=<n>` (nothing that skips a test);
-     the tests share one set of test targets (`--test`) and packages (`-p`), and the coverage
-     entries name the same;
+     the tests share one set of build options (test targets, packages, manifest, features,
+     profile); the build entry uses them apart from `--no-run` and the test target; the coverage
+     entries use them too, adding only `--ignore-run-fail`, `--json`, and `--output-path`, and write
+     a fresh report (`--json`, never `--no-report` or `--no-run`); every entry has the same
+     environment;
    - the results are `deterministic-check.py` results against `--registry`, exactly one per entry
      at each revision (tests, build, and coverage), at the right revision;
    - `<coverage>@report` runs exactly the adversarial-input tests and `<coverage>@pin` every
@@ -183,7 +186,9 @@ triage decision, and its records never back H4 or write-back.
    input.
 6. **Outcome.** `currency-check.py outcome --revision <revision.json> --plan <plan.json>
    [--report-records <report-revision records>] [--test <result> ...] --out <file>` proposes one
-   outcome per planned issue; the first matching rule applies:
+   outcome per planned issue; the first matching rule applies. A `--test` result needs
+   `--report-records`, and those must be the records it was built from (its recorded digest), so
+   a test does not outlive a change in the report revision's analysis:
 
    | Rule | Condition | Outcome | Evidence, reason |
    |---|---|---|---|

@@ -2135,6 +2135,34 @@ class H4DraftTest(Workspace):
         for path in files + [fresh / path.name for path in files]:
             self.assertEqual(mode(path), 0o600, path)
 
+    def test_packet_refuses_advisories_that_are_not_open(self):
+        # Q14 (Copilot round 1): no H4 draft for a published or closed advisory, on every path that builds a packet
+        records = self.tmp / "records.json"
+        for state in ("published", "closed", "withdrawn"):
+            intake_dir, record = self.capture("base")
+            record["advisory"]["state"] = state
+            intake = write(intake_dir / "intake-record.json", record)
+            paths = {"with records": ["--dispositions", self.dispositions, "--records", records],
+                     "without records": ["--dispositions", self.dispositions],
+                     "no dispositions": []}
+            h2_check, _ = self.h2_check(intake_dir, name=f"h2-{state}")
+            paths["evidence request"] = ["--h2-check", h2_check]
+            for name, extra in paths.items():
+                with self.subTest(state=state, path=name):
+                    out = self.tmp / f"h4-{state}-{name.replace(' ', '-')}"
+                    code, stdout, err = run("intake-check.py", "h4-packet", "--intake", intake, "--issues", self.issues, *extra, "--out-dir", out)
+                    self.assertEqual(code, 2, stdout or err)
+                    self.assertIn("open advisories only", err)
+                    self.assertFalse(out.exists())
+        for state in ("triage", "draft"):  # the open states still build packets
+            with self.subTest(state=state):
+                intake_dir, record = self.capture("base")
+                record["advisory"]["state"] = state
+                intake = write(intake_dir / "intake-record.json", record)
+                code, _, err = run("intake-check.py", "h4-packet", "--intake", intake, "--issues", self.issues, "--dispositions", self.dispositions,
+                                   "--records", records, "--out-dir", self.tmp / f"h4-open-{state}")
+                self.assertEqual(code, 0, err)
+
     def test_packet_refuses_research_records(self):
         # RW-2: no H4 draft (reporter comment or field update) from research-only records
         document = json.loads((self.tmp / "records.json").read_text(encoding="utf-8"))
@@ -3916,7 +3944,7 @@ class CurrencyTest(Workspace):
         ctx = self.tr_context()
         for side in ("report", "pin"):
             self.set_argv(ctx, f"ben@{side}", ["cargo", "test", "--test", "other", "--", "--exact", self.BEN])
-        self.assertIn("different test targets or packages", self.tr_result(ctx, expect=2))
+        self.assertIn("same build options", self.tr_result(ctx, expect=2))
         ctx = self.tr_context()
         args = self.tr_args(ctx)
         (ctx["checkouts"]["pin"] / "target" / "cov.json").unlink()
@@ -4014,8 +4042,8 @@ class CurrencyTest(Workspace):
                  "pin coverage missing a test": ("cov@pin", base + ["--", "--exact", self.ADV], "every declared test"),
                  "pin coverage skipping tests": ("cov@pin", base + ["--", f"--skip={self.ADV}", f"--skip={self.BEN}"], "libtest option"),
                  "another test target": ("cov@pin", ["cargo", "llvm-cov", "test", "--test", "other", "--json", "--output-path", "target/cov.json"],
-                                         "same test targets and packages"),
-                 "another package": ("cov@report", base[:3] + ["-p", "other"] + base[3:] + ["--", "--exact", self.ADV], "same test targets and packages"),
+                                         "same build options"),
+                 "another package": ("cov@report", base[:3] + ["-p", "other"] + base[3:] + ["--", "--exact", self.ADV], "same build options"),
                  "no output path": ("cov@pin", ["cargo", "llvm-cov", "test", "--test", "case", "--json"], "--output-path"),
                  "skips behind a second --": ("cov@pin", base + ["--", "--skip", self.ADV, "--", "--exact", self.ADV, self.BEN], "one `--`"),
                  "a positional test name before --": ("cov@report", base + [self.BEN, "--", "--exact", self.ADV], "positional argument")}
@@ -4024,6 +4052,31 @@ class CurrencyTest(Workspace):
                 ctx = self.tr_context()
                 self.set_argv(ctx, test_id, argv)
                 self.assertIn(message, self.tr_result(ctx, expect=2))
+        build_cases = {"another manifest": ("cov@pin", base + ["--manifest-path", "crates/b/Cargo.toml"]),
+                       "other features": ("cov@report", base + ["--features", "x", "--", "--exact", self.ADV]),
+                       "another cargo profile": ("cov@pin", base + ["--release"])}
+        for name, (test_id, argv) in build_cases.items():
+            with self.subTest(case=name):  # coverage must come from the same build as the tests
+                ctx = self.tr_context()
+                self.set_argv(ctx, test_id, argv)
+                self.assertIn("same build options", self.tr_result(ctx, expect=2))
+        for name, argv in (("no report", base + ["--no-report"]), ("no run", base + ["--no-run"]),
+                           ("no JSON", ["cargo", "llvm-cov", "test", "--test", "case", "--ignore-run-fail", "--output-path", "target/cov.json"])):
+            with self.subTest(case=name):  # a coverage entry must write a fresh JSON report
+                ctx = self.tr_context()
+                self.set_argv(ctx, "cov@pin", argv)
+                self.assertIn("fresh JSON report", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()
+        ctx["registry"]["tests"]["cov@pin"]["environment"] = {"HOME": "/elsewhere"}
+        self.assertIn("same environment", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()
+        for side in ("report", "pin"):
+            self.set_argv(ctx, f"build@{side}", ["cargo", "test", "--no-run", "-p", "other"])
+        self.assertIn("same build options", self.tr_result(ctx, expect=2))
+        ctx = self.tr_context()
+        for side in ("report", "pin"):
+            self.set_argv(ctx, f"adv@{side}", ["cargo", "test", "--test", "case", "--features", "x", "--", "--exact", self.ADV])
+        self.assertIn("same build options", self.tr_result(ctx, expect=2))
         ctx = self.tr_context()  # `--` right after the profile would hide the cargo selectors from the check
         for test_id in ctx["registry"]["tests"]:
             ctx["registry"]["tests"][test_id]["argv"] = ctx["prefix"] + ["--"] + ctx["registry"]["tests"][test_id]["argv"][3:]
@@ -4091,6 +4144,16 @@ class CurrencyTest(Workspace):
         ctx = self.tr_context()
         ctx["sinks"]["pin"] = "src/core.rs\n:5"
         self.assertIn("--*-sink", self.tr_result(ctx, expect=2))
+
+    def test_outcome_binds_a_test_to_the_current_records(self):
+        # Copilot round 1: a saved test result counts only with the report-revision records it was built from
+        ctx = self.tr_context()
+        self.tr_result(ctx)
+        base = ["outcome", "--revision", self.out / "revision.json", "--plan", ctx["plan"], "--test", self.out / "test-I1.json"]
+        self.assertIn("--report-records", self.outcome(base, expect=2))
+        ctx["records"]["records"][0]["final_status"] = "DISPUTED"  # the candidate's analysis changed after the test was built
+        changed = write(self.tmp / "report-records-changed.json", ctx["records"])
+        self.assertIn("other report-revision records", self.outcome(base + ["--report-records", changed], expect=2))
 
     def test_outcome_accepts_test_results(self):
         # OC-1: the refusal is gone; O-1 to O-3 and O-9 from real test-result output

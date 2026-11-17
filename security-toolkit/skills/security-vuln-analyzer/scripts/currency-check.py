@@ -595,8 +595,14 @@ def command_outcome(args: argparse.Namespace) -> dict[str, Any]:
         statuses = issue_statuses(records.get("records", []), ghsa_id, eligible_only=True)
         report_status = {issue_id: next((s for s in REPORT_ORDER if s in found), "NO_RECORD") for issue_id, found in statuses.items()}
     tests: dict[str, dict[str, Any]] = {}
+    if args.test and not args.report_records:
+        raise UsageError("--test needs --report-records: a test counts only with the report-revision records it was built from")
     for path in args.test or []:
         test = load_test(path, ghsa_id, revision, plan, set(planned))
+        built_from = test.get("inputs", {}).get("report_records_sha256") if isinstance(test.get("inputs"), dict) else None
+        if built_from != file_sha256(args.report_records):
+            raise UsageError(f"{path} was built from other report-revision records than --report-records (the analysis changed since); "
+                             "rerun test-result")
         if test["issue_id"] in tests:
             raise UsageError(f"two test results for {test['issue_id']}")
         tests[test["issue_id"]] = test
@@ -1003,21 +1009,24 @@ def test_filter(argv: list[Any]) -> tuple[bool, list[str]]:
     return "--exact" in tail, [item for item in tail if not item.startswith("-")]
 
 
-def selectors(argv: list[Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """The packages (-p/--package) and test targets (--test) cargo is asked for, before `--`."""
-    head = entry_parts(argv)[0]
-    packages, targets = [], []
-    for index, item in enumerate(head):
-        following = head[index + 1] if index + 1 < len(head) else ""
-        if item in ("-p", "--package"):
-            packages.append(following)
-        elif item.startswith("--package="):
-            packages.append(item.partition("=")[2])
-        elif item == "--test":
-            targets.append(following)
-        elif item.startswith("--test="):
-            targets.append(item.partition("=")[2])
-    return tuple(sorted(packages)), tuple(sorted(targets))
+COVERAGE_ONLY = ("--ignore-run-fail", "--json")  # with --output-path <file>: what a coverage entry adds to the tests' options
+COVERAGE_REFUSED = ("--no-report", "--no-run")  # an entry with either writes no fresh report (an earlier file could be read)
+
+
+def build_options(argv: list[Any]) -> list[tuple[str, ...]]:
+    """The cargo options before `--` that decide what is built (package, test target, manifest, features, profile, and
+    the rest), as sorted (option[, value]) groups, without the subcommand words."""
+    head = [item for item in entry_parts(argv)[0] if item not in CARGO_SUBCOMMANDS]
+    groups, index = [], 0
+    while index < len(head):
+        item = head[index]
+        if item in CARGO_VALUE_OPTIONS:
+            groups.append((item, head[index + 1] if index + 1 < len(head) else ""))
+            index += 2
+            continue
+        groups.append(tuple(item.split("=", 1)) if item.startswith("--") and "=" in item else (item,))
+        index += 1
+    return sorted(groups)
 
 
 def coverage_file(checkout: Path, relative: str) -> Path:
@@ -1157,9 +1166,17 @@ def command_test_result(args: argparse.Namespace) -> dict[str, Any]:
             raise UsageError(f"every entry must start with {SANDBOX_EXEC} -f {profile}; one runs {argv[:3]}")
         if entry.get("expected_exit_status") != 0:
             raise UsageError("every entry must expect exit 0 (a test passes, the build completes, coverage is collected)")
-    test_selectors = {selectors(pairs[name]["report"].get("argv", [])) for name in declared}
-    if len(test_selectors) != 1:
-        raise UsageError("the declared tests name different test targets or packages")
+    test_options = {tuple(build_options(pairs[name]["report"].get("argv", []))) for name in declared}
+    if len(test_options) != 1:
+        raise UsageError("the declared tests must use the same build options (test targets, packages, manifest, features, profile)")
+    options = list(next(iter(test_options)))
+    environments = {json.dumps(entry.get("environment", {}), sort_keys=True) for entry in used}
+    if len(environments) != 1:
+        raise UsageError("every entry (tests, build, coverage) must run with the same environment")
+    for side in SIDES:
+        build = [group for group in build_options(pairs[args.build][side].get("argv", [])) if group != ("--no-run",)]
+        if build != [group for group in options if group[0] != "--test"]:
+            raise UsageError("the build entry must use the same build options as the tests (apart from --no-run and the test target)")
     coverage_entries = {}
     for side, want in (("report", sorted(names[n] for n in adversarial)), ("pin", sorted(names.values()))):
         entry = tests.get(f"{args.coverage}@{side}") if isinstance(tests, dict) else None
@@ -1174,8 +1191,14 @@ def command_test_result(args: argparse.Namespace) -> dict[str, Any]:
             raise UsageError(f"the coverage entry {args.coverage}@{side} must run " + (
                 "exactly the adversarial-input tests (`-- --exact <names>`), so the sink is shown reached by them" if side == "report"
                 else "every declared test, so a control can show the sink still runs when a fix stops the adversarial input earlier"))
-        if selectors(entry.get("argv", [])) != next(iter(test_selectors)):
-            raise UsageError(f"the coverage entry {args.coverage}@{side} must name the same test targets and packages as the tests")
+        argv = [str(item) for item in entry.get("argv", [])]
+        if any(item in COVERAGE_REFUSED for item in argv) or "--json" not in argv:
+            raise UsageError(f"the coverage entry {args.coverage}@{side} must write a fresh JSON report (--json, and neither "
+                             "--no-report nor --no-run)")
+        coverage = [group for group in build_options(argv) if group[0] != "--output-path" and group not in [(o,) for o in COVERAGE_ONLY]]
+        if coverage != options:
+            raise UsageError(f"the coverage entry {args.coverage}@{side} must use the same build options as the tests (test "
+                             "targets, packages, manifest, features, profile); only --ignore-run-fail, --json, and --output-path differ")
         coverage_entries[side] = output_path(entry.get("argv", []))
     checkouts = {"report": Path(args.base_checkout).resolve(strict=True), "pin": Path(args.pin_checkout).resolve(strict=True)}
     for side, rev in (("report", revision["report_revision"]), ("pin", revision["pin"])):

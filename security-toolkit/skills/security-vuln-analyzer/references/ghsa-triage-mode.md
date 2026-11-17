@@ -301,6 +301,9 @@ explicitly permits that use for that result ([orchestrator-contract.md](orchestr
 
 ### H4 drafts
 
+- **Open advisories only:** `h4-packet` refuses an intake whose captured state is not `triage`
+  or `draft` (a published or closed advisory, the research-only path included), with or without
+  records, including evidence requests.
 - **Pending decisions:** `h4-packet` refuses dispositions whose `analysis_status` is
   `AWAITING_CONFIRMATION` (an obvious-duplicate proposal not yet decided, or a decision gone
   stale): decide it in the decision brief, record it with `ghsa-dedup.py confirm`, and rerun

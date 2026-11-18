@@ -30,7 +30,8 @@ triage decision, and its records never back H4 or write-back.
 ## Flow
 
 1. **Report revision.** `currency-check.py revision --repo-dir <clone> --intake
-   <intake-record.json> --default-branch <branch> --out <file>` finds the first-parent commit of
+   <intake-record.json> --default-branch <branch> --out <file>` (`--intake` the run's own intake record,
+   compared by digest, so a later capture gets its own run and record) finds the first-parent commit of
    `origin/<branch>` at the advisory's `created_at` in a local clone of the repository (the
    operator fetches the clone first). Reporter-quoted versions are information only and never pin
    anything. The selection uses committer dates, so a commit committed before the report but
@@ -42,20 +43,32 @@ triage decision, and its records never back H4 or write-back.
    Output `revision.json`: `ghsa_id`, `repository`, `created_at`, `default_branch`,
    `report_revision`, `pin`, `first_parent_commits_between`, `intake_sha256`.
 2. **Scope.** `currency-check.py plan --issues <issues.json> --dispositions <dispositions.json>
-   --records <report-records.json> --out <file>` lists each technical issue in
-   `analysis_issue_ids` with no `CROSS-MODEL VERIFIED` record answering it. A verified record that
+   --records <report-records.json> --revision <revision.json> --out <file>` lists each technical
+   issue in `analysis_issue_ids` with no `CROSS-MODEL VERIFIED` record answering it. A verified record that
    is not bridged (`bridged` false, for example a split resolved by a frozen test) still counts as
    confirmed. Each planned issue carries a reason, the most significant of its records' final
    statuses in the order `DISPUTED`, `INCOMPLETE`, `NOT VERIFIED`, `REFUTED`, or `NO_RECORD` when
-   no record answers it; an empty or unknown final status counts as `INCOMPLETE`. It refuses dispositions that are not `READY`, dispositions computed from
-   another issue list, records for another advisory or issue list, and research-only records.
+   no record answers it; an empty or unknown final status counts as `INCOMPLETE`. A `NOT ROUTED`
+   record (a candidate no role said affects a security claim, so it never went to verification)
+   is ignored: it is neither a confirmation nor an unfinished analysis. Each planned issue also
+   carries `causes`, the `status_causes` of the records answering it (why an analysis
+   is `INCOMPLETE`: role, stage, provider, model, effort, and the declined items), and `records`, each record answering
+   it with its own `record_id`, `candidate_id`, `final_status`, `bridged`, and `ghsa_eligible` (so the brief shows a
+   verified record beside a disputed one; rule 7 still decides the issue's status). It refuses dispositions that are not `READY`, dispositions computed from
+   another issue list, records for another advisory or issue list, research-only records, post-fix
+   coverage records (`coverage: true`), a revision record for another advisory, and records whose `primary_revision` is not the revision
+   record's pin (records from an analysis at another pin than the run's capture; caught here
+   rather than only at `outcome`).
    On the research-only path, `plan --issues <issues.json> --research --intake
-   <intake-record.json> --records <report-records.json> --out <file>` plans every technical issue
+   <intake-record.json> --records <report-records.json> --revision <revision.json> --out <file>` plans every technical issue
    instead of `analysis_issue_ids`; it refuses a triage or draft advisory, any state other than
    `published`, an `--intake` file other than the run's own intake record (compared by digest),
    records not written with `records --research`, and `--dispositions`. Output
    `plan.json`: `mode` (`TRIAGE` or `RESEARCH_ONLY`), `planned` (`issue_id`, `mechanism`,
-   `reason`), `not_planned` (`CONFIRMED` or `NOT_TECHNICAL`), `primary_revision`, and the digests
+   `reason`, `causes`, `records`), `not_planned` (every other issue of the list, in list order, each with
+   `issue_id`, `mechanism`, and `reason`: `CONFIRMED` (with its `records`, as a planned issue's); `COVERED` with its `canonical`;
+   `NOT_TECHNICAL` with its `kinds`, which includes fix guidance; or `NOT_ANALYZED` with its
+   `disposition`), `primary_revision`, and the digests
    of its inputs (`dispositions_sha256` is empty on the research-only path, `intake_sha256` empty
    on the triage path).
 3. **Flags.** `currency-check.py flags --repo-dir <clone> --revision <revision.json> --issues
@@ -80,7 +93,10 @@ triage decision, and its records never back H4 or write-back.
      revision (Rust function syntax; this version is Rust-first), using only the issue's own named
      files when any defines it, otherwise the single defining file when there is exactly one, and
      none when a generic name is defined in several files (`definition_count` shows how many);
-     then the commits touching that function (hash, subject, symbol, path). `git log -L` runs with
+     then the commits touching that function (hash, subject, symbol, path). When no file defines
+     it at the report revision (for example a control site added after the report), the same
+     lookup runs at the pin, the entry is marked `defined_at: "pin"`, and its history is still
+     followed from the report revision to the pin, so the commit that added it is listed. `git log -L` runs with
      git's built-in Rust function-header rule, so indented methods in `impl` blocks are found.
      When one file defines several functions with that name (methods of two types, or
      platform variants such as `#[cfg(windows)]` and `#[cfg(not(windows))]`), each definition is
@@ -113,7 +129,8 @@ triage decision, and its records never back H4 or write-back.
    <plan.json> --out <file>`, and a research-only plan is accepted only with `--research` (and
    the reverse); a planned issue must be a technical issue of the list. An issue whose quote is not in the summary or description
    (it came from a comment or a reporter field) has its quote withheld from the listing, so a fix
-   named there cannot reach the analysis; the output lists those issues as `quotes_withheld` and
+   named there cannot reach the analysis, and so does each checked literal not found in the summary
+   or description (listed per issue as `literals_withheld`); the output lists those issues as `quotes_withheld` and
    reports fix wording in the listing's own text (model-written mechanisms and triggers included)
    as `fix_terms_found`, and the advisory rendered with
    `intake-check.py render --intake <intake-record.json> --fix-blind --out <file>`. The fix-blind
@@ -123,7 +140,8 @@ triage decision, and its records never back H4 or write-back.
    in", "patched in", "## Patches", "patched versions", matched across line breaks) cannot be
    removed without editing report text, so `render` reports it as `fix_terms_found`, with the
    advisory's `ghsa_id`, for the brief. Role packets for this analysis carry
-   no result of the analysis at the pin. Then run `ghsa-dedup.py records` for it (with
+   no result of the analysis at the pin; build its Phase 1 packet with `analysis-packets.py phase1
+   --fix-blind`, so the packet carries the fix-blind rendering, and its discovery packets name no CVE. Then run `ghsa-dedup.py records` for it (with
    `--research --intake` on the research-only path) with `--primary-revision <report_revision>`
    and an `--out-dir` of its own (for example
    `report-revision/` under the run's `currency/`), and rerun `flags` with both records files, so
@@ -136,13 +154,16 @@ triage decision, and its records never back H4 or write-back.
    <registry> --adversarial <name> ... --benign <name> ... --build <name> --coverage <name>
    --base-result <result> ... --pin-result <result> ... --base-checkout <dir> --pin-checkout <dir>
    --base-sink <path>:<line> --pin-sink <path>:<line> --report-records <report-revision records>
-   --poc-overlap <check> ... --out <file>` from the adapters' own outputs, never by hand. It
+   --poc-overlap <check> ... --out <file>` from the adapters' own outputs, never by hand (the
+   registry itself is written by `currency-check.py registry`; `checkout` and `test-result` also
+   serve the post-fix coverage check with a coverage pair record, see
+   [develop-fixes-mode.md](develop-fixes-mode.md) "Coverage entry"). It
    checks that:
    - every declared test and the build are pairs (`<name>@report`, `<name>@pin`) bound to the two
      revisions and identical apart from `revision`; each test runs exactly one named test and
      lists `required_files`;
    - every entry (tests, build, coverage) starts with `sandbox-exec -f <profile>` (the system `sandbox-exec`), with the
-     profile written exactly as the absolute path given to `--profile` (the adapter resolves `-f` inside the checkout),
+     profile written as the real path of `--profile` (absolute, with no link or `..`; the adapter resolves `-f` inside the checkout),
      followed directly by the command, and expects exit 0 (`deterministic-check.py` runs outside the profile, so each entry must enter
      it itself); the result records the profile's SHA-256;
    - the candidate is a `CROSS-MODEL VERIFIED`, bridged record of the report revision's analysis
@@ -165,10 +186,11 @@ triage decision, and its records never back H4 or write-back.
      most 256 MiB; the two files differ; and the sink file appears there once, under that
      checkout's own path (a file named under another directory is refused);
    - each checkout's HEAD is its revision;
-   - the `poc-overlap` checks are `ACCEPT` for this advisory and cover exactly the tests'
-     required files (by `test_file_sha256`);
+   - the `poc-overlap` checks are `ACCEPT` for this advisory, were run against the capture the
+     revision record binds (`intake_sha256`), and cover exactly the tests' required files (by
+     `test_file_sha256`);
    - the report-revision records belong to this advisory, issue list, revision, and path
-     (research-only or triage).
+     (research-only or triage), and are not post-fix coverage records.
 
    A test's result is `UNRESOLVED` at a revision whose build entry did not pass, and when its
    output does not show exactly one test run (one `running 1 test` line and no other `running`
@@ -177,7 +199,10 @@ triage decision, and its records never back H4 or write-back.
    [develop-fixes-mode.md](develop-fixes-mode.md) "Test-only entry"). Output (in the run's `currency/`, for example `test-<issue ID>.json`):
    `base_validation` (`state` `TEST_OBSERVED` only when every adversarial-input test failed, every
    control passed, and the sink was reached at the report revision; otherwise `TEST_UNVALIDATED`),
-   `pin_validation` (controls and sink at the pin), `at_pin` (`PASSED` when every
+   `pin_validation` (controls and sink at the pin), each with `failures`: for every
+   adversarial-input test that failed at that revision, the first libtest failure message from
+   its bounded output (at most 300 characters; empty when none is found). Code under test wrote
+   that text, so it is never interpreted and reaches only the human brief, as one-line JSON; `at_pin` (`PASSED` when every
    adversarial-input test passes there, `FAILED` when any still fails, `UNRESOLVED` when any could
    not run), `build` per revision, the `control_sites` of the verified records answering the issue
    and `sink_matches_control_site` (whether the sink's file is a control site of the bound candidate; shown, never refused,
@@ -188,7 +213,11 @@ triage decision, and its records never back H4 or write-back.
    [--report-records <report-revision records>] [--test <result> ...] --out <file>` proposes one
    outcome per planned issue; the first matching rule applies. A `--test` result needs
    `--report-records`, and those must be the records it was built from (its recorded digest), so
-   a test does not outlive a change in the report revision's analysis:
+   a test does not outlive a change in the report revision's analysis, and its `poc-overlap` checks must
+   have read the capture the revision record binds (`intake_sha256`; a recapture under the same
+   revisions, or a result written before 0.21.0, is refused). Post-fix coverage records
+   (`coverage: true`) are refused as `--report-records`: they are never eligible, so every planned
+   issue would read as `NO_RECORD`:
 
    | Rule | Condition | Outcome | Evidence, reason |
    |---|---|---|---|
@@ -196,7 +225,7 @@ triage decision, and its records never back H4 or write-back.
    | 2 | A validated test cannot run at the pin (a timeout, an output limit, or a test that could not start) | `UNDECIDED` | `TEST`, `TEST_UNRESOLVED_AT_PIN` |
    | 3 | A validated test ran at the pin, but the sink was not reached there or a benign control failed | `UNDECIDED` | `TEST`, `TEST_NOT_AT_SINK_AT_PIN` |
    | 4 | A validated test passes at the pin | `FIXED_SINCE_REPORT` | `TEST` |
-   | 5 | A validated test fails at the pin | `STILL_PRESENT` (contradicts the pin's analysis; flagged) | `TEST` |
+   | 5 | A validated test fails at the pin | `STILL_PRESENT` (flagged as a contradiction when the pin's analysis refuted or did not verify the issue) | `TEST` |
    | 6 | The report revision has not been analyzed | `UNDECIDED` | `ANALYSIS`, `INCOMPLETE` |
    | 7 | Either analysis is `DISPUTED` for the issue (at the report revision, any `DISPUTED` record counts, even beside a verified one) | `UNDECIDED` | `ANALYSIS`, `DISPUTED` |
    | 8 | Either analysis is `INCOMPLETE` (including an empty or unknown final status; at the report revision, any such record counts) | `UNDECIDED` | `ANALYSIS`, `INCOMPLETE` |
@@ -216,21 +245,38 @@ triage decision, and its records never back H4 or write-back.
    state or `at_pin`, two results for one issue, a plan for another advisory or pin,
    report-revision records for another issue list or revision, records from the other path (a
    research-only plan needs research-only records, and the reverse), and records without a
-   boolean `bridged` on every record (written before this version). The output carries
-   `research_only`, copied from the plan's `mode`, and per issue with a test a `test` block:
+   boolean `bridged` on every record (written before this version). `NOT ROUTED` records are
+   ignored at the report revision as in `plan`. The output carries
+   `research_only`, copied from the plan's `mode`, `report_revision_analyzed` (whether
+   `--report-records` was given), the plan's `not_planned` entries, per issue `main_causes` (from
+   the plan) and `report_causes` (from the report revision's records), `main_records` (the plan's
+   `records`) and `report_records` (the report revision's answering records, the same fields;
+   empty without `--report-records`), `contradiction` (true only
+   for `STILL_PRESENT` when the pin's analysis was `REFUTED`, `NOT VERIFIED`, or `NO_RECORD`: a
+   disputed or unfinished analysis is not contradicted), and per issue with a test a `test` block:
    `base_validation`, `pin_validation`, `at_pin`, `validated`, `build`, `candidate_id`,
-   `proposition`, `control_sites`, and `sink_matches_control_site`.
+   `proposition`, `control_sites`, `sink_matches_control_site`, and `failures` (`report` and
+   `pin`).
 7. **Brief.** `currency-check.py brief --outcome <outcome.json> [--flags <flags.json>]
    [--fix-terms <saved render output>] --out <file>` renders, for the human only, per planned
-   issue: the outcome with its evidence and reason, both analyses' statuses, the test result at
-   both revisions, a contradiction note when a test fails at the pin, the flags (anchors, presence,
+   issue: the outcome with its evidence and reason, both analyses' statuses, each answering
+   record at each revision with its own status (one-line JSON), each recorded cause
+   of an `INCOMPLETE` analysis (role, stage, provider, model, effort, and the declined items), the
+   test result at both revisions, each failing adversarial-input test's recorded failure message,
+   a note when a test still fails at the pin (worded as a contradiction only when the pin's
+   analysis refuted or did not verify the issue, otherwise naming the pin's status, and in both
+   cases asking whether the test asserts more than the invariant), the flags (anchors, presence,
    renames, each function's definition count and whether its history was looked up, rejected
    anchors, function commits labeled as unverified fixing-commit candidates, unavailable history,
    file-commit count, and which same-named definitions were followed separately or are gone at
    the pin), for a test its build per revision, both sinks with their counts, the candidate and
    the test's proposition, and a note when the sink's file is not one of the verified control
-   sites, the fix wording the report-revision analysis saw, and the options: accept the
-   proposal, or analyze again. A research-only outcome's brief opens by saying it is research
+   sites, the fix wording the report-revision analysis saw (or, when none ran, that no
+   report-revision analysis ran), and the options: accept the
+   proposal, or analyze again. After the planned issues it renders every not-planned issue with
+   its reason (confirmed at the pin, covered in step 1a and by which canonical, its kinds, or its
+   disposition), a confirmed issue's records at the pin, and its flags, and when nothing was planned and some issue was confirmed at the
+   pin it says that every analyzed technical issue was confirmed there. A research-only outcome's brief opens by saying it is research
    only, not a triage decision, and that nothing in it may be written back or posted. Mechanisms, anchors, and commit subjects appear as one-line JSON
    strings. It refuses flags for another advisory, revision, or issue list (issue IDs are joined
    only when both outputs carry the same issue-list digest) and a render output for another
@@ -239,7 +285,9 @@ triage decision, and its records never back H4 or write-back.
 ## Operator sequence for one report
 
 1. `git fetch origin` in the local clone (the operator's step; the scripts never fetch).
-2. `currency-check.py revision`, then `plan` with the pin's `report-records.json`.
+2. `currency-check.py revision`, then `plan` with the pin's `report-records.json` and that
+   `revision.json` (compute the revision from the analysis run's own intake, whose pin the records
+   describe).
 3. `flags` with the pin's records (every technical issue gets flags, planned or not).
 4. If `plan` lists issues: a snapshot and source registry at `report_revision`; `render
    --fix-blind` (save its output for the brief); `issue-scope --currency-plan`; the analysis;
@@ -259,7 +307,8 @@ run's notes record the outcomes as research results.
 ## Outputs and location
 
 Every output is written directly in the run's `currency/` directory, beside the run's `intake/`,
-and the commands refuse any other location. Directories are mode 700 and files mode 600. The
+and the commands refuse any other location (the post-fix coverage check's outputs go in the run's
+`coverage/` directory the same way). Directories are mode 700 and files mode 600. The
 outputs carry each issue's mechanism, its anchors (including rejected ones, verbatim), commit
 hashes, commit subjects, and paths, so they stay in the restricted run root with the rest of the
 run.

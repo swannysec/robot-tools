@@ -81,6 +81,8 @@ detect it; the skill discloses it as a role fallback. Read these fields from eac
   a refusal reported through `stop_reason` or `terminal_reason`, with no schema output.
 - Non-model failure: `is_error: true` or `terminal_reason` values such as `api_error`,
   which are `FAILED`, not refusals.
+- Other system events are neither refusals nor fallbacks; for example Claude Code 2.1.326
+  emits a `ui_invalidate` system event before `init`.
 
 The refusal fields were identified from documentation and the CLI, not from an induced
 refusal; live verification confirms them. Use `stream-json` output when the role needs the
@@ -236,6 +238,27 @@ Follow [ghsa-triage-mode.md](ghsa-triage-mode.md) and [ghsa-deduplication.md](gh
 `SVA_GHSA_WRITE_TOKEN_REF` (a 1Password `op://` reference) is set only in the writer
 child's environment. No GitHub token or token reference is ever placed in an intake or
 step 1a child's environment.
+
+**Analysis packets and barriers.** Build every analysis packet with `scripts/analysis-packets.py`:
+`phase1` (from the intake record, the issue list, the `issue-scope` listing, and the snapshot; `--fix-blind` for the
+currency check's report-revision analysis), `discovery --role 1|2|3`, `stage1`, `bundles` (from the verified derived
+discovery artifacts), `stage2 --candidate-id`, and `author` for the fix author. Each packet is written once with a
+`.meta.json` and ends with the `packet_revision` the role must echo. Check every role result with `analysis-packets.py
+role-check` (pass the provider, model, and effort read from runtime metadata, and the attempt number; a Stage 2
+result must echo the packet's candidate and its target proposition exactly, or it is `MALFORMED`), and run
+`analysis-packets.py phase-gate --stage stage1|stage2|reconcile` before dispatching Stage 1, before Stage 2, and before
+reconciliation, with the run's Phase 1 packet (`--phase1`; every check must come from it). The gate takes each leg's
+latest attempt (a retry must use the identical packet; two checks for one attempt are refused), tells the native leg
+from the cross leg by provider (compared trimmed and case-insensitively), and at reconciliation needs both Stage 2 legs of
+every dual-verification bundle, built from the `--bundles` it is given. `bundles` needs the three discovery roles'
+distinct artifacts at the Phase 1 revision. With `--fix-blind`, `phase1` looks up only literals found in the summary or
+description, and refuses a listing that shows a quote or literal from left-out text (build that listing with
+`issue-scope --currency-plan`, or `--coverage-plan` for the post-fix coverage check's analysis at a coverage pair's base). `issue-scope` writes metadata beside each listing (`<listing>.meta.json`: its mode, whether it
+is fix-blind, and its digest; never shown to a model), and `phase1` refuses a listing without that metadata, a listing changed
+since, metadata for another advisory, and a fix-blind (currency or coverage) listing without `--fix-blind`. A gate that exits 4 (`BLOCK`) stops the run at that barrier: dispatch nothing further,
+and copy its `causes` into the verification manifest's `causes` for the affected candidates, which are `INCOMPLETE`.
+`role-check --kind author` checks the fix author's result (schema, echo, declined scope, and that the test names are
+unique, defined in the file, and map every contract input class to an adversarial-input test).
 
 **Intake roles (H2, H4).** Build the packet with `scripts/intake-check.py h2-packet` or
 `h4-packet` (authorization statement, role instructions, and the data as untrusted data, frozen

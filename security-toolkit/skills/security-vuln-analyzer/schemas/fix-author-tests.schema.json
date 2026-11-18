@@ -1,0 +1,16 @@
+{
+  "type": "object", "additionalProperties": false,
+  "required": ["status", "packet_revision", "test_file_content", "adversarial_tests", "benign_tests", "class_mapping", "notes", "declined_scope"],
+  "properties": {
+    "status": {"type": "string", "enum": ["COMPLETE", "MALFORMED", "FAILED", "MISSING"]},
+    "packet_revision": {"type": "string"},
+    "test_file_content": {"type": "string"},
+    "adversarial_tests": {"type": "array", "items": {"type": "string"}},
+    "benign_tests": {"type": "array", "items": {"type": "string"}},
+    "class_mapping": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["input_class", "test_name"],
+                                                 "properties": {"input_class": {"type": "string"}, "test_name": {"type": "string"}}}},
+    "notes": {"type": "array", "items": {"type": "string"}},
+    "declined_scope": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["task_element", "reason"],
+                                                  "properties": {"task_element": {"type": "string", "minLength": 1}, "reason": {"type": "string", "minLength": 1}}}}
+  }
+}

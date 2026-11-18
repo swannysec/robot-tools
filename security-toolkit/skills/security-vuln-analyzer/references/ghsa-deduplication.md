@@ -25,8 +25,12 @@ For a published advisory, only step 1a's issue listing runs (the issue list, the
 classification, and `issues`, which accept a published capture); comparison planning and dispositions do not, so
 a published advisory has no dispositions. It reaches analysis and the currency check only through the
 research-only path in [ghsa-triage-mode.md](ghsa-triage-mode.md), whose results are never triage decisions.
-Not yet implemented: post-fix coverage checks inside `--develop-fix` (a test that already passes
-on a base containing the canonical's merged fix).
+After the canonical's fix has merged, and while the canonical is still open, the post-fix coverage
+check (Track 2, [develop-fixes-mode.md](develop-fixes-mode.md) "Coverage entry") may test whether
+that fix also closes a later report's covered issue: a frozen test that fails at the fix's first
+parent and passes at the fix proposes `COVERED_BY_FIX`, which `--verify-fix` must confirm; a test that
+still fails overturns the coverage for that issue. Its results are proposals for the human and never
+change dispositions, H4, or write-back.
 
 ## Scope and preflight
 

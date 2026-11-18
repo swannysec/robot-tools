@@ -37,6 +37,16 @@ class UsageError(ValueError):
     pass
 
 
+def encoded(text: str, path: str | Path) -> bytes:
+    """An output's UTF-8 bytes, made before its file is opened: an input holding a lone surrogate (valid in JSON, not in
+    UTF-8) is a usage error, and the file keeps its bytes."""
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise UsageError(f"{path}: the output holds text that is not valid Unicode (a lone surrogate at {error.start}); "
+                         "fix the input") from error
+
+
 def load(path: str | Path) -> Any:
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -45,18 +55,19 @@ def load(path: str | Path) -> Any:
 
 
 def dump(path: str | Path, value: Any) -> None:
-    text = json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    data = encoded(json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n", path)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+    with os.fdopen(descriptor, "wb") as handle:
         os.fchmod(handle.fileno(), 0o600)  # O_CREAT's mode applies only to a new file
-        handle.write(text)
+        handle.write(data)
 
 
 def write_text_private(path: Path, text: str) -> None:
+    data = encoded(text, path)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+    with os.fdopen(descriptor, "wb") as handle:
         os.fchmod(handle.fileno(), 0o600)
-        handle.write(text)
+        handle.write(data)
 
 
 def digest(value: Any) -> str:
@@ -132,6 +143,37 @@ def stage2_confirms(entry: dict[str, Any], cid: str) -> bool:
     return results == ["CONFIRMED", "CONFIRMED"]
 
 
+NOT_ROUTED = "NOT ROUTED"  # no role said the candidate affects a security claim, so it never went to verification
+SECURITY_DISPOSITIONS = ("vulnerability finding", "primary-control weakness")
+CAUSE_KINDS = ("REFUSED", "MALFORMED", "FAILED", "MISSING")
+CAUSE_TEXT = ("role", "stage", "provider", "model", "effort")
+
+
+def status_causes(entry: dict[str, Any], cid: str) -> list[dict[str, Any]]:
+    """The orchestrator's record of why a candidate is INCOMPLETE (each blocked leg: role, stage, and what it declined), as the
+    phase gate wrote them, copied for the human brief; it never changes a status."""
+    causes = entry.get("causes")
+    if causes is None:
+        return []
+    if entry.get("final_status") != "INCOMPLETE":
+        raise UsageError(f"{cid}: only an INCOMPLETE candidate carries causes")
+    if not isinstance(causes, list):
+        raise UsageError(f"{cid}: causes must be a list (every cause the phase gate wrote)")
+    copied = []
+    for cause in causes:
+        if not isinstance(cause, dict) or cause.get("kind") not in CAUSE_KINDS:
+            raise UsageError(f"{cid}: a cause needs a kind, one of {list(CAUSE_KINDS)}")
+        for key in CAUSE_TEXT:
+            if not isinstance(cause.get(key), str) or (key in ("role", "stage") and not cause[key].strip()):
+                raise UsageError(f"{cid}: a cause needs {key} as a string" + (" (not empty)" if key in ("role", "stage") else ""))
+        items = cause.get("items", [])
+        if not isinstance(items, list) or not all(isinstance(item, str) for item in items):
+            raise UsageError(f"{cid}: a cause's items must be a list of strings (the declined items verbatim)")
+        copied.append({"kind": cause["kind"], **{key: cause[key] for key in CAUSE_TEXT}, "items": list(items),
+                       **({"candidate_id": cause["candidate_id"]} if isinstance(cause.get("candidate_id"), str) else {})})
+    return copied
+
+
 def canonical_cvss_v4(vector: str) -> str:
     """Drop optional metrics whose value is X (Not Defined), so an explicit `E:X` and an omitted `E` are one vector."""
     optional = {name for name, _ in CVSS_V4_OPTIONAL_GRAMMAR}
@@ -156,7 +198,29 @@ def command_records(args: argparse.Namespace) -> dict[str, Any]:
     issues_doc = load(args.issues)
     if issues_doc.get("record_type") != "ghsa_issue_list" or issues_doc.get("ghsa_id") != args.ghsa_id:
         raise UsageError("the issue list belongs to a different advisory")
-    if args.research:  # a published advisory: analysis received every technical issue, and nothing is write-back eligible
+    if args.coverage_plan:  # post-fix coverage: the pair's issues (covered ones included), analyzed at the pair's base
+        pair = load(args.coverage_plan)
+        if not isinstance(pair, dict) or pair.get("record_type") != "ghsa_revision_pair" or pair.get("kind") != "coverage" \
+                or pair.get("ghsa_id") != args.ghsa_id:
+            raise UsageError(f"--coverage-plan is not a coverage pair record for {args.ghsa_id} (currency-check.py fix-revision)")
+        if pair.get("issues_sha256") != file_sha256(args.issues):
+            raise UsageError("the coverage pair was computed from another issue list")
+        if (pair.get("research_only") is True) != bool(args.research):
+            raise UsageError("a research coverage pair needs --research, and --research needs one (currency-check.py fix-revision --research)")
+        if args.primary_revision != pair.get("base"):
+            raise UsageError(f"coverage records are made at the pair's base {pair.get('base')}, not at {args.primary_revision}")
+        if args.research:
+            if args.dispositions:
+                raise UsageError("--research takes no --dispositions: the research coverage pair has none")
+            if not args.intake:
+                raise UsageError("--research needs --intake, so the advisory's captured state can be checked")
+            research_advisory(load(args.intake), args.ghsa_id)
+        elif not args.dispositions:  # the triage pair names the dispositions it was computed from
+            raise UsageError("a triage coverage pair needs --dispositions, the ones fix-revision was given")
+        elif pair.get("dispositions_sha256") != file_sha256(args.dispositions):
+            raise UsageError("the coverage pair was computed from other dispositions; rerun currency-check.py fix-revision")
+        analysis_issues = [str(issue_id) for issue_id in pair.get("issues", [])]
+    elif args.research:  # a published advisory: analysis received every technical issue, and nothing is write-back eligible
         if args.dispositions:
             raise UsageError("--research takes no --dispositions: on the research-only path analysis receives every technical issue")
         if not args.intake:
@@ -193,8 +257,12 @@ def command_records(args: argparse.Namespace) -> dict[str, Any]:
     if set(manifest) - recomputed:
         raise UsageError("the verification manifest names candidate IDs that the discovery artifacts do not produce")
     for cid in recomputed - set(manifest):
-        if any(item["affects_security_claim"] for other, _, item in role_records if other == cid):
-            raise UsageError(f"{cid} affects a security claim but has no verification entry")
+        items = [item for other, _, item in role_records if other == cid]
+        # Every vulnerability finding and primary-control weakness goes to dual verification (cross-model-verification.md);
+        # only a candidate no role marked as affecting a security claim, with a non-security disposition, may bypass it.
+        if any(item["affects_security_claim"] or item.get("proposed_disposition") in SECURITY_DISPOSITIONS for item in items):
+            raise UsageError(f"{cid} needs a verification entry: a role marked it as affecting a security claim, or its disposition is a "
+                             "vulnerability finding or primary-control weakness")
     records, not_bridged, unassigned = [], [], []
     answered: set[str] = set()
     seen: set[str] = set()
@@ -204,7 +272,10 @@ def command_records(args: argparse.Namespace) -> dict[str, Any]:
             raise UsageError(f"duplicate record {record_id} (the same discovery artifact was supplied twice)")
         seen.add(record_id)
         entry = manifest.get(cid)
-        status = entry.get("final_status", "") if entry else ""
+        if entry is not None and entry.get("final_status") == NOT_ROUTED:
+            raise UsageError(f"{cid}: {NOT_ROUTED} is reserved for candidates absent from the manifest (never sent to verification)")
+        status = entry.get("final_status", "") if entry is not None else NOT_ROUTED
+        causes = status_causes(entry, cid) if entry is not None else []
         bridged = False
         if entry is None:
             not_bridged.append({"record_id": record_id, "reason": "not routed to verification"})
@@ -230,7 +301,7 @@ def command_records(args: argparse.Namespace) -> dict[str, Any]:
             "answers": [{"ghsa_id": args.ghsa_id, "issue_id": issue_id} for issue_id in issue_ids],
             # bridged: two CONFIRMED Stage 2 legs back the verified status. ghsa_eligible: it may also back write-back,
             # which research-only records never do.
-            "final_status": status, "bridged": bridged, "ghsa_eligible": bridged and not args.research,
+            "final_status": status, "status_causes": causes, "bridged": bridged, "ghsa_eligible": bridged and not args.research and not args.coverage_plan,
             "fallback_model": bool(entry and entry.get("fallback_model")),
             "fallback_use_permitted": bool(entry and entry.get("fallback_use_permitted")),
             "normalized_proposition": item["normalized_proposition"], "proposed_disposition": item["proposed_disposition"],
@@ -243,7 +314,7 @@ def command_records(args: argparse.Namespace) -> dict[str, Any]:
     out = restricted_dir(Path(args.out_dir))
     dump(out / "report-records.json", {"repository": args.repository, "ghsa_id": args.ghsa_id, "primary_revision": args.primary_revision,
                                        "issues_sha256": file_sha256(args.issues), "research_only": bool(args.research),
-                                       "records": records})
+                                       "coverage": bool(args.coverage_plan), "records": records})
     return {"status": "COMPLETE", "records": len(records), "bridged": len(records) - len(not_bridged),
             "issues_without_records": [issue_id for issue_id in analysis_issues if issue_id not in answered],
             "unassigned": unassigned, "not_bridged": not_bridged}
@@ -559,7 +630,7 @@ def one_line_json(value: Any) -> str:
     """JSON with every control, format, and line or paragraph separator escaped (json.dumps leaves U+2028, U+2029, C1
     controls, and bidirectional overrides raw), so a value can neither forge a line nor reorder or recolor one on a terminal."""
     text = json.dumps(value, ensure_ascii=False)
-    return "".join(json_escape(char) if unicodedata.category(char) in ("Cc", "Cf", "Zl", "Zp") else char for char in text)
+    return "".join(json_escape(char) if unicodedata.category(char) in ("Cc", "Cf", "Cs", "Zl", "Zp") else char for char in text)
 
 
 def leg_line(check: dict[str, Any] | None, leg: str, issue_id: str, native_provider: str = "") -> str:
@@ -702,6 +773,7 @@ def main() -> int:
     p.add_argument("--research", action="store_true",
                    help="research-only path for a published advisory: every technical issue, no dispositions, nothing write-back eligible")
     p.add_argument("--intake", help="the advisory's intake record (required with --research)")
+    p.add_argument("--coverage-plan", help="currency-check.py fix-revision output: records of the analysis at the pair's base")
     p.add_argument("--discovery", action="append", required=True, help="schema-valid, post-schema-checked discovery artifact")
     p.add_argument("--verification", required=True, help="orchestrator manifest of final statuses and Stage 2 artifacts")
     p.add_argument("--out-dir", required=True)
@@ -721,7 +793,7 @@ def main() -> int:
                 "confirm": command_confirm, "brief": command_brief}
     try:
         outcome = handlers[args.command](args)
-    except (UsageError, KeyError, TypeError, IndexError, AttributeError, OSError) as error:
+    except (UsageError, KeyError, TypeError, IndexError, AttributeError, OSError, UnicodeError) as error:  # UnicodeError: a lone surrogate
         print(json.dumps({"status": "USAGE_ERROR", "error": str(error)}), file=sys.stderr)
         return EXIT_USAGE
     outcome.update({"adapter": ADAPTER_NAME, "adapter_version": ADAPTER_VERSION})

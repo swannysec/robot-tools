@@ -244,7 +244,8 @@ step 1a child's environment.
 currency check's report-revision analysis), `discovery --role 1|2|3`, `stage1`, `bundles` (from the verified derived
 discovery artifacts), `stage2 --candidate-id`, and `author` for the fix author. Each packet is written once with a
 `.meta.json` and ends with the `packet_revision` the role must echo. Check every role result with `analysis-packets.py
-role-check` (pass the provider, model, and effort read from runtime metadata, and the attempt number), and run
+role-check` (pass the provider, model, and effort read from runtime metadata, and the attempt number; a Stage 2
+result must echo the packet's candidate and its target proposition exactly, or it is `MALFORMED`), and run
 `analysis-packets.py phase-gate --stage stage1|stage2|reconcile` before dispatching Stage 1, before Stage 2, and before
 reconciliation, with the run's Phase 1 packet (`--phase1`; every check must come from it). The gate takes each leg's
 latest attempt (a retry must use the identical packet; two checks for one attempt are refused), tells the native leg

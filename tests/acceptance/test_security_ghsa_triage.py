@@ -6717,11 +6717,20 @@ class AnalysisPacketsTest(Workspace):
         cid = DEDUP["candidate_id"](target, self.revision)
         packet2, revision2 = self.built("stage2", "s2.packet.md", "--bundles", self.analysis / "bundles.json", "--candidate-id", cid)
         verdict = {"role_type": "verifier_stage2", "status": "COMPLETE", "provider": "anthropic", "model": "claude-opus-5-5", "effort": "high",
-                   "packet_revision": revision2, "pinned_revisions": [self.revision], "candidate_id": cid, "normalized_proposition": "p",
+                   "packet_revision": revision2, "pinned_revisions": [self.revision], "candidate_id": cid,
+                   "normalized_proposition": "Loader skips trust for auto_trust.",  # the target proposition, exactly as given
                    "verification_result": "CONFIRMED", "affected_gates": ["validity"], "evidence": [self.cite()], "counterevidence": [],
                    "remaining_assumptions": [], "uncertainty": [], "check_evidence": [], "declined_scope": []}
         wrong = self.check("stage2", packet2, dict(verdict, candidate_id="SVA-" + "1" * 20), "s2-wrong")
         self.assertEqual(wrong["effective_status"], "MALFORMED")
+        self.assertEqual(self.meta(packet2)["proposition"], "Loader skips trust for auto_trust.")
+        # PR #59 Copilot review: a verdict on another proposition never backs the target finding, whatever its result
+        for result in ("CONFIRMED", "REFUTED", "INCONCLUSIVE"):
+            with self.subTest(result=result):
+                other = self.check("stage2", packet2, dict(verdict, verification_result=result, normalized_proposition="An unrelated claim."),
+                                   f"s2-other-{result.lower()}")
+                self.assertEqual(other["effective_status"], "MALFORMED")
+                self.assertIn("proposition", " ".join(other["errors"]))
         self.check("stage2", packet2, verdict, "s2n")
         base = ("r1", "r2", "r3", "s1n", "s1x", "s2n")
         self.gate("reconcile", *base, extra=("--bundles", self.analysis / "bundles.json"), name="gate-r1", expect=4)

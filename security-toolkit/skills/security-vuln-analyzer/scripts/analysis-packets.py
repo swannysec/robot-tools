@@ -701,7 +701,8 @@ def command_stage2(args: argparse.Namespace) -> dict[str, Any]:
             "## Other proposition-scoped records (untrusted context; decide only the target proposition)\n"
             f"{dump(others)}\n\n## Role-scoped deterministic checks and routing tables, byte-preserved (none has been executed)\n"
             f"{dump(checks)}")
-    return finish(out, "stage2", body, {"candidate_id": args.candidate_id, "bundles_sha256": file_sha256(args.bundles),
+    return finish(out, "stage2", body, {"candidate_id": args.candidate_id, "proposition": canonical["proposition"],
+                                        "bundles_sha256": file_sha256(args.bundles),
                                         **binding(args.phase1, meta, args.sources_sha256)})
 
 
@@ -1034,6 +1035,8 @@ def command_role_check(args: argparse.Namespace) -> dict[str, Any]:
             errors.append("pinned_revisions is not exactly the packet's revision")
         if args.kind == "stage2" and raw.get("candidate_id") != meta.get("candidate_id"):
             errors.append("candidate_id is not the packet's candidate")
+        if args.kind == "stage2" and raw.get("normalized_proposition") != meta.get("proposition"):  # a verdict on another claim
+            errors.append("normalized_proposition is not the packet's target proposition, exactly as given")
         if not errors and args.kind == "discovery":
             errors += discovery_errors(raw, list(meta.get("issue_ids", [])))
         if not errors and args.kind == "author":

@@ -53,6 +53,16 @@ class UsageError(ValueError):
     pass
 
 
+def encoded(text: str, path: str | Path) -> bytes:
+    """An output's UTF-8 bytes, made before its file is opened: an input holding a lone surrogate (valid in JSON, not in
+    UTF-8) is a usage error, and the file keeps its bytes."""
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise UsageError(f"{path}: the output holds text that is not valid Unicode (a lone surrogate at {error.start}); "
+                         "fix the input") from error
+
+
 def restricted_dir(path: Path) -> Path:
     """Create every missing level with mode 700, not only the leaf (mkdir(parents=True) uses the umask)."""
     missing = []
@@ -82,10 +92,11 @@ def step1a_root(path: Path, ghsa_id: str, direct: bool = False) -> Path:
 
 
 def write_private(path: Path, text: str) -> None:
+    data = encoded(text, path)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+    with os.fdopen(descriptor, "wb") as handle:
         os.fchmod(handle.fileno(), 0o600)  # O_CREAT's mode applies only to a new file
-        handle.write(text)
+        handle.write(data)
 
 
 def load_json(path: str | Path) -> Any:
@@ -369,6 +380,9 @@ def command_h4_packet(args: argparse.Namespace) -> dict[str, Any]:
     if records_doc.get("research_only") is True:
         raise UsageError("these are research-only records (a published advisory analyzed outside triage); they never reach H4, "
                          "a reporter comment, or write-back")
+    if records_doc.get("coverage") is True:
+        raise UsageError("these are post-fix coverage records (proposals for a human); they never reach H4, a reporter comment, "
+                         "or write-back")
     allowed = []
     for record in records_doc.get("records", []):
         answers = record.get("answers", [])
@@ -418,7 +432,7 @@ def one_line_json(value: Any) -> str:
     """JSON with every control, format, and line or paragraph separator escaped (json.dumps leaves U+2028, U+2029, C1
     controls, and bidirectional overrides raw), so a value can neither forge a line nor reorder or recolor one on a terminal."""
     text = json.dumps(value, ensure_ascii=False)
-    return "".join(json_escape(char) if unicodedata.category(char) in ("Cc", "Cf", "Zl", "Zp") else char for char in text)
+    return "".join(json_escape(char) if unicodedata.category(char) in ("Cc", "Cf", "Cs", "Zl", "Zp") else char for char in text)
 
 
 OPEN_STATES = ("triage", "draft")
@@ -441,8 +455,38 @@ def command_issue_scope(args: argparse.Namespace) -> dict[str, Any]:
     """The Phase 1 issue listing: exactly `analysis_issue_ids` (on the research-only path, every technical issue), each
     field as a one-line JSON string, no other advisory named."""
     issues_doc = load_json(args.issues)
-    intake: Any = None  # read once when --research or --currency-plan needs it
-    if args.research:  # a published advisory: no dispositions exist, so every technical issue is in scope
+    intake: Any = None  # read once when --research, --currency-plan, or --coverage-plan needs it
+    if args.coverage_plan:  # post-fix coverage: the pair's issues (covered ones included), fix-blind like the currency check
+        if args.currency_plan:
+            raise UsageError("--coverage-plan and --currency-plan name two different analyses; give one")
+        pair = load_json(args.coverage_plan)
+        if not isinstance(pair, dict) or pair.get("record_type") != "ghsa_revision_pair" or pair.get("kind") != "coverage":
+            raise UsageError("--coverage-plan is not a coverage pair record (currency-check.py fix-revision)")
+        if issues_doc.get("record_type") != "ghsa_issue_list" or pair.get("ghsa_id") != issues_doc.get("ghsa_id"):
+            raise UsageError("the coverage pair belongs to another advisory than the issue list")
+        if pair.get("issues_sha256") != file_digest(args.issues):
+            raise UsageError("the coverage pair was computed from another issue list")
+        if (pair.get("research_only") is True) != bool(args.research):
+            raise UsageError("a research coverage pair needs --research, and --research needs one (currency-check.py fix-revision --research)")
+        if not args.intake:
+            raise UsageError("--coverage-plan needs --intake, so quotes from text the fix-blind rendering leaves out are withheld")
+        ghsa_id = str(pair["ghsa_id"])
+        intake = load_json(args.intake)
+        if file_digest(args.intake) != pair.get("intake_sha256"):  # D4: the capture the pair bound, as test-result checks it
+            raise UsageError("--intake is not the capture the coverage pair bound (its intake_sha256); use that run's intake record")
+        if args.research:
+            if args.dispositions:
+                raise UsageError("--research takes no --dispositions: the research coverage pair has none")
+            research_advisory(intake, ghsa_id)
+        elif not args.dispositions:  # the triage pair names the dispositions it was computed from
+            raise UsageError("a triage coverage pair needs --dispositions, the ones fix-revision was given")
+        elif pair.get("dispositions_sha256") != file_digest(args.dispositions):
+            raise UsageError("the coverage pair was computed from other dispositions; rerun currency-check.py fix-revision")
+        ids = [str(issue_id) for issue_id in pair.get("issues", [])]
+        if not ids:
+            raise UsageError("the coverage pair has no issues")
+        scope_name = "the coverage pair's issues"
+    elif args.research:  # a published advisory: no dispositions exist, so every technical issue is in scope
         if args.dispositions:
             raise UsageError("--research takes no --dispositions: the research-only path lists every technical issue")
         if issues_doc.get("record_type") != "ghsa_issue_list":
@@ -501,12 +545,28 @@ def command_issue_scope(args: argparse.Namespace) -> dict[str, Any]:
             raise UsageError("the intake record belongs to another advisory")
         blind_fields = [value for label, value in labeled_fields(intake) if label in ("summary", "description")]
         ids = planned
+    elif args.coverage_plan:
+        if intake.get("advisory", {}).get("ghsa_id") != ghsa_id:
+            raise UsageError("the intake record belongs to another advisory")
+        blind_fields = [value for label, value in labeled_fields(intake) if label in ("summary", "description")]
+    fix_blind = bool(args.currency_plan or args.coverage_plan)  # the analysis must not see a fix named outside summary and description
     lines, withheld = [SCOPE_HEADER], []
+    literals_withheld: dict[str, list[str]] = {}
     for issue_id in ids:
         item = by_id[issue_id]
         literals = {key: value for key, value in item.get("literals", {}).items() if value}
+        if fix_blind:  # a literal found only in text the fix-blind rendering leaves out could name the fix: withhold it
+            kept: dict[str, Any] = {}
+            for key, values in literals.items():
+                shown = [value for value in values if any(value in field for field in blind_fields)]
+                literals_withheld.setdefault(issue_id, []).extend(value for value in values if value not in shown)
+                if shown:
+                    kept[key] = shown
+            literals = kept
+            if not literals_withheld.get(issue_id):
+                literals_withheld.pop(issue_id, None)
         quote = one_line_json(item["quote"])
-        if args.currency_plan and not is_exact_quote(item["quote"], blind_fields):
+        if fix_blind and not is_exact_quote(item["quote"], blind_fields):
             # The currency check's analysis must not see a fix named in a comment or reporter field: withhold that quote.
             withheld.append(issue_id)
             quote = "(withheld: it comes from text the fix-blind rendering leaves out)"
@@ -519,11 +579,18 @@ def command_issue_scope(args: argparse.Namespace) -> dict[str, Any]:
     restricted_dir(out.parent)
     text = "".join(lines)
     write_private(out, text)
+    # D4: beside the listing, never shown to a model, the mode phase1 checks (a fix-blind listing needs phase1 --fix-blind)
+    mode = "COVERAGE" if args.coverage_plan else "CURRENCY" if args.currency_plan else "RESEARCH_ONLY" if args.research else "TRIAGE"
+    write_private(Path(str(out) + ".meta.json"), json.dumps({
+        "record_type": "ghsa_issue_scope", "ghsa_id": ghsa_id, "mode": mode, "fix_blind": fix_blind, "issue_ids": ids,
+        "listing_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "issues_sha256": file_digest(args.issues)},
+        indent=2, sort_keys=True) + "\n")
     result = {"check": "issue-scope", "effective_status": "COMPLETE", "errors": [], "issue_ids": ids, "out": str(out),
               "ghsa_id": ghsa_id, "research_only": bool(args.research)}
-    if args.currency_plan:
+    if fix_blind:
         lowered = " ".join(text.lower().split())
-        result.update(quotes_withheld=withheld, fix_terms_found=sorted(term for term in FIX_TERMS if term in lowered))
+        result.update(quotes_withheld=withheld, literals_withheld=literals_withheld,
+                      fix_terms_found=sorted(term for term in FIX_TERMS if term in lowered))
     return result
 
 
@@ -1039,6 +1106,7 @@ def command_poc_overlap(args: argparse.Namespace) -> dict[str, Any]:
     decision = "REJECT" if overlaps else "ACCEPT"
     return {"check": "poc-overlap", "effective_status": "COMPLETE", "errors": [], "decision": decision,
             "ghsa_id": intake.get("advisory", {}).get("ghsa_id", ""), "test_file_sha256": file_digest(args.test_file),
+            "intake_sha256": file_digest(args.intake),  # the capture checked, which test-result binds to its revision record
             "threshold_chars": width, "overlaps": overlaps}
 
 
@@ -1072,6 +1140,7 @@ def main() -> int:
                        help="research-only path for a published advisory: every technical issue, no dispositions; needs --intake")
     scope.add_argument("--out", required=True, help="text file for the Phase 1 packet, for example in the run's analysis/")
     scope.add_argument("--currency-plan", help="currency-check.py plan output: list only its planned issues")
+    scope.add_argument("--coverage-plan", help="currency-check.py fix-revision output: list exactly the coverage pair's issues")
     scope.add_argument("--intake", help="the advisory's intake record (required with --research and --currency-plan)")
     overlap = sub.add_parser("poc-overlap")
     overlap.add_argument("--intake", required=True, help="intake record of the advisory the test was written for")
@@ -1122,7 +1191,7 @@ def main() -> int:
                 "compare-packet": command_compare_packet, "compare-check": command_compare_check}
     try:
         outcome = handlers[args.command](args)
-    except (UsageError, KeyError, TypeError, AttributeError, OSError) as error:
+    except (UsageError, KeyError, TypeError, AttributeError, OSError, UnicodeError) as error:  # UnicodeError: a lone surrogate
         print(json.dumps({"status": "USAGE_ERROR", "error": str(error)}), file=sys.stderr)
         return EXIT_USAGE
     outcome.update({"adapter": ADAPTER_NAME, "adapter_version": ADAPTER_VERSION})

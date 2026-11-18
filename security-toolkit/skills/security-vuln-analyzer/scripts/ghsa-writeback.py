@@ -215,6 +215,9 @@ def main() -> int:
         if isinstance(records_file, dict) and records_file.get("research_only") is True:
             raise Refusal("these are research-only records (a published advisory analyzed outside triage); they never back "
                           "a write-back, so nothing was written")
+        if isinstance(records_file, dict) and records_file.get("coverage") is True:
+            raise Refusal("these are post-fix coverage records (proposals for a human); they never back a write-back, so nothing "
+                          "was written")
         outcome["plan_sha256"] = sha256_bytes(plan_raw)
         if approvals.get("plan_sha256") != outcome["plan_sha256"]:
             raise Refusal("approvals do not match this plan's SHA-256; nothing was written")

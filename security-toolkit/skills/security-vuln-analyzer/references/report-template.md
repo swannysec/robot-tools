@@ -212,7 +212,7 @@ Reporter claims (labeled, not skill assessments): severity, CVSS vectors, CWE ID
 Intake roles: H2 provenance, effective status, intake-check result:
 Step 1a legs: per leg, provider, requested and actual model, check result, fallback or refusal:
 Issue list: issues (ID, kind per provider, technical), cross_leg, dropped literals:
-Records: issues without records, unassigned verified records, not-bridged records and reasons:
+Records: issues without records, unassigned verified records, not-bridged records and reasons, `NOT ROUTED` records (no role said the candidate affects a security claim), `status_causes` of `INCOMPLETE` records:
 H4 packet: withheld values and reasons:
 ```
 

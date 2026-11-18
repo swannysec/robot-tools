@@ -58,15 +58,21 @@ git work tree; the script refuses a run root inside one. Layout:
     intake/                 advisory.raw.json, comments.raw.json, intake-record.json, h2.packet.txt,
                             h2.meta.json, H2 result and check
     step1a/                 issue list, comparison packets and checks, dispositions, confirmation
-    analysis/               issue-scope.txt (the Phase 1 issue listing) and the analysis-mode artifacts
+    analysis/               issue-scope.txt (the Phase 1 issue listing) and issue-scope.txt.meta.json (its mode and
+                            digest, never shown to a model), and the analysis-mode artifacts
     dedup/                  report-records.json from ghsa-dedup.py records
     currency/               currency check: revision, plan, flags, test results, outcome, brief, and the
                             report revision's records (ghsa-currency-check.md)
+    coverage/               post-fix coverage: the revision pair, base-records/, test results, outcome, brief
+                            (develop-fixes-mode.md "Coverage entry")
+    develop-fix/            --develop-fix security gate: the develop-fix pair and its test results
+                            (develop-fixes-mode.md "Authoring flow" step 5)
     writeback/              h4-packet.json, h4-allowed-records.json, h4.packet.txt, h4.meta.json,
                             H4 draft, write plan, approvals, results
 ```
 
-Each advisory has its own directory. Step 1a comparison packets in `step1a/compare/` hold the text
+Each advisory has its own directory. Every JSON, listing, packet, registry, and brief writer encodes its output before opening the file, so an input holding a
+lone surrogate (valid in JSON, not in UTF-8) is a usage error and an existing output keeps its bytes. Step 1a comparison packets in `step1a/compare/` hold the text
 of an earlier advisory as well; they stay inside the restricted run root. Never copy advisory text into the target repository,
 a commit, a pull request, or any public surface.
 
@@ -90,8 +96,9 @@ schema-bound runs with no tools that read files, run commands, or reach the netw
 GitHub token (see the runtime guides for exact launch forms). Each packet opens with the analysis
 and intake authorization statement and contains the verbatim captured advisory as untrusted data,
 with each captured field as raw text between `<<<FIELD label>>>` and `<<<END label>>>` lines.
-The packet commands below render it; for the orchestrator-built Phase 1 packet, write the same
-rendering with `intake-check.py render --intake <intake-record.json> --out <file>`. Do not render
+The packet commands below render it, and `analysis-packets.py phase1` renders it the same way for
+the Phase 1 packet (`intake-check.py render --intake <intake-record.json> --out <file>` writes the
+same rendering on its own). Do not render
 the advisory as JSON: escaped line breaks and JSON syntax make models quote text that is not in
 the advisory. Intake roles make
 no security judgment, so the cross-provider rule does not apply to them. Build H2's packet with
@@ -159,12 +166,22 @@ still does not complete, a human writes the evidence request.
   state that these are the issues in scope, so discovery roles can fill `issue_ids`. Write that
   listing with `intake-check.py issue-scope --issues <issues.json> --dispositions
   <dispositions.json> --out <file>` (for example `issue-scope.txt` in the run's `analysis/`
-  directory); it refuses unless the status is `READY` with issues to analyze. The rest of the
-  Phase 1 packet is built by the orchestrator.
+  directory); it refuses unless the status is `READY` with issues to analyze. Build the Phase 1
+  packet from it with `analysis-packets.py phase1` (the authorization statement, the target and
+  snapshot layout, the listing, bounded lookups of the listed issues' checked literals in the
+  snapshot, and the captured advisory between token-bearing lines), and every later role packet,
+  role check, and phase barrier with the same script (runtime guides, "Analysis packets and
+  barriers").
   `analysis_issue_ids` is the only filter: it usually omits covered and ignored issues, but it
   includes them after a rejected obvious-duplicate confirmation, under `LIST_UNREVIEWED`, and
   under `NO_TECHNICAL_ISSUES`, so list exactly those IDs. No other advisory is named. Run analysis only when
   `analysis_status` is `READY`. The pinned target from intake is the primary target revision.
+  The discovery packet's EPSS and KEV instruction takes the CVE state from the capture's `cve_id`:
+  with an assigned CVE, name it and say EPSS and KEV are not retrieved in this run (roles record
+  `NOT RETRIEVED`); with none, roles record `NO CVE`. A fix-blind analysis (the currency check's
+  report-revision analysis) never names a CVE, because an assigned CVE implies a disclosed and
+  usually fixed issue: its packet says only that EPSS and KEV are not retrieved. No packet carries
+  the research-only marker, for the same reason.
 - **Research-only path (published advisories):** a published advisory never gets step 1a
   dispositions, so `issue-scope`, `ghsa-dedup.py records`, and `currency-check.py plan` take
   `--research --intake <intake-record.json>` instead of `--dispositions`: every technical issue in
@@ -180,14 +197,20 @@ still does not complete, a human writes the evidence request.
   the current `step1a/dispositions.json` (`analysis_status` `READY`, computed from that issue
   list), the primary revision, and a verification manifest written by the orchestrator
   (`{"candidates": {candidate_id: {"final_status", "fallback_model", "fallback_use_permitted",
-  "stage2": [{"path", "provider"}, {"path", "provider"}]}}}`, providers from runtime metadata),
+  "stage2": [{"path", "provider"}, {"path", "provider"}], "causes"}}}`, providers from runtime metadata;
+  the optional `causes`, allowed only with `final_status` `INCOMPLETE`, lists every cause the phase gate
+  wrote for that candidate, each with `kind` (`REFUSED`, `MALFORMED`, `FAILED`, or `MISSING`), `role`,
+  `stage`, `provider`, `model`, `effort`, `items` (the declined or missing items verbatim, as in the
+  refusal flag), and for a Stage 2 leg `candidate_id`),
   whose Stage 2 `path` values are the verified derived Stage 2 artifacts, likewise. Record IDs
   hash the artifact bytes, so the raw artifact (whose quotes are empty) gives different IDs. The
   script recomputes every candidate ID, keeps one record per role-emitted candidate (no merge;
   the record ID hashes the candidate and its source artifact, so identical candidates from two
   roles stay separate), and treats a candidate as verified for GHSA use only when the manifest
   says `CROSS-MODEL VERIFIED` and both Stage 2 artifacts are complete, unrefused, `CONFIRMED`, and
-  from different providers. Each record keeps its reconciled `final_status`, answers the issue IDs
+  from different providers. Each record keeps its reconciled `final_status` (`NOT ROUTED` for a
+  candidate with no manifest entry, which no role marked as affecting a security claim), its
+  `status_causes` (the manifest's `causes`, or `[]`), answers the issue IDs
   its candidate named (`answers`: advisory and issue ID), and carries `ghsa_eligible`, true only
   for those bridged records, and `bridged` (both Stage 2 legs `CONFIRMED`; on the research-only
   path `bridged` can be true while `ghsa_eligible` is always false). A bridged record's `values` carry its CWE IDs and, when its CVSS
@@ -199,11 +222,17 @@ still does not complete, a human writes the evidence request.
   reaches H4 only when every verified record with a vector agrees, and any write is
   human-approved. It writes `report-records.json` (for `h4-packet` and the writer) in a mode-700
   directory, with the analysis pin (`primary_revision`), the digest of the issue list
-  (`issues_sha256`), `research_only` (true only with `--research`), and each record's
-  `control_site` for the currency check
+  (`issues_sha256`), `research_only` (true only with `--research`), `coverage` (true only with
+  `--coverage-plan`, the post-fix coverage check's records at a coverage pair's base, whose records
+  are never `ghsa_eligible`; see [develop-fixes-mode.md](develop-fixes-mode.md) "Coverage entry"),
+  and each record's `control_site` for the currency check
   ([ghsa-currency-check.md](ghsa-currency-check.md)); H4's record projection omits the control
-  site. It refuses a manifest that does not match the recomputed IDs (a candidate that no
-  role marked `affects_security_claim` may be absent), an inconsistent verified status, and issue
+  site. It refuses a manifest that does not match the recomputed IDs (a candidate may be absent
+  only when no role marked it as affecting a security claim and none gave it a security disposition,
+  a vulnerability finding or primary-control weakness, which always goes to dual verification), an
+  inconsistent verified status, a manifest entry claiming `NOT ROUTED` (reserved for absent
+  candidates), `causes` on a candidate that is not `INCOMPLETE`, not a list, or with a missing or
+  malformed field, and issue
   IDs that analysis did not receive. Its result lists `unassigned` verified records (no issue ID;
   they stay in the report), `issues_without_records` (analyzed issues with no bridged record),
   and `not_bridged` records with reasons: every record with `bridged: false` appears exactly
@@ -257,8 +286,8 @@ user whether to proceed to write-back, using a decision brief. If the user agree
    against the allowlist and its verified report record (which must name the plan's
    repository, answer only the plan's advisory, and carry `ghsa_eligible: true` from
    `ghsa-dedup.py records`, so a record that was not bridged backs no write, including
-   accept-to-draft and private-fork creation; a records file marked `research_only` is refused
-   before any call), reads the write token through
+   accept-to-draft and private-fork creation; a records file marked `research_only` or `coverage`
+   is refused before any call), reads the write token through
    `op read`, re-fetches the advisory before each write and stops on any change since
    capture, and records each result.
 
@@ -346,7 +375,7 @@ explicitly permits that use for that result ([orchestrator-contract.md](orchestr
   `CROSS-MODEL VERIFIED` record with `ghsa_eligible: true` (a fallback-model record needs
   the user's permission for this use). An accept-to-draft proposal must cite at least one
   such record. Comment statements may cite any record in the allowed set. `h4-packet` refuses a
-  records file marked `research_only`.
+  records file marked `research_only` or `coverage`.
 - **Advisory-ID block:** the same check rejects any draft that names another unpublished
   advisory.
 - **Posting brief:** the decision brief for each draft lists every record the draft
